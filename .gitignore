@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment — never commit real credentials or the encryption key
+.env
+.env.*
+!.env.sample
+
+# Celery
+celerybeat-schedule*
+
+# Local data
+uploads/
+logs/
+
+# OS / editors
+.DS_Store
+*.swp

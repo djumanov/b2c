@@ -1,0 +1,76 @@
+[project]
+name = "b2c-backend"
+version = "0.1.0"
+description = "B2C travel platform backend — one installation per client, config in DB"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.118",
+    "uvicorn[standard]>=0.37",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.11",
+    "sqlalchemy[asyncio]>=2.0.43",
+    "asyncpg>=0.30",
+    "alembic>=1.16",
+    "redis>=6.4",
+    "celery>=5.5",
+    "httpx>=0.28",
+    "argon2-cffi>=25.1",
+    "pyjwt>=2.10",
+    "structlog>=25.4",
+    "cryptography>=46.0",
+    "python-multipart>=0.0.20",
+    "email-validator>=2.3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.2",
+    "pytest-cov>=7.0",
+    "respx>=0.22",
+    "fakeredis>=2.31",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+# Migrations are generated and then frozen: they must keep running unchanged on
+# installations that skip several versions (PROJECT.md D10).
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "fakeredis.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Celery's @shared_task / @task decorators are untyped (no stubs ship with it).
+module = ["app.tasks.*"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One event loop for the whole run: module-level async clients (redis, the db
+# engine) bind to a loop on first use, exactly like production's single loop.
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["."]
