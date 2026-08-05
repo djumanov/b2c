@@ -1,0 +1,1001 @@
+# REST API — kontrakt
+
+Bu hujjat API'ning **to'liq kontrakti**: umumiy qoidalar va barcha endpointlar.
+
+| Qism | § | Nima |
+|---|---|---|
+| **I. Umumiy qoidalar** | 1–16 | Envelope, xato katalogi, auth, RBAC, ko'p tillilik, idempotentlik, GTS bilan aloqa |
+| **II. Public yuza** | 17–26 | Sayt va mobil ilova uchun — `/api/v1/public/` |
+| **III. Admin yuza** | 27–39 | Boshqaruv paneli uchun — `/api/v1/admin/` |
+| **IV. Webhook'lar** | 40 | To'lov provayderlari callback'lari — `/api/v1/webhooks/` |
+| **V. Reliz qamrovi** | 41 | Birinchi relizga kirmaydigan endpointlar |
+
+Loyiha konteksti: [PROJECT.md](PROJECT.md) · Mahsulot manbai: [GTS.md](GTS.md) ·
+Backend ichki tuzilishi: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+> Bu hujjat — **dizayn manbai**. FastAPI generatsiya qiladigan OpenAPI (`/api/v1/openapi.json`)
+> shu qoidalardan kelib chiqadigan artefakt, aksincha emas. Kontrakt o'zgarsa avval shu hujjat
+> yangilanadi.
+
+---
+---
+
+# I QISM — UMUMIY QOIDALAR
+
+## 1. Asosiy qoidalar
+
+| Qoida | Qiymat |
+|---|---|
+| Base path | `/api/v1/` |
+| Yuzalar | `/api/v1/public/…` · `/api/v1/admin/…` · `/api/v1/webhooks/…` |
+| Trailing slash | **Doim bor**: `/api/v1/admin/content/blogs/` |
+| JSON kalitlari | `snake_case` |
+| Identifikator | UUID (`id`). Tashqi tizim id'lari alohida maydonda |
+| Vaqt | ISO-8601, UTC, `Z` bilan: `2026-08-05T09:41:00Z` |
+| Pul | `{"amount": "125000.00", "currency": "UZS"}` — miqdor **string**, float emas |
+| Til kodi | ISO 639-1 kichik harf: `uz`, `ru`, `en` |
+| Kodlash | UTF-8, `Content-Type: application/json` |
+
+**Versiyalash**: `v1` yo'lda. Buzuvchi o'zgarish — yangi versiya. Yangi ixtiyoriy maydon
+qo'shish buzuvchi hisoblanmaydi, shuning uchun klient noma'lum maydonlarni **e'tiborsiz
+qoldirishi** shart.
+
+---
+
+## 2. Javob formati (envelope)
+
+Barcha javoblar — muvaffaqiyat ham, xato ham — bir xil strukturada.
+
+**Muvaffaqiyat:**
+
+```json
+{
+  "status": "success",
+  "data": { "id": "9f2c…", "title": "Yangi aksiya" },
+  "errors": [],
+  "meta": null
+}
+```
+
+**Ro'yxat (pagination bilan):**
+
+```json
+{
+  "status": "success",
+  "data": [ { "id": "…" }, { "id": "…" } ],
+  "errors": [],
+  "meta": { "page": 1, "page_size": 20, "total": 137, "total_pages": 7 }
+}
+```
+
+**Xato:**
+
+```json
+{
+  "status": "error",
+  "data": null,
+  "errors": [
+    { "code": "validation", "field": "email", "message": "Noto'g'ri format" },
+    { "code": "validation", "field": "phone", "message": "Majburiy maydon" }
+  ],
+  "meta": null
+}
+```
+
+Qoidalar:
+
+- `status` — faqat `"success"` yoki `"error"`.
+- `data` — obyekt, massiv yoki `null`. Xatoda doim `null`.
+- `errors` — doim massiv. Muvaffaqiyatda bo'sh.
+- `meta` — pagination yoki qo'shimcha kontekst; bo'lmasa `null`.
+- HTTP status kodi ham to'g'ri qo'yiladi — envelope uni almashtirmaydi, to'ldiradi.
+
+---
+
+## 3. Xato katalogi
+
+| `code` | HTTP | Qachon |
+|---|---|---|
+| `validation` | 422 | So'rov tanasi yoki parametrlari noto'g'ri |
+| `unauthorized` | 401 | Token yo'q, yaroqsiz yoki muddati tugagan |
+| `forbidden` | 403 | Token bor, lekin rol yetarli emas |
+| `not_found` | 404 | Resurs topilmadi |
+| `conflict` | 409 | Holat ziddiyati (masalan allaqachon bekor qilingan buyurtma) |
+| `rate_limited` | 429 | So'rov chegarasi oshib ketdi |
+| `upstream_error` | 502 | GTS yoki to'lov provayderi xato qaytardi |
+| `upstream_timeout` | 504 | Yuqori oqim javob bermadi |
+| `payment_failed` | 400 | To'lov rad etildi (sabab `message` da) |
+| `offer_expired` | 409 | Taklif muddati tugadi — qidiruvni qaytadan boshlash kerak |
+| `internal` | 500 | Kutilmagan xato |
+
+`field` faqat `validation` da to'ldiriladi. `message` — foydalanuvchiga ko'rsatish uchun
+tayyor matn, so'rov tilida (`Accept-Language`).
+
+**Yuqori oqim xatolari**: GTS yoki to'lov provayderining asl xabari `message` da saqlanadi va
+`meta.upstream` ichida asl kod/matn beriladi — diagnostika uchun yo'qolmasligi shart.
+
+---
+
+## 4. Autentifikatsiya
+
+**JWT bearer**, access + refresh.
+
+```
+Authorization: Bearer <access_token>
+```
+
+Ikki xil sub'ekt, ikki xil token — bir-biriga o'tmaydi:
+
+| Sub'ekt | `aud` | Qayerda ishlaydi | Access TTL | Refresh TTL |
+|---|---|---|---|---|
+| Customer (oxirgi foydalanuvchi) | `public` | `/api/v1/public/*` | 30 daqiqa | 30 kun |
+| Staff (xodim) | `admin` | `/api/v1/admin/*` | 15 daqiqa | 12 soat |
+
+Token payload'i: `sub` (foydalanuvchi id), `aud`, `role` (faqat staff uchun), `exp`, `iat`, `jti`.
+
+- Customer tokeni bilan `/admin/*` ga urinish → `403 forbidden`.
+- Refresh **rotatsiya bilan**: har `refresh/` chaqiruvida eski refresh bekor qilinadi.
+- `logout/` refresh tokenni bekor qiladi (`jti` qora ro'yxatga tushadi).
+
+Auth talab qilmaydigan endpointlar aniq belgilanadi (`site-config`, kontent o'qish, ro'yxatdan
+o'tish, login, webhook'lar).
+
+---
+
+## 5. Rollar va ruxsatlar (RBAC)
+
+Rollar [PROJECT.md](PROJECT.md) §9 da tasvirlangan. Resurs guruhlari bo'yicha matritsa:
+
+| Resurs guruhi | `owner` | `admin` | `content` | `operator` | `finance` | `gts_support` |
+|---|---|---|---|---|---|---|
+| Sozlamalar (brending, domen, menyu) | ✎ | ✎ | — | — | — | 👁 |
+| Integratsiya kalitlari | ✎ | 👁 | — | — | — | 👁 |
+| Kontent va sharhlar | ✎ | ✎ | ✎ | 👁 | — | 👁 |
+| Buyurtmalar | ✎ | ✎ | — | ✎ | 👁 | 👁 |
+| To'lovlar va qaytarishlar | ✎ | ✎ | — | 👁 | ✎ | 👁 |
+| Promokodlar | ✎ | ✎ | 👁 | 👁 | ✎ | 👁 |
+| Mijozlar | ✎ | ✎ | — | ✎ | 👁 | 👁 |
+| Hisobotlar | ✎ | ✎ | — | 👁 | ✎ | 👁 |
+| Jamoa va rollar | ✎ | — | — | — | — | 👁 |
+| Tizim va audit | ✎ | 👁 | — | — | — | ✎ |
+
+✎ o'qish + yozish · 👁 faqat o'qish · — kirish yo'q
+
+`gts_support` hech qayerga yozmaydi (tizim diagnostikasidan tashqari) va faqat client yoqib
+qo'ygan muddat davomida amal qiladi.
+
+**Ruxsat satrlari.** Matritsadagi har bir resurs guruhi ikkita satr beradi — `.read` va `.write`:
+`settings`, `integrations`, `content`, `orders`, `payments`, `promos`, `customers`, `reports`,
+`staff`, `system`. Jami 20 ta. `GET /admin/auth/me/` xodimning yakuniy ro'yxatini qaytaradi va
+panel menyuni **shu ro'yxat bo'yicha** yig'adi, rol nomi bo'yicha emas.
+
+---
+
+## 6. Ro'yxat, filtr va tartib
+
+| Parametr | Ma'nosi | Default |
+|---|---|---|
+| `page` | Sahifa raqami (1 dan) | `1` |
+| `page_size` | Sahifadagi yozuvlar soni (maks. 100) | `20` |
+| `search` | Matnli qidiruv (resursga xos maydonlar bo'yicha) | — |
+| `ordering` | Tartib maydoni; `-` bilan teskari: `-created_at` | resursga xos |
+| `created_from` / `created_to` | Sana oralig'i (ISO-8601) | — |
+
+Resursga xos filtrlar har bir endpoint tavsifida ko'rsatiladi (masalan buyurtmalarda
+`?product=`, `?status=`).
+
+---
+
+## 7. Ko'p tillilik
+
+Sayt uchta tilni qo'llab-quvvatlaydi: `uz`, `ru`, `en` ([PROJECT.md](PROJECT.md) D8).
+
+Tarjima qilinadigan maydonlar **obyekt** sifatida saqlanadi va admin API'da shunday qaytadi:
+
+```json
+{ "title": { "uz": "Chegirma", "ru": "Скидка", "en": "Discount" } }
+```
+
+Public API'da esa bitta tilga siqiladi — `?lang=` yoki `Accept-Language` bo'yicha:
+
+```json
+{ "title": "Chegirma", "lang": "uz" }
+```
+
+**Fallback zanjiri**: so'ralgan til → saytning asosiy tili → mavjud birinchi til.
+Fallback ishlatilganda javobda `"lang"` haqiqatda qaytarilgan tilni ko'rsatadi — klient
+buni bilishi kerak.
+
+Sayt qaysi tillarni qo'llab-quvvatlashi `settings/languages/` da belgilanadi; ro'yxatda
+bo'lmagan til so'ralsa asosiy tilga tushadi. **Barcha tillar to'ldirilishi shart emas** —
+bo'sh til shu zanjir bo'yicha almashtiriladi.
+
+---
+
+## 8. Standart CRUD naqshi
+
+Ko'p resurslar bir xil naqshda ishlaydi. Har birini alohida sanab chiqmaslik uchun naqsh
+shu yerda bir marta belgilanadi — endpoint jadvallarida faqat **CRUD** deb belgilanadi.
+
+| Metod | Yo'l | Javob |
+|---|---|---|
+| `GET` | `/{resource}/` | `200` — ro'yxat + `meta` pagination |
+| `POST` | `/{resource}/` | `201` — yaratilgan obyekt |
+| `GET` | `/{resource}/{id}/` | `200` — bitta obyekt |
+| `PATCH` | `/{resource}/{id}/` | `200` — yangilangan obyekt |
+| `DELETE` | `/{resource}/{id}/` | `204` — tana yo'q |
+
+Qoidalar:
+
+- `PATCH` — qisman yangilash; faqat berilgan maydonlar o'zgaradi. `PUT` ishlatilmaydi.
+- `DELETE` — soft delete (`deleted_at` qo'yiladi), agar resurs tavsifida boshqacha aytilmasa.
+- Har bir obyektda `id`, `created_at`, `updated_at` bor.
+
+---
+
+## 9. Uzoq davom etadigan amallar
+
+Hisobot eksporti, ommaviy yuborish kabi amallar darhol tugamaydi:
+
+```
+POST /api/v1/admin/reports/export/     →  202 Accepted
+{ "status": "success", "data": { "job_id": "…", "state": "pending" } }
+
+GET  /api/v1/admin/jobs/{job_id}/      →  200
+{ "status": "success", "data": { "job_id": "…", "state": "done",
+                                 "result": { "file_url": "…" } } }
+```
+
+`state`: `pending` → `running` → `done` | `failed`. `failed` bo'lsa sabab `errors` da.
+
+---
+
+## 10. Idempotentlik
+
+Pul yoki tashqi tizimga ta'sir qiluvchi `POST` so'rovlarida (bron, to'lov, qaytarish)
+klient `Idempotency-Key` header'ini yuboradi:
+
+```
+Idempotency-Key: 6f1a9c2e-…
+```
+
+Bir xil kalit bilan takroriy so'rov **yangi amal bajarmaydi**, birinchi natijani qaytaradi.
+Kalit 24 soat saqlanadi. Kalitsiz yuborilgan bunday so'rov `422 validation` bilan rad etiladi.
+
+---
+
+## 11. Fayl yuklash
+
+Fayl alohida yuklanadi, keyin uning `id` si boshqa resursga bog'lanadi:
+
+```
+POST /api/v1/admin/uploads/        (multipart/form-data: file, purpose)
+→ 201 { "id": "…", "url": "https://…", "mime": "image/png", "size": 20481 }
+
+PATCH /api/v1/admin/content/blogs/{id}/
+{ "cover_image_id": "…" }
+```
+
+`purpose` — `logo`, `favicon`, `blog_cover`, `promo_banner`, `document` va h.k.; ruxsat
+etilgan MIME va o'lcham shunga qarab tekshiriladi. Bog'lanmagan fayllar 24 soatdan keyin
+tozalanadi.
+
+---
+
+## 12. GTS bilan aloqa
+
+Mahsulot endpointlari (qidiruv, bron, chipta) GTS'ga chiqadi. Qoidalar:
+
+| Parametr | Qiymat |
+|---|---|
+| Qidiruv timeout | 40 s (GTS provayderlarni parallel so'raydi) |
+| Boshqa amallar timeout | 15 s |
+| Retry | Faqat idempotent `GET` uchun, 2 marta, eksponensial kechikish bilan |
+| Bron/to'lov | **Retry yo'q** — takrorlash `Idempotency-Key` orqali klient tomonidan |
+
+GTS xatosi hech qachon yashirilmaydi: `502 upstream_error` bilan qaytadi, asl matn
+`message` da, asl kod `meta.upstream` da.
+
+**Kesh**: faqat statik kataloglar (shaharlar, aeroportlar, aviakompaniyalar) Redis'da keshlanadi.
+**Qidiruv natijalari bizda keshlanmaydi** — GTS `request_id` bo'yicha o'z keshini yuritadi va
+`offers/` unga passthrough qilinadi (§20, [ARCHITECTURE.md](ARCHITECTURE.md) §9).
+Buyurtma va to'lov ma'lumoti ham keshlanmaydi.
+
+GTS javoblarini o'girish va status xaritasi — [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+
+---
+
+## 13. Kuzatuv va audit
+
+- Har so'rovda `X-Request-Id` header'i — klient yuborsa saqlanadi, bo'lmasa generatsiya
+  qilinadi va javobda qaytariladi. Barcha loglar shu id bilan bog'lanadi.
+- **Har bir mutatsiya** (`POST`/`PATCH`/`DELETE`) admin yuzasida audit log'ga tushadi:
+  kim, qachon, qaysi resurs, qanday o'zgarish. `GET /api/v1/admin/system/audit/`.
+- Autentifikatsiya hodisalari (kirish, muvaffaqiyatsiz urinish, `gts_support` yoqilishi)
+  alohida belgilanadi.
+
+---
+
+## 14. Chegaralar (rate limit)
+
+| Endpoint turi | Chegara |
+|---|---|
+| Auth (`login`, `password/reset`) | 5 / daqiqa / IP |
+| Qidiruv | 30 / daqiqa / foydalanuvchi |
+| Boshqa public | 120 / daqiqa / foydalanuvchi |
+| Admin | 300 / daqiqa / xodim |
+
+Oshib ketganda `429 rate_limited` va `Retry-After` header'i.
+Tizimga kirmagan foydalanuvchi uchun chegara **IP bo'yicha** hisoblanadi.
+
+---
+
+## 15. CORS va xavfsizlik
+
+- Public API — sayt domeni va Flutter app uchun ochiq; ruxsat etilgan domenlar sozlamada.
+- Admin API — faqat panel domeni.
+- Barcha muhitlarda HTTPS majburiy.
+- Parollar — `argon2`; integratsiya kalitlari DB'da shifrlangan (kalit env'da).
+- Karta ma'lumoti **hech qachon saqlanmaydi va log'ga tushmaydi** — to'lov provayderi tokeni
+  bilan ishlanadi.
+
+---
+
+## 16. Nomlash qoidalari
+
+- Resurs nomi — **ko'plikda va tire bilan**: `popular-directions/`, `payment-methods/`.
+- Amal (CRUD emas) — resursning quyi yo'li sifatida fe'l: `orders/{id}/cancel/`,
+  `feedbacks/{id}/accept/`.
+- Filtr uchun alohida endpoint yaratilmaydi — query parametr ishlatiladi
+  (`orders/?status=paid`, `orders/paid/` emas).
+- Bo'lim prefikslari: `content/`, `settings/`, `integrations/`, `payments/`, `system/`.
+
+---
+---
+
+# II QISM — PUBLIC YUZA
+
+Prefiks: **`/api/v1/public/`**. Foydalanuvchi: sayt (web build) va Flutter ilova.
+Sub'ekt — **customer**, token `aud: public`.
+
+Jadvallardagi **Auth** ustuni: `—` auth talab qilinmaydi · `✓` access token majburiy ·
+`(✓)` ixtiyoriy (tizimga kirgan bo'lsa qo'shimcha ma'lumot qaytadi).
+
+---
+
+## 17. Sayt konfiguratsiyasi
+
+Sayt va ilova ishga tushganda **birinchi** shu endpointni chaqiradi. Brending, yoqilgan
+mahsulotlar, tillar va menyu shundan keladi — shuning uchun rang yoki logo o'zgarishi
+qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `GET` | `/public/site-config/` | — | To'liq konfiguratsiya |
+
+```json
+{
+  "status": "success",
+  "data": {
+    "site": { "name": "Brand Travel", "domain": "brand.uz", "support_phone": "+998…" },
+    "branding": {
+      "logo_url": "https://…", "favicon_url": "https://…",
+      "colors": { "primary": "#0A5CFF", "accent": "#FF7A00", "background": "#FFFFFF" },
+      "font_family": "Inter"
+    },
+    "languages": { "default": "uz", "available": ["uz", "ru", "en"] },
+    "currencies": { "default": "UZS", "available": ["UZS", "USD"] },
+    "products": [
+      { "code": "flight",    "enabled": true },
+      { "code": "railway",   "enabled": true },
+      { "code": "insurance", "enabled": true },
+      { "code": "esim",      "enabled": true },
+      { "code": "transfer",  "enabled": true }
+    ],
+    "payment_methods": [
+      { "code": "payme", "title": "Payme", "logo_url": "…" },
+      { "code": "click", "title": "Click", "logo_url": "…" }
+    ],
+    "menu": [ { "title": "Aksiyalar", "url": "/promotions", "children": [] } ],
+    "features": { "blog": true, "loyalty": false }
+  }
+}
+```
+
+Javob keshlanadi (`Cache-Control` + `ETag`); paneldan o'zgarish kiritilganda kesh tozalanadi.
+
+---
+
+## 18. Autentifikatsiya
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `POST` | `/public/auth/register/` | — | Ro'yxatdan o'tish — tasdiqlash so'rovi yuboriladi |
+| `POST` | `/public/auth/register/confirm/` | — | OTP kod bilan tasdiqlash → tokenlar |
+| `POST` | `/public/auth/register/resend/` | — | Kodni qayta yuborish |
+| `POST` | `/public/auth/login/` | — | Kirish → access + refresh |
+| `POST` | `/public/auth/refresh/` | — | Token yangilash (rotatsiya bilan) |
+| `POST` | `/public/auth/logout/` | ✓ | Refresh tokenni bekor qilish |
+| `POST` | `/public/auth/password/reset/request/` | — | Tiklash so'rovi |
+| `POST` | `/public/auth/password/reset/verify/` | — | OTP tekshirish |
+| `POST` | `/public/auth/password/reset/confirm/` | — | Yangi parol o'rnatish |
+| `POST` | `/public/auth/social/{provider}/` | — | Social orqali kirish |
+| `POST` | `/public/auth/devices/` | ✓ | Push uchun qurilmani ro'yxatga olish |
+| `DELETE` | `/public/auth/devices/{id}/` | ✓ | Qurilmani o'chirish |
+
+```json
+POST /public/auth/login/
+{ "login": "user@mail.uz", "password": "…" }
+
+→ { "status": "success",
+    "data": { "access_token": "…", "refresh_token": "…", "expires_in": 1800 } }
+```
+
+> **Birinchi reliz chegarasi.** `login` maydoni **email** qabul qiladi; telefon + SMS OTP
+> keyingi bosqichda ([PROJECT.md](PROJECT.md) D6), shuning uchun OTP va parol tiklash kodlari
+> **email orqali** yuboriladi. `{provider}` — hozircha faqat **`google`**; `apple` mobil ilova
+> bosqichida qo'shiladi (D5). Qurilma ro'yxati (`devices/`) push bilan birga keladi (§41).
+
+---
+
+## 19. Profil
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `GET` `PATCH` | `/public/profile/` | ✓ | Shaxsiy ma'lumot |
+| `POST` `DELETE` | `/public/profile/avatar/` | ✓ | Avatar yuklash / o'chirish |
+| `POST` | `/public/profile/password/` | ✓ | Parolni o'zgartirish |
+| `DELETE` | `/public/profile/` | ✓ | Akkauntni o'chirish |
+| CRUD | `/public/profile/passengers/` | ✓ | Saqlangan yo'lovchilar va hujjatlari |
+| `GET` `DELETE` | `/public/profile/cards/` | ✓ | Saqlangan to'lov kartalari |
+| `GET` | `/public/profile/notifications/` | ✓ | Bildirishnomalar |
+| `POST` | `/public/profile/notifications/read-all/` | ✓ | Hammasini o'qilgan deb belgilash |
+| `POST` | `/public/profile/notifications/{id}/read/` | ✓ | Bittasini o'qilgan deb belgilash |
+| `DELETE` | `/public/profile/notifications/{id}/` | ✓ | O'chirish |
+
+**Saqlangan yo'lovchilar** — bron qilishda qayta terishni oldini oladi. Bron so'rovida
+`"save_passenger": true` berilsa yangi yozuv qo'shiladi.
+
+**Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi, buyurtma va to'lov yozuvlari esa
+moliyaviy hujjat sifatida anonimlashtirilib saqlanadi ([PROJECT.md](PROJECT.md) §13).
+
+---
+
+## 20. Mahsulotlar
+
+Barcha vertikallar **bir xil naqshda** ishlaydi. `{product}` o'rniga: `flight`, `railway`,
+`insurance`, `esim`, `transfer` — **beshtasi ham birinchi relizda**
+([PROJECT.md](PROJECT.md) §8).
+
+```
+search  →  offers  →  verify  →  booking  →  payment  →  order
+```
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `POST` | `/public/{product}/search/` | (✓) | Qidiruvni boshlaydi → `request_id` |
+| `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
+| `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
+| `POST` | `/public/{product}/upsell/` | (✓) | Qo'shimcha xizmatlar (mavjud vertikallarda) |
+| `POST` | `/public/{product}/booking/` | ✓ | Bron → buyurtma va `payment_id` |
+
+**Vertikalga xos qo'shimcha qadamlar:**
+
+| Vertikal | Qo'shimcha |
+|---|---|
+| `flight` | `/seat-map/`, `/additional-services/` |
+| `railway` | `/trains/` (poyezdlar), `/train-details/` (vagon va o'rinlar) — `offers/` o'rniga |
+| `insurance` | `/calculate/`, `/upsell/` |
+| `esim` | `/offer/` (taklif tafsiloti) — `verify/` o'rniga |
+| `transfer` | `/offer/`, `/recommended-time/` |
+
+**Qidiruv → takliflar oqimi asinxron.** `search/` darhol `request_id` qaytaradi; provayderlar
+fon rejimida javob beradi. `offers/` sahifalab so'raladi va **qisman natija** qaytishi mumkin:
+
+```json
+POST /public/flight/search/
+{ "directions": [ { "from": "TAS", "to": "IST", "date": "2026-09-14" } ],
+  "passengers": { "adt": 1, "chd": 0, "inf": 0 },
+  "cabin": "E", "direct": false }
+
+→ { "status": "success", "data": { "request_id": "…", "search_state": "in_progress" } }
+```
+
+```json
+POST /public/flight/offers/
+{ "request_id": "…", "next_token": null, "limit": 20, "sort": "price", "currency": "UZS" }
+
+→ { "status": "success",
+    "data": { "search_state": "in_progress", "next_token": "…", "offers": [ … ] } }
+```
+
+`search_state`: `in_progress` → `completed` | `failed`. Klient `completed` bo'lguncha yoki
+`next_token` tugaguncha so'rashda davom etadi.
+
+> **Qidiruv holatsiz.** `request_id` — **GTS'niki**; takliflar bizda saqlanmaydi va
+> keshlanmaydi. `sort`, `limit`, `next_token` va `currency` GTS parametrlariga o'giriladi
+> ([PROJECT.md](PROJECT.md) D2). Amaliy oqibati: **saralash va filtr GTS qo'llaydigan
+> variantlar bilan chegaralangan** — frontend undan tashqariga chiqmasligi kerak.
+> Qo'llanadigan aniq ro'yxat GTS kontrakti bo'yicha aniqlanadi
+> ([ARCHITECTURE.md](ARCHITECTURE.md) §14, A9).
+
+**Muddat tugashi**: taklif va `request_id` ning amal muddati cheklangan. Muddati o'tgan
+taklif bilan `verify/` yoki `booking/` chaqirilsa → `409 offer_expired`, klient qidiruvni
+qaytadan boshlaydi.
+
+> `booking/` **auth talab qiladi** — mehmon sifatida xarid yo'q ([PROJECT.md](PROJECT.md) D4).
+
+---
+
+## 21. Buyurtmalar
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
+| `GET` | `/public/orders/{id}/` | ✓ | Tafsilot |
+| `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) |
+| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish (qoidalar ruxsat bersa) |
+
+Buyurtma statuslari (kanonik): `booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
+`voided` · `refunded` · `partially_refunded` · `needs_attention`.
+GTS kodlaridan o'girish — [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+
+---
+
+## 22. To'lov
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `GET` | `/public/payments/{payment_id}/` | ✓ | To'lov holati va summasi |
+| `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
+| `POST` | `/public/payments/{payment_id}/transactions/` | ✓ | Tranzaksiya boshlash (`method` bilan) |
+| `GET` | `/public/transactions/{id}/` | ✓ | Tranzaksiya holati |
+| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **§41** |
+| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTP bilan tasdiqlash — **§41** |
+| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish — **§41** |
+
+**Hosted (redirect) usullar** uchun tranzaksiya yaratilganda `redirect_url` qaytadi —
+karta/OTP qadamlar o'tkazib yuboriladi. Payme va Click **ikkalasi ham shu oqimda ishlaydi**:
+
+```json
+POST /public/payments/{payment_id}/transactions/
+{ "method": "payme" }
+Idempotency-Key: …
+
+→ { "status": "success",
+    "data": { "transaction_id": "…", "flow": "redirect", "redirect_url": "https://…" } }
+```
+
+**Bo'lib to'lash** (`type: installment`) uchun qo'shimcha qadamlar:
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash |
+| `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish |
+
+> **Karta ma'lumoti serverda saqlanmaydi va log'ga tushmaydi.** Birinchi relizda Payme va Click
+> faqat redirect oqimida ishlagani uchun karta raqami **umuman serverimizdan o'tmaydi**
+> ([PROJECT.md](PROJECT.md) D7) — `card/` va `confirm/` endpointlari kontraktda qoladi, lekin
+> ulanmaydi (§41).
+
+To'lovdan keyingi oqim (chipta chiqarish, xato bo'lsa avtomatik qaytarish) —
+[ARCHITECTURE.md](ARCHITECTURE.md) §8.
+
+---
+
+## 23. Promokod
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `POST` | `/public/promo/apply/` | ✓ | To'lovga promokod qo'llash |
+| `POST` | `/public/promo/discard/` | ✓ | Qo'llangan promokodni olib tashlash |
+
+```json
+POST /public/promo/apply/
+{ "code": "SUMMER25", "payment_id": "…" }
+
+→ { "status": "success",
+    "data": { "discount": { "amount": "50000.00", "currency": "UZS" },
+              "total": { "amount": "1200000.00", "currency": "UZS" } } }
+```
+
+---
+
+## 24. Kontent (faqat o'qish)
+
+Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `GET` | `/public/content/blogs/` | Ro'yxat; `?category=`, `?search=` |
+| `GET` | `/public/content/blogs/{slug}/` | Maqola |
+| `GET` | `/public/content/promotions/` | Aksiyalar; `?placement=carousel\|card` |
+| `GET` | `/public/content/promotions/{slug}/` | Aksiya tafsiloti |
+| `GET` | `/public/content/faq/` | `?category=` |
+| `GET` | `/public/content/contacts/` | Ofis va kontakt nuqtalari |
+| `GET` | `/public/content/pages/{slug}/` | Statik sahifa — **§41** |
+| `GET` | `/public/content/banners/` | `?placement=` |
+| `GET` | `/public/content/popular-directions/` | Bosh sahifadagi yo'nalishlar |
+| `GET` | `/public/content/feedbacks/` | Chop etilgan sharhlar |
+
+---
+
+## 25. Murojaat va aloqa
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `POST` | `/public/leads/` | (✓) | Ariza qoldirish (`source` bo'yicha turli maydonlar) |
+| `POST` | `/public/feedbacks/` | ✓ | Sharh qoldirish — moderatsiyaga tushadi |
+| `GET` | `/public/feedbacks/my/` | ✓ | O'z sharhlarim va ularning holati |
+| `POST` | `/public/subscriptions/` | — | Yangiliklarga obuna |
+| `DELETE` | `/public/subscriptions/` | — | Obunani bekor qilish |
+
+```json
+POST /public/leads/
+{ "source": "corporate", "name": "Muzaffar",
+  "fields": { "phone": "998901234567", "company": "…" },
+  "comment": "…" }
+```
+
+`source` qiymatlari va har biriga tegishli `fields` sxemasi paneldan sozlanadi
+(§35, `/admin/leads/sources/`). Kelgan `fields` shu sxema bo'yicha tekshiriladi.
+
+---
+
+## 26. Kataloglar
+
+Qidiruv formalari uchun statik ma'lumot. Auth talab qilinmaydi, uzoq keshlanadi.
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `GET` | `/public/catalog/places/` | Shahar/aeroport avtoto'ldirish; `?q=`, `?type=` |
+| `GET` | `/public/catalog/stations/` | Temir yo'l stansiyalari; `?q=` |
+| `GET` | `/public/catalog/countries/` | Davlatlar |
+| `GET` | `/public/catalog/airlines/` | Aviakompaniyalar |
+| `GET` | `/public/catalog/currencies/` | Valyutalar va joriy kurs |
+
+Kataloglar GTS static servisidan sinxronlanadi — [ARCHITECTURE.md](ARCHITECTURE.md) §5.
+
+---
+---
+
+# III QISM — ADMIN YUZA
+
+Prefiks: **`/api/v1/admin/`**. Foydalanuvchi: React admin panel.
+Sub'ekt — **staff**, token `aud: admin`. Barcha endpointlar auth talab qiladi
+(`auth/login/` va `auth/refresh/` dan tashqari).
+
+Ruxsatlar §5 dagi RBAC matritsasi bo'yicha. Jadvallardagi **Rol** ustuni — **yozish uchun
+minimal talab**; o'qish odatda kengroq rolga ochiq.
+
+**CRUD** deb belgilangan resurslar §8 dagi standart naqshda ishlaydi.
+
+---
+
+## 27. Autentifikatsiya
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `POST` | `/admin/auth/login/` | Kirish → access + refresh |
+| `POST` | `/admin/auth/refresh/` | Token yangilash |
+| `POST` | `/admin/auth/logout/` | Sessiyani yopish |
+| `GET` | `/admin/auth/me/` | Joriy xodim: profil, rol, ruxsatlar |
+| `POST` | `/admin/auth/password/change/` | Parolni o'zgartirish |
+| `POST` | `/admin/auth/password/reset/request/` | Tiklash so'rovi (email orqali) |
+| `POST` | `/admin/auth/password/reset/confirm/` | Yangi parol |
+
+```json
+GET /admin/auth/me/
+→ { "status": "success",
+    "data": { "id": "…", "name": "Aziz", "email": "…",
+              "role": "admin",
+              "permissions": ["content.write", "orders.write", "payments.read"] } }
+```
+
+Frontend menyuni `permissions` bo'yicha yig'adi — rolni qattiq kodlamaydi (§5).
+
+---
+
+## 28. Sayt sozlamalari
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` `PATCH` | `/admin/settings/branding/` | `admin` | Logo, favicon, ranglar, shrift, app ikonka va nomi |
+| `GET` `PATCH` | `/admin/settings/site/` | `admin` | Sayt nomi, domen, kontakt, ijtimoiy tarmoqlar |
+| `GET` `PATCH` | `/admin/settings/languages/` | `admin` | Asosiy til va mavjud tillar |
+| `GET` `PATCH` | `/admin/settings/currencies/` | `admin` | Asosiy valyuta va ko'rsatiladigan valyutalar |
+| CRUD | `/admin/settings/menu/` | `admin` | Menyu elementlari (ierarxik) — **§41** |
+| `GET` `PATCH` | `/admin/settings/features/` | `admin` | Bo'limlarni yoqish/o'chirish (blog, sharhlar, …) |
+| `GET` | `/admin/settings/products/` | — | Yoqilgan mahsulot vertikallari — **faqat o'qish** |
+| `POST` | `/admin/settings/cache/purge/` | `admin` | `site-config` keshini tozalash |
+
+```json
+PATCH /admin/settings/branding/
+{ "colors": { "primary": "#0A5CFF" }, "logo_id": "…" }
+```
+
+O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
+
+> `settings/products/` faqat o'qish uchun: qaysi vertikallar sotilishi GTS shartnomasi bilan
+> belgilanadi. Panel ularni ko'rsatadi, o'zgartira olmaydi — sabab
+> [PROJECT.md](PROJECT.md) §5 da.
+
+> Brendingning qaysi qismi runtime'da, qaysi biri build vaqtida qotib qolishi —
+> [PROJECT.md](PROJECT.md) §7 dagi jadval. App ikonkasi va nomi bu yerda saqlanadi, lekin
+> ular **keyingi build'da** kuchga kiradi.
+
+---
+
+## 29. Integratsiyalar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` `PATCH` | `/admin/integrations/gts/` | `owner` | GTS ulanishi: URL, credential'lar |
+| `POST` | `/admin/integrations/gts/test/` | `owner` | Ulanishni tekshirish |
+| `GET` | `/admin/integrations/payments/` | `admin` | To'lov provayderlari ro'yxati va holati |
+| `PATCH` | `/admin/integrations/payments/{code}/` | `owner` | Yoqish/o'chirish, kalitlar, tartib |
+| `POST` | `/admin/integrations/payments/{code}/test/` | `owner` | Provayderni tekshirish |
+| `GET` `PATCH` | `/admin/integrations/notifications/` | `owner` | Email (SMTP); SMS/push — **§41** |
+| `POST` | `/admin/integrations/notifications/test/` | `owner` | Sinov xabari yuborish |
+
+**Sirlar qaytarilmaydi.** Javobda kalit maskalangan holda keladi, faqat oxirgi belgilar
+ko'rinadi; yangi qiymat yuborilsa almashtiriladi:
+
+```json
+GET /admin/integrations/payments/payme/
+→ { "status": "success",
+    "data": { "code": "payme", "enabled": true,
+              "credentials": { "merchant_id": "…3f2a", "secret_key": "••••••7c" },
+              "last_tested_at": "2026-08-05T09:00:00Z", "last_test_ok": true } }
+```
+
+`{code}` — birinchi relizda `payme` va `click` ([PROJECT.md](PROJECT.md) D7).
+
+---
+
+## 30. Kontent
+
+| Resurs | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| Blog | `/admin/content/blogs/` | `content` | CRUD; `?status=draft\|published`, `?category=` |
+| Aksiyalar | `/admin/content/promotions/` | `content` | CRUD; `placement`, `starts_at`, `ends_at` |
+| FAQ | `/admin/content/faq/` | `content` | CRUD; `?category=` |
+| Kontaktlar | `/admin/content/contacts/` | `content` | CRUD — ofis nuqtalari, koordinatalar |
+| Sahifalar | `/admin/content/pages/` | `content` | CRUD — statik sahifalar — **§41** |
+| Bannerlar | `/admin/content/banners/` | `content` | CRUD; `?placement=` |
+| Mashhur yo'nalishlar | `/admin/content/popular-directions/` | `content` | CRUD |
+
+**Qo'shimcha amallar:**
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `POST` | `/admin/content/{resource}/{id}/publish/` | Chop etish |
+| `POST` | `/admin/content/{resource}/{id}/unpublish/` | Chop etishni to'xtatish |
+| `POST` | `/admin/content/{resource}/reorder/` | Tartibni o'zgartirish (`[{id, order}]`) |
+
+Tarjima qilinadigan maydonlar obyekt sifatida keladi va shunday yuboriladi:
+
+```json
+PATCH /admin/content/blogs/{id}/
+{ "title": { "uz": "Sarlavha", "ru": "Заголовок" },
+  "body":  { "uz": "…", "ru": "…" },
+  "status": "published" }
+```
+
+Barcha tillar to'ldirilishi shart emas — bo'sh til uchun public API fallback qiladi (§7).
+
+### Sharh moderatsiyasi
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/content/feedbacks/` | `content` | `?status=pending\|accepted\|rejected` |
+| `GET` | `/admin/content/feedbacks/{id}/` | `content` | Tafsilot |
+| `POST` | `/admin/content/feedbacks/{id}/accept/` | `content` | Chop etish |
+| `POST` | `/admin/content/feedbacks/{id}/reject/` | `content` | Rad etish (`reason` bilan) |
+| `DELETE` | `/admin/content/feedbacks/{id}/` | `admin` | O'chirish |
+
+---
+
+## 31. Buyurtmalar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/orders/` | `operator` | Barcha vertikal; filtrlar quyida |
+| `GET` | `/admin/orders/{id}/` | `operator` | To'liq tafsilot: yo'lovchilar, narx, to'lov, tarix |
+| `GET` | `/admin/orders/{id}/receipt/` | `operator` | Kvitansiya |
+| `POST` | `/admin/orders/{id}/cancel/` | `operator` | Bekor qilish |
+| `POST` | `/admin/orders/{id}/push/` | `operator` | Mijozga push xabar yuborish — **§41** |
+| `POST` | `/admin/orders/{id}/note/` | `operator` | Ichki izoh qo'shish |
+| `POST` | `/admin/orders/{id}/sync/` | `operator` | GTS'dan holatni qayta olish |
+
+**Filtrlar**: `?product=`, `?status=`, `?payment_status=`, `?customer_id=`, `?search=`
+(buyurtma raqami, PNR, yo'lovchi ismi, telefon), `?created_from=`, `?created_to=`.
+
+Buyurtma holati GTS'dan keladi — panel uni **o'zgartirmaydi**, faqat ko'rsatadi va
+ruxsat etilgan amallarni (bekor qilish) uzatadi. Har bir buyurtmada `available_actions`
+massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
+
+```json
+{ "id": "…", "product": "flight", "status": "ticketed",
+  "available_actions": ["cancel", "push", "receipt"] }
+```
+
+> `needs_attention` holatidagi buyurtmalar alohida ajratiladi: bu — to'lov o'tib, chipta
+> chiqmagan va avtomatik qaytarish ham bajarilmagan holat ([ARCHITECTURE.md](ARCHITECTURE.md) §8).
+> Ular qo'lda hal qilinishi kerak.
+
+---
+
+## 32. To'lovlar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/payments/` | `finance` | To'lovlar; `?status=`, `?method=` |
+| `GET` | `/admin/payments/{id}/` | `finance` | Tafsilot va tranzaksiyalar |
+| `GET` | `/admin/payments/transactions/` | `finance` | Barcha tranzaksiyalar |
+| `GET` | `/admin/payments/transactions/{id}/` | `finance` | Tranzaksiya tafsiloti |
+| `POST` | `/admin/payments/{id}/refund/` | `finance` | Qaytarish (to'liq yoki qisman) |
+| `POST` | `/admin/payments/{id}/sync/` | `finance` | Provayderdan holatni qayta olish |
+
+`refund/` — `Idempotency-Key` majburiy (§10).
+
+---
+
+## 33. Promokodlar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| CRUD | `/admin/promos/` | `finance` | Kod, chegirma turi, chegaralar, amal muddati |
+| `POST` | `/admin/promos/{id}/activate/` | `finance` | Faollashtirish |
+| `POST` | `/admin/promos/{id}/deactivate/` | `finance` | To'xtatish |
+| `GET` | `/admin/promos/{id}/stats/` | `finance` | Ishlatilish statistikasi |
+| `GET` | `/admin/promos/{id}/usages/` | `finance` | Kim, qachon, qaysi buyurtmada ishlatgan |
+
+---
+
+## 34. Mijozlar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/customers/` | `operator` | `?search=` (ism, email, telefon) |
+| `GET` | `/admin/customers/{id}/` | `operator` | Profil va statistika |
+| `GET` | `/admin/customers/{id}/orders/` | `operator` | Buyurtmalari |
+| `POST` | `/admin/customers/{id}/block/` | `admin` | Bloklash |
+| `POST` | `/admin/customers/{id}/unblock/` | `admin` | Blokdan chiqarish |
+| `DELETE` | `/admin/customers/{id}/` | `owner` | O'chirish (shaxsiy ma'lumotni tozalash) |
+
+---
+
+## 35. Murojaatlar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/leads/` | `operator` | `?source=`, `?status=` |
+| `GET` | `/admin/leads/{id}/` | `operator` | Tafsilot |
+| `PATCH` | `/admin/leads/{id}/` | `operator` | Holat, mas'ul, izoh |
+| CRUD | `/admin/leads/sources/` | `admin` | Lead manbalari: `code`, nomi va `fields` sxemasi |
+| `GET` | `/admin/subscriptions/` | `content` | Obunachi'lar ro'yxati |
+| `GET` | `/admin/subscriptions/export/` | `content` | CSV eksport (async) |
+
+`leads/sources/` — §25 dagi `source` qiymatlari va har biriga tegishli `fields` sxemasi shu
+yerdan boshqariladi. Public `POST /public/leads/` kelgan `fields` ni shu sxema bo'yicha tekshiradi.
+
+---
+
+## 36. Bildirishnomalar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| CRUD | `/admin/notifications/templates/` | `admin` | Xabar shablonlari |
+| `POST` | `/admin/notifications/broadcast/` | `admin` | Ommaviy yuborish (async job) |
+| `GET` | `/admin/notifications/broadcasts/` | `admin` | Yuborishlar tarixi va natijasi |
+
+Birinchi relizda kanal — **email**. SMS va push keyingi bosqichda (§41).
+
+---
+
+## 37. Hisobotlar
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/reports/dashboard/` | `operator` | Bosh sahifadagi ko'rsatkichlar |
+| `GET` | `/admin/reports/sales/` | `finance` | Sotuv; `?group_by=day\|product\|method` |
+| `GET` | `/admin/reports/fields/` | `finance` | Eksport uchun mavjud maydonlar katalogi |
+| CRUD | `/admin/reports/views/` | `finance` | Saqlangan hisobot ko'rinishlari |
+| `POST` | `/admin/reports/export/` | `finance` | Eksport (async job → `xlsx`/`csv`) |
+
+```json
+POST /admin/reports/export/
+{ "type": "sales", "format": "xlsx",
+  "date_from": "2026-07-01", "date_to": "2026-07-31",
+  "fields": ["order_number", "product", "total", "status"] }
+
+→ 202 { "status": "success", "data": { "job_id": "…", "state": "pending" } }
+```
+
+Kun bo'yicha guruhlash o'rnatma vaqt mintaqasida hisoblanadi (saqlash UTC'da).
+
+---
+
+## 38. Jamoa
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| CRUD | `/admin/staff/` | `owner` | Xodimlar |
+| `POST` | `/admin/staff/{id}/block/` | `owner` | Bloklash |
+| `POST` | `/admin/staff/{id}/reset-password/` | `owner` | Parol tiklash havolasini yuborish |
+| `GET` | `/admin/roles/` | `owner` | Rollar va ularning ruxsatlari |
+
+Rollar oldindan belgilangan ([PROJECT.md](PROJECT.md) §9) — panel orqali yangi rol
+yaratilmaydi, faqat xodimga rol biriktiriladi.
+
+---
+
+## 39. Tizim
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/system/health/` | `admin` | DB, Redis, GTS, to'lov provayderlari holati |
+| `GET` | `/admin/system/version/` | `admin` | Backend va panel versiyasi |
+| `GET` | `/admin/system/audit/` | `admin` | Audit log; `?actor=`, `?resource=`, `?action=` |
+| `GET` | `/admin/jobs/{id}/` | `operator` | Async ish holati (§9) |
+| `POST` | `/admin/uploads/` | `content` | Fayl yuklash (§11) |
+
+`system/health/` va `system/version/` — muammo qaysi tomonda ekanini ajratish uchun birinchi
+murojaat qilinadigan endpointlar ([PROJECT.md](PROJECT.md) §4, §14).
+
+### Support kirishi
+
+| Metod | Yo'l | Rol | Izoh |
+|---|---|---|---|
+| `GET` | `/admin/system/support-access/` | `owner` | Joriy holat va muddat |
+| `POST` | `/admin/system/support-access/` | `owner` | Yoqish (`hours` bilan) |
+| `DELETE` | `/admin/system/support-access/` | `owner` | Darhol o'chirish |
+
+`gts_support` roli faqat shu oyna ochiq bo'lganda ishlaydi. Muddati tugaganda avtomatik
+yopiladi; barcha amallar audit log'da alohida belgilanadi.
+
+---
+---
+
+# IV QISM — WEBHOOK'LAR
+
+## 40. To'lov provayderi callback'lari
+
+| Metod | Yo'l | Auth | Izoh |
+|---|---|---|---|
+| `POST` | `/api/v1/webhooks/payments/{provider}/` | — | Provayder callback'i |
+
+- `{provider}` — `payme`, `click`.
+- Auth **yo'q**, lekin har bir so'rov **imzo bo'yicha tekshiriladi**; imzo noto'g'ri bo'lsa
+  `401` qaytariladi va hech qanday holat o'zgarmaydi.
+- Callback **takroriy kelishi mumkin** — provayderlar qayta yuboradi. Ishlov idempotent:
+  bir xil hodisa ikki marta yechmaydi ([ARCHITECTURE.md](ARCHITECTURE.md) §8).
+- Payme'ning merchant protokoli provayder tomonidan boshqariladigan JSON-RPC — uning
+  metodlari ham shu endpoint ortida amalga oshiriladi.
+- Envelope qoidasi bu yerda **qo'llanmaydi**: javob shakli provayder protokoli talab qilgan
+  ko'rinishda bo'ladi.
+
+---
+---
+
+# V QISM — RELIZ QAMROVI
+
+## 41. Birinchi relizga kirmaydigan endpointlar
+
+Qamrovning yakuniy manbai — [PROJECT.md](PROJECT.md) §10 (modullar) va §15 (bosqichlar).
+Bu yerda faqat **endpoint darajasidagi** ro'yxat.
+
+| Endpoint / imkoniyat | Nega keyinroq | Qachon |
+|---|---|---|
+| `/public/transactions/{id}/card/`, `/confirm/`, `/resend-otp/` | Payme va Click redirect oqimida ishlaydi; karta+OTP faqat Paygine kabi provayder qo'shilganda kerak (D7) | Yangi provayder qo'shilganda |
+| `/public/auth/social/apple/` | iOS ilovada Google bo'lgani uchun Apple qoidalari talab qiladi (D5) | 6-bosqich |
+| Telefon + SMS OTP (`login`, `register/confirm`, `password/reset`) | MVP'da faqat email/SMTP (D6) | SMS xizmati ulanganda |
+| `/public/auth/devices/`, `/admin/orders/{id}/push/`, push broadcast | Push xizmati birinchi relizga kirmaydi | 6–7-bosqich |
+| `/admin/settings/menu/` | Menyu konstruktori modeli hali aniqlanmagan ([PROJECT.md](PROJECT.md) §16, 1-savol) | 5-bosqich |
+| `/admin/content/pages/`, `/public/content/pages/{slug}/` | Sahifa tanasi sxemasi hali aniqlanmagan (shu savol) | 5-bosqich |
+| `/admin/integrations/notifications/` — SMS va push qismi | Email/SMTP ✓, qolgani keyinroq | SMS/push ulanganda |
+| `features.loyalty` | Loyalty dasturi qamrovga kirmaydi ([PROJECT.md](PROJECT.md) §3) | — |
+
+Kontrakt **hozirdan** to'liq belgilangan: bu endpointlar API'da mavjud, lekin birinchi relizda
+ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
