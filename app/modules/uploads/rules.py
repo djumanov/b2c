@@ -45,17 +45,13 @@ class PurposeRule:
 
 RULES: Final[dict[UploadPurpose, PurposeRule]] = {
     UploadPurpose.LOGO: PurposeRule(_IMAGES, 2 * MEGABYTE, public=True),
-    UploadPurpose.FAVICON: PurposeRule(
-        _IMAGES | {ICO}, 1 * MEGABYTE, public=True
-    ),
+    UploadPurpose.FAVICON: PurposeRule(_IMAGES | {ICO}, 1 * MEGABYTE, public=True),
     # Store icons are raster only — neither store accepts an SVG.
     UploadPurpose.APP_ICON: PurposeRule(_RASTER, 2 * MEGABYTE, public=True),
     UploadPurpose.BLOG_COVER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
     UploadPurpose.PROMO_BANNER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
     UploadPurpose.BANNER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
-    UploadPurpose.DOCUMENT: PurposeRule(
-        _IMAGES | {PDF}, 10 * MEGABYTE, public=False
-    ),
+    UploadPurpose.DOCUMENT: PurposeRule(_IMAGES | {PDF}, 10 * MEGABYTE, public=False),
     UploadPurpose.EXPORT: PurposeRule(
         frozenset(), 25 * MEGABYTE, public=False, uploadable=False
     ),

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import ValidationFailed
 from app.core.logging import get_logger
 from app.db.mixins import utcnow
-from app.db.repository import get_live_or_404, live
+from app.db.repository import get_live, get_live_or_404, live
 from app.modules.uploads import rules
 from app.modules.uploads.models import Upload
 from app.modules.uploads.schemas import UploadOut
@@ -80,9 +80,7 @@ async def create(
 ) -> UploadOut:
     _validate(purpose, content_type, content)
 
-    key = await get_storage().save(
-        content=content, filename=filename, purpose=purpose
-    )
+    key = await get_storage().save(content=content, filename=filename, purpose=purpose)
     upload = Upload(
         filename=filename[:255],
         content_type=content_type,
@@ -112,6 +110,22 @@ async def create(
 async def get(session: AsyncSession, upload_id: uuid.UUID) -> UploadOut:
     upload = await get_live_or_404(session, Upload, upload_id, name="File")
     return await _to_out(upload)
+
+
+async def url_for(session: AsyncSession, upload_id: uuid.UUID | None) -> str | None:
+    """The URL of a file another module references, or ``None``.
+
+    Tolerant on purpose: a branding row pointing at a file that was swept must
+    render as "no logo", not as a 500 on the endpoint the whole site fetches
+    first (API.md §17).
+    """
+    if upload_id is None:
+        return None
+    upload = await get_live(session, Upload, upload_id)
+    if upload is None:
+        return None
+    private = not rules.rule_for(upload.purpose).public
+    return await get_storage().url(upload.storage_key, private=private)
 
 
 async def by_key(session: AsyncSession, key: str) -> Upload | None:
@@ -191,9 +205,9 @@ async def sweep_orphans(session: AsyncSession) -> int:
 
 async def count_orphans(session: AsyncSession) -> int:
     rows = await session.scalars(
-        select(Upload.id).where(Upload.linked_at.is_(None)).where(
-            Upload.deleted_at.is_(None)
-        )
+        select(Upload.id)
+        .where(Upload.linked_at.is_(None))
+        .where(Upload.deleted_at.is_(None))
     )
     return len(rows.all())
 
@@ -207,4 +221,5 @@ __all__ = [
     "link",
     "sweep_orphans",
     "unlink",
+    "url_for",
 ]

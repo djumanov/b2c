@@ -14,7 +14,7 @@ row is live (ARCHITECTURE.md §10).
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Index, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +73,33 @@ class BaseMixin(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     """The three together — what almost every table wants."""
 
 
+class SingletonMixin:
+    """A table that may hold exactly one row (ARCHITECTURE.md §10).
+
+    The settings tables — branding, site, languages, currencies, features —
+    each describe *the* installation, so "which row is the real one" must never
+    be a question anybody can ask. A column that is always ``TRUE`` and
+    ``UNIQUE`` makes a second row impossible at the database level, which is
+    the only level that still holds when two workers insert at once.
+
+    Pair it with ``singleton_check`` in ``__table_args__``; without that a row
+    could set the column to ``FALSE`` and slip past the unique index.
+    """
+
+    singleton: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+        unique=True,
+    )
+
+
+def singleton_check() -> CheckConstraint:
+    """__table_args__ = (singleton_check(),)"""
+    return CheckConstraint("singleton IS TRUE", name="singleton")
+
+
 def soft_delete_unique_index(table_name: str, *columns: str) -> Index:
     """Unique across live rows only, so a deleted value can be reused.
 
@@ -89,9 +116,11 @@ def soft_delete_unique_index(table_name: str, *columns: str) -> Index:
 
 __all__ = [
     "BaseMixin",
+    "SingletonMixin",
     "SoftDeleteMixin",
     "TimestampMixin",
     "UUIDPrimaryKeyMixin",
+    "singleton_check",
     "soft_delete_unique_index",
     "utcnow",
 ]

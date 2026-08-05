@@ -66,10 +66,14 @@ Phase 1 (*Yadro*) in progress. Done: application skeleton, response envelope,
 error catalogue, cross-cutting dependencies, database layer, delivery setup,
 the **staff** module — admin authentication with rotating refresh tokens, the
 owner-only team resource, and the first-owner bootstrap — the **audit** module,
-which records every admin mutation and every authentication event, and
-**uploads** on a local-disk storage adapter, with per-purpose limits and an
-hourly sweep of files nothing attached itself to.
+which records every admin mutation and every authentication event, **uploads**
+on a local-disk storage adapter, and **settings** with
+`GET /public/site-config/`.
 
-Next, in order: `settings` + `GET /public/site-config/`, `integrations`,
+Two of the three phase-1 acceptance criteria now hold end to end: an `owner`
+can sign in, an `admin` gets `403` where `owner` is required, and a colour
+changed in the panel appears in `site-config` **without a redeploy**.
+
+Next, in order: `integrations` (encrypted GTS and payment credentials), then
 `customers`. See [docs/PROJECT.md §15](docs/PROJECT.md) for the phase plan and
 its acceptance criteria.
