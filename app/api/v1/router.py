@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import RateLimit
 from app.api.envelope import enveloped_router
+from app.modules.audit import router_admin as audit_admin
 from app.modules.staff import router_admin as staff_admin
 from app.modules.system import router_admin as system_admin
 
@@ -41,6 +42,7 @@ webhooks_router = APIRouter(prefix="/webhooks")
 admin_router.include_router(staff_admin.auth_router)
 admin_router.include_router(staff_admin.router)
 admin_router.include_router(system_admin.router)
+admin_router.include_router(audit_admin.router)
 
 # --- assembly ------------------------------------------------------------------
 

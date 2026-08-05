@@ -228,7 +228,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         error = ApiError(code=code.value, message=str(exc.detail))
         headers = dict(exc.headers) if exc.headers else None
-        return json_response(error_envelope([error]), exc.status_code, headers=headers)
+        # The catalogue's status, not Starlette's. The two differ where the
+        # framework raises something the contract does not have: a 405 comes
+        # back as `404 not_found`, because "that path does not exist for that
+        # method" is the honest reading and 405 is not one of the eleven
+        # statuses a client is ever told to expect (API.md §3).
+        return json_response(
+            error_envelope([error]), ERROR_STATUS[code], headers=headers
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Request, exc: Exception) -> Response:

@@ -15,7 +15,7 @@ import logging
 import re
 import sys
 import uuid
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar
 from typing import Any, Final
 
@@ -71,11 +71,22 @@ def _redact_value(key: str, value: Any) -> Any:
     return value
 
 
+def redact(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Same rules, for anything that is stored rather than logged.
+
+    The audit journal keeps a field-level diff of every admin mutation
+    (ARCHITECTURE.md §11), and integration credentials pass through those
+    mutations. A diff written straight to a table would put the client's GTS
+    password in a row an ``admin`` is allowed to read.
+    """
+    return {k: _redact_value(str(k), v) for k, v in payload.items()}
+
+
 def redact_secrets(
     _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     """Drop secrets and anything shaped like a card number."""
-    return {k: _redact_value(str(k), v) for k, v in event_dict.items()}
+    return dict(redact(event_dict))
 
 
 def add_request_id(
@@ -179,6 +190,7 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "new_request_id",
+    "redact",
     "redact_secrets",
     "request_id_var",
 ]

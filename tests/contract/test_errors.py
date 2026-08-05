@@ -70,3 +70,18 @@ async def test_unexpected_exception_leaks_nothing(probe: AsyncClient) -> None:
     assert body["errors"][0]["message"] == "Internal server error"
     assert "RuntimeError" not in response.text
     assert "unexpected" not in response.text
+
+
+async def test_a_status_outside_the_catalogue_is_mapped_into_it(
+    probe: AsyncClient,
+) -> None:
+    """The catalogue is closed, so a framework status is translated, not passed on.
+
+    A wrong method on a real path is Starlette's 405. The contract has no 405,
+    and "that path does not exist for that method" is the honest reading, so it
+    comes back as `404 not_found` (API.md §3).
+    """
+    response = await probe.post("/probe/item/")
+
+    assert response.status_code == 404
+    assert response.json()["errors"][0]["code"] == "not_found"

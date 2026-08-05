@@ -27,7 +27,7 @@ import hashlib
 import secrets
 import uuid
 from collections.abc import Sequence
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +49,7 @@ from app.api.listing import (
     paginate,
 )
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, request_id_var
 from app.core.roles import Role
 from app.core.security import (
     TOKEN_TTL,
@@ -69,6 +69,8 @@ from app.core.security import (
 from app.db.mixins import utcnow
 from app.db.redis import get_redis
 from app.db.repository import live
+from app.modules.audit import context as audit_context
+from app.modules.audit import service as audit_service
 from app.modules.staff import repository
 from app.modules.staff.models import Staff, StaffRefreshToken
 from app.modules.staff.schemas import (
@@ -170,6 +172,44 @@ def _decode_refresh(token: str) -> TokenClaims:
     return claims
 
 
+# --- the auth journal ---------------------------------------------------------------
+
+
+async def _record_auth(
+    session: AsyncSession,
+    action: str,
+    *,
+    staff: Staff | None = None,
+    email: str | None = None,
+    ip: str | None = None,
+    commit: bool = False,
+) -> None:
+    """Write one authentication event (API.md §13).
+
+    These do not go through the audit middleware. It only records mutations
+    that returned 2xx and carried a signed-in principal, and the event most
+    worth having — a failed login — has neither. So this module records its own,
+    which is also how the contract describes them: *"Autentifikatsiya hodisalari
+    (kirish, muvaffaqiyatsiz urinish) alohida belgilanadi."*
+
+    ``commit`` is for the paths that are about to raise: the exception unwinds
+    before any handler commits, and an unrecorded failed login is the one thing
+    this must not do.
+    """
+    await audit_service.record(
+        session,
+        resource="auth",
+        action=action,
+        actor_id=staff.id if staff else None,
+        actor_email=staff.email if staff else email,
+        actor_role=staff.role.value if staff else None,
+        ip=ip,
+        request_id=request_id_var.get(),
+    )
+    if commit:
+        await session.commit()
+
+
 # --- authentication (API.md §27) ---------------------------------------------------
 
 
@@ -180,15 +220,19 @@ async def authenticate(
     user_agent: str | None = None,
     ip: str | None = None,
 ) -> TokenPairOut:
-    staff = await repository.by_email(session, _normalize_email(data.login))
+    email = _normalize_email(data.login)
+    staff = await repository.by_email(session, email)
     # The same answer for "no such account" and "wrong password", and the hash
     # is verified either way so the two do not differ in how long they take.
     if staff is None:
         verify_password(data.password, hash_password(secrets.token_urlsafe(16)))
+        await _record_auth(session, "login_failed", email=email, ip=ip, commit=True)
         raise Unauthorized("Invalid email or password")
     if not verify_password(data.password, staff.password_hash):
+        await _record_auth(session, "login_failed", staff=staff, ip=ip, commit=True)
         raise Unauthorized("Invalid email or password")
     if staff.is_blocked:
+        await _record_auth(session, "login_blocked", staff=staff, ip=ip, commit=True)
         raise Forbidden("This account has been blocked")
 
     if password_needs_rehash(staff.password_hash):
@@ -196,6 +240,7 @@ async def authenticate(
     staff.last_login_at = utcnow()
 
     pair = await _issue_pair(session, staff, user_agent=user_agent, ip=ip)
+    await _record_auth(session, "login", staff=staff, ip=ip)
     await session.commit()
     logger.info("staff_login", staff_id=str(staff.id), role=staff.role.value)
     return pair
@@ -238,6 +283,8 @@ async def logout(session: AsyncSession, refresh_token: str) -> None:
     if stored is not None and not stored.is_revoked:
         stored.revoked_at = utcnow()
     await get_redis().set(denylist_key(claims.jti), "1", ex=denylist_ttl(claims))
+    signed_out = await repository.by_id(session, claims.subject_id)
+    await _record_auth(session, "logout", staff=signed_out)
     await session.commit()
 
 
@@ -274,6 +321,7 @@ async def change_password(
     # is how somebody reacts to a suspected leak, and leaving old sessions alive
     # would make it useless.
     await _revoke_all_sessions(session, staff.id)
+    await _record_auth(session, "password_changed", staff=staff)
     await session.commit()
 
 
@@ -314,6 +362,7 @@ async def request_password_reset(session: AsyncSession, email: str) -> None:
     if staff is None or staff.is_blocked:
         return
     await _send_reset_link(staff)
+    await _record_auth(session, "password_reset_requested", staff=staff, commit=True)
 
 
 async def confirm_password_reset(
@@ -333,6 +382,7 @@ async def confirm_password_reset(
         )
     staff.password_hash = hash_password(new_password)
     await _revoke_all_sessions(session, staff.id)
+    await _record_auth(session, "password_reset_completed", staff=staff)
     await session.commit()
     logger.info("staff_password_reset", staff_id=str(staff.id))
 
@@ -377,6 +427,16 @@ async def get_staff(session: AsyncSession, staff_id: uuid.UUID) -> StaffOut:
     return StaffOut.model_validate(await _require(session, staff_id))
 
 
+def _auditable_fields(staff: Staff) -> dict[str, Any]:
+    """The fields a reader of the journal would care about having changed.
+
+    ``password_hash`` is not among them on purpose: that it changed is recorded
+    by the ``password_changed`` event, and the value has no business being in a
+    diff an ``admin`` can read.
+    """
+    return {"email": staff.email, "name": staff.name, "role": staff.role.value}
+
+
 async def _require(session: AsyncSession, staff_id: uuid.UUID) -> Staff:
     staff = await repository.by_id(session, staff_id)
     if staff is None:
@@ -407,6 +467,7 @@ async def update_staff(
     session: AsyncSession, staff_id: uuid.UUID, data: StaffUpdateIn
 ) -> StaffOut:
     staff = await _require(session, staff_id)
+    before = _auditable_fields(staff)
 
     if data.email is not None:
         email = _normalize_email(data.email)
@@ -423,6 +484,9 @@ async def update_staff(
 
     await session.commit()
     await session.refresh(staff)
+    # The journal wants what changed, not what was sent (ARCHITECTURE.md §11).
+    # A PATCH that resends the current name is not a change and does not appear.
+    audit_context.describe(changes=audit_context.diff(before, _auditable_fields(staff)))
     return StaffOut.model_validate(staff)
 
 

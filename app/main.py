@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 from app.db.redis import close_redis
 from app.db.session import dispose_engine
+from app.modules.audit.middleware import AuditMiddleware
 
 logger = get_logger(__name__)
 
@@ -48,7 +49,12 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
 
+    # Order matters. Middleware added later wraps middleware added earlier, so
+    # the audit layer sits *outside* the request-id layer and therefore sees a
+    # response that already carries ``X-Request-Id`` — which is what ties a
+    # journal entry to the log lines of the same request (API.md §13).
     application.add_middleware(RequestIdMiddleware)
+    application.add_middleware(AuditMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins(),

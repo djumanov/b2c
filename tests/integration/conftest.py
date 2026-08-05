@@ -113,6 +113,21 @@ async def database() -> AsyncIterator[AsyncEngine]:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+async def clean_audit_log(database: AsyncEngine) -> None:
+    """Empty ``audit_log`` before each test.
+
+    The audit middleware writes in a session of its own and commits — it has to,
+    because by the time a response has a status code the request's session is
+    closed (see ``modules/audit/service``). Those rows are therefore *outside*
+    the test's transaction and survive its rollback, so they are cleared going
+    in rather than coming out: a test that counts entries must not be counting
+    the previous test's.
+    """
+    async with database.begin() as connection:
+        await connection.execute(text("DELETE FROM audit_log"))
+
+
 @pytest.fixture
 async def connection(database: AsyncEngine) -> AsyncIterator[AsyncConnection]:
     """One transaction per test, rolled back afterwards."""

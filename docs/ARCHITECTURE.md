@@ -307,8 +307,22 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
   ~150 endpoint bo'ylab yodda tutish kerak bo'lgan yagona narsa shu.
 - `GET /admin/auth/me/` xodimning `role` qiymatini qaytaradi va panel menyuni **shu qiymat
   bo'yicha** yig'adi ([API.md](API.md) §27).
-- **Audit** mutatsiyani avtorizatsiya qilgan o'sha dependency tomonidan yoziladi: kim, qaysi
-  resurs, qanday amal, maydon darajasidagi farq (sirlar berkitilgan), request id, IP.
+- **Audit — `/admin/*` mutatsiyalari uchun middleware, hodisa uchun service.** Yozuv shakli o'sha:
+  kim, qaysi resurs, qanday amal, maydon darajasidagi farq (sirlar berkitilgan), request id, IP.
+  Lekin uni **dependency yoza olmaydi**: dependency javob statusidan oldin tugaydi, `422` bilan
+  tugagan so'rov haqidagi yozuv esa yolg'on bo'lardi. `route_class` ham yaramaydi — u
+  `include_router` orqali merosga o'tmaydi, ya'ni har modul uni takrorlashi va **unutishi** mumkin
+  bo'lardi. Shuning uchun: middleware `/api/v1/admin/*` dagi `POST`/`PATCH`/`DELETE` ni **2xx**
+  bo'lganda yozadi, resurs va amalni route shablonidan oladi (`staff/{id}/block/` → `staff` +
+  `block`); shablon noto'g'ri o'qiladigan kam sonli yo'l buni `Depends(Audited(...))` bilan o'zi
+  aytadi; farqni esa `audit.context.describe()` orqali service qo'shadi.
+  **`/admin/auth/*` bundan mustasno** — uning hodisalarida tizimga kirgan aktyor yo'q va eng
+  muhimi (`login_failed`) `401` qaytaradi, ya'ni middleware qoidasiga umuman tushmaydi; ularni
+  `staff` moduli o'zi yozadi ([API.md](API.md) §13 ham ularni alohida ajratadi).
+  Middleware yozuvi **alohida tranzaksiyada** ketadi: so'rov sessiyasi javob statusi ma'lum
+  bo'lgunga qadar yopiladi. Demak audit yozuvi bajarilmasa, muvaffaqiyatli mutatsiya orqaga
+  qaytmaydi — xato `exception` darajasida logga tushadi. Teskarisi (yozuv uchun `500` qaytarish)
+  clientni allaqachon bajarilgan amalni takrorlashga undagan bo'lardi.
 - OpenAPI — shu qoidalarning **artefakti**, aksincha emas ([API.md](API.md) muqaddimasi).
 
 ---

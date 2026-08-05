@@ -64,9 +64,10 @@ back every test. Point it somewhere else with `TEST_DATABASE_URL`.
 
 Phase 1 (*Yadro*) in progress. Done: application skeleton, response envelope,
 error catalogue, cross-cutting dependencies, database layer, delivery setup,
-and the **staff** module — admin authentication with rotating refresh tokens,
-the owner-only team resource, and the first-owner bootstrap.
+the **staff** module — admin authentication with rotating refresh tokens, the
+owner-only team resource, and the first-owner bootstrap — and the **audit**
+module, which records every admin mutation and every authentication event.
 
-Next, in order: `audit`, `uploads`, `settings` + `GET /public/site-config/`,
+Next, in order: `uploads`, `settings` + `GET /public/site-config/`,
 `integrations`, `customers`. See [docs/PROJECT.md §15](docs/PROJECT.md) for the
 phase plan and its acceptance criteria.
