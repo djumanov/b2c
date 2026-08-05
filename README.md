@@ -21,6 +21,7 @@ Read in this order:
 | [docs/GTS.md](docs/GTS.md) | The upstream B2B platform we consume |
 | [docs/API.md](docs/API.md) | The REST contract — conventions and every endpoint |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal structure: modules, layers, DB, saga, adapters |
+| [docs/STATUS.md](docs/STATUS.md) | Where the build has got to, what is next, and the decisions taken on the way |
 
 Working rules for this repository: [CLAUDE.md](CLAUDE.md).
 
