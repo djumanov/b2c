@@ -16,6 +16,7 @@ from app.core.logging import configure_logging, get_logger
 from app.db.redis import close_redis
 from app.db.session import dispose_engine
 from app.modules.audit.middleware import AuditMiddleware
+from app.modules.uploads.router_files import router as files_router
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,9 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(application)
     application.include_router(api_router)
+    # Outside the contract and outside the envelope: this serves the bytes
+    # behind the ``url`` of API.md §11, and a file cannot be wrapped in JSON.
+    application.include_router(files_router)
 
     @application.get("/healthz", include_in_schema=False)
     async def liveness() -> dict[str, str]:

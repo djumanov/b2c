@@ -26,6 +26,7 @@ from app.db.base import Base
 # autogenerate can see it. One line per module, added as modules are built.
 from app.modules.audit import models as audit_models  # noqa: E402, F401
 from app.modules.staff import models as staff_models  # noqa: E402, F401
+from app.modules.uploads import models as uploads_models  # noqa: E402, F401
 
 config = context.config
 if config.config_file_name is not None:

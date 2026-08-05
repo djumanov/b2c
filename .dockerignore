@@ -11,8 +11,10 @@ htmlcov
 .env.*
 !.env.sample
 celerybeat-schedule*
-uploads
-logs
+# Anchored: a bare `uploads` would also exclude app/modules/uploads from the
+# image, and the application would not import.
+/uploads
+/logs
 docs
 tests
 .DS_Store

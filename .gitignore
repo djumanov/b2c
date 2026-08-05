@@ -19,9 +19,10 @@ htmlcov/
 # Celery
 celerybeat-schedule*
 
-# Local data
-uploads/
-logs/
+# Local data. Anchored to the repository root on purpose: a bare `uploads/`
+# also matches `app/modules/uploads/`, which would quietly drop a whole module.
+/uploads/
+/logs/
 
 # OS / editors
 .DS_Store

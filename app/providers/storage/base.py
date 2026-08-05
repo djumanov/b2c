@@ -33,8 +33,14 @@ class Storage(Protocol):
         """Store the file; returns the key it can be fetched and deleted by."""
         ...
 
-    async def url(self, key: str) -> str:
-        """A URL the client can load the file from."""
+    async def url(self, key: str, *, private: bool = False) -> str:
+        """A URL the client can load the file from.
+
+        ``private`` is a property of the stored object, not of the caller: a
+        logo is fetched by anonymous visitors, an export never is. Each adapter
+        honours it its own way — the local one points at a route that requires
+        a staff token, an S3 one would sign the URL instead.
+        """
         ...
 
     async def delete(self, key: str) -> None: ...

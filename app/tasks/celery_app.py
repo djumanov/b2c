@@ -37,7 +37,7 @@ celery_app = Celery(
     "b2c",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.heartbeat"],
+    include=["app.tasks.heartbeat", "app.tasks.uploads"],
 )
 
 celery_app.conf.update(
@@ -59,7 +59,6 @@ celery_app.conf.update(
 # exist yet crashes the beat process on startup:
 #
 #   * sync open orders from GTS            -> modules/orders
-#   * sweep unattached uploads (24 h)      -> modules/uploads   (API.md §11)
 #   * sweep expired idempotency keys       -> api/idempotency   (Redis TTL does
 #                                             most of this already)
 #   * refresh the static catalogues        -> modules/catalog
@@ -68,6 +67,12 @@ celery_app.conf.beat_schedule = {
     "heartbeat-every-five-minutes": {
         "task": "app.tasks.heartbeat.heartbeat",
         "schedule": 300.0,
+    },
+    # The grace period is 24 hours (API.md §11), so the exact minute a file
+    # goes does not matter; hourly keeps each pass small.
+    "sweep-unlinked-uploads-hourly": {
+        "task": "app.tasks.uploads.sweep_unlinked_uploads",
+        "schedule": 3600.0,
     },
 }
 

@@ -25,7 +25,8 @@ start of every run.
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -46,6 +47,8 @@ from app.core.security import Audience, hash_password
 from app.db.session import get_session, set_engine
 from app.main import app
 from app.modules.staff.models import Staff
+from app.providers.storage import set_storage
+from app.providers.storage.local import LocalStorage
 from tests.conftest import bearer, issue_token
 
 TEST_DATABASE_NAME = "b2c_test"
@@ -167,6 +170,19 @@ async def api(session: AsyncSession) -> AsyncIterator[AsyncClient]:
             yield client
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture(autouse=True)
+def storage(tmp_path: Path) -> Iterator[LocalStorage]:
+    """Files land in a temporary directory, never in the repository's own.
+
+    Autouse: a test that uploads without asking for this fixture would write
+    into ``./uploads`` and leave it there.
+    """
+    local = LocalStorage(tmp_path / "uploads")
+    set_storage(local)
+    yield local
+    set_storage(None)
 
 
 # --- staff fixtures ---------------------------------------------------------------
