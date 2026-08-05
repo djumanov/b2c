@@ -24,7 +24,7 @@ from app.db.base import Base
 
 # Import every model module here so its table registers on Base.metadata and
 # autogenerate can see it. One line per module, added as modules are built.
-# (none yet)
+from app.modules.staff import models as staff_models  # noqa: E402, F401
 
 config = context.config
 if config.config_file_name is not None:

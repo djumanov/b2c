@@ -55,9 +55,18 @@ uv run mypy app
 uv run pytest
 ```
 
+`tests/unit` and `tests/contract` need nothing running — Redis is faked.
+`tests/integration` needs PostgreSQL: it creates a `b2c_test` database beside
+the working one, rebuilds its schema by running the migration chain, and rolls
+back every test. Point it somewhere else with `TEST_DATABASE_URL`.
+
 ## Current state
 
-Phase 1 foundation: application skeleton, response envelope, error catalogue,
-cross-cutting dependencies, database layer and delivery setup. Domain modules
-(auth, settings, content, orders, payments, …) are scaffolded but not yet
-implemented — see [docs/PROJECT.md §15](docs/PROJECT.md) for the phase plan.
+Phase 1 (*Yadro*) in progress. Done: application skeleton, response envelope,
+error catalogue, cross-cutting dependencies, database layer, delivery setup,
+and the **staff** module — admin authentication with rotating refresh tokens,
+the owner-only team resource, and the first-owner bootstrap.
+
+Next, in order: `audit`, `uploads`, `settings` + `GET /public/site-config/`,
+`integrations`, `customers`. See [docs/PROJECT.md §15](docs/PROJECT.md) for the
+phase plan and its acceptance criteria.

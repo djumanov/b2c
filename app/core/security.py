@@ -185,10 +185,19 @@ def denylist_key(jti: str) -> str:
     return f"{_DENYLIST_PREFIX}:{jti}"
 
 
-def denylist_ttl(claims: TokenClaims, *, now: datetime | None = None) -> int:
-    """Seconds a revoked ``jti`` must be remembered — at least one second."""
-    remaining = claims.expires_at - (now or datetime.now(UTC)) + _DENYLIST_SKEW
+def denylist_ttl_for(expires_at: datetime, *, now: datetime | None = None) -> int:
+    """Seconds a revoked ``jti`` must be remembered — at least one second.
+
+    Takes the expiry rather than the claims, because sessions are also revoked
+    from the stored row (an owner blocking an employee has the row, not the
+    token they were issued).
+    """
+    remaining = expires_at - (now or datetime.now(UTC)) + _DENYLIST_SKEW
     return max(1, int(remaining.total_seconds()))
+
+
+def denylist_ttl(claims: TokenClaims, *, now: datetime | None = None) -> int:
+    return denylist_ttl_for(claims.expires_at, now=now)
 
 
 __all__ = [
@@ -202,6 +211,7 @@ __all__ = [
     "decode_token",
     "denylist_key",
     "denylist_ttl",
+    "denylist_ttl_for",
     "hash_password",
     "password_needs_rehash",
     "verify_password",

@@ -35,11 +35,11 @@ case "$ROLE" in
         alembic upgrade head
 
         # First boot only: creates the owner from the environment, then never
-        # again. Implemented with the staff module; a no-op until then.
-        if [ -f /app/docker/bootstrap.py ]; then
-            echo "entrypoint: bootstrap first owner"
-            python /app/docker/bootstrap.py
-        fi
+        # again. It must fail loudly — an installation whose bootstrap was
+        # skipped has nobody who can sign in, and `set -e` stops the container
+        # rather than serving an API no one can administer.
+        echo "entrypoint: bootstrap first owner"
+        python /app/docker/bootstrap.py
 
         # --no-access-log: the access line is written by RequestIdMiddleware,
         # which is the only one that can attach the request id to it.

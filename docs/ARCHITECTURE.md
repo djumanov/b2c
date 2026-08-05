@@ -79,6 +79,9 @@ app/
     errors.py              # istisno → xato katalogi
     deps.py                # CurrentCustomer, CurrentStaff, require_owner, Pagination
     idempotency.py         # Idempotency-Key dependency
+    listing.py             # search / ordering / created_from-to + Page yig'ish (§6)
+    middleware.py          # X-Request-Id, so'rov jurnali, CORS manbalari
+    openapi.py             # OpenAPI artefaktini envelope bo'yicha qayta yig'ish
   core/
     config.py              # FAQAT env: DB, Redis, shifrlash kaliti, log darajasi
     security.py            # JWT, argon2, refresh rotatsiyasi, jti qora ro'yxati
@@ -89,6 +92,8 @@ app/
     logging.py             # structlog, X-Request-Id
   db/
     session.py  base.py  mixins.py     # UUID pk, created_at/updated_at/deleted_at
+    redis.py                           # jarayon bo'yicha yagona Redis klienti
+    repository.py                      # soft delete'ni hisobga oluvchi umumiy o'qishlar
   modules/                 # funksional bo'laklar; har birida: router_public.py,
     settings/              #   router_admin.py, models.py, schemas.py, service.py
     integrations/          # gts / payments / notifications sozlamalari va sirlari
@@ -143,6 +148,7 @@ yupqa yig'uvchi.
 | `audit` | Har bir admin mutatsiyasi va auth hodisalarining o'zgarmas jurnali | Har bir handler emas, **dependency** yozadi |
 | `jobs` | Foydalanuvchiga ko'rinadigan async ishlar reyestri | `GET /admin/jobs/{id}/` ortida |
 | `uploads` | Fayl yozuvlari, `purpose` tekshiruvi, bog'lanmaganlarini tozalash | Storage porti ortida |
+| `system` | Holat (`health`), versiya — [API.md](API.md) §39 | Egalik qiladigan jadvali yo'q: boshqa modullardan va infratuzilmadan holat yig'adi |
 
 ---
 

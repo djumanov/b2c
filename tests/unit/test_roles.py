@@ -4,9 +4,9 @@ There is no matrix to transcribe any more. What is worth pinning down is the
 shape itself: that the set of roles is exactly two, that ``owner`` contains
 ``admin`` and not the reverse, and that ``require_owner`` acts on that.
 
-The guard is exercised here rather than through a route because no owner-only
-route exists yet — the ``staff`` module is still empty. When one lands, the
-route-level check belongs in the contract suite; this stays either way.
+The guard is exercised here directly, on the principal. That an owner-only
+*route* actually answers 403 to an ``admin`` is a different claim and is tested
+where it belongs, against ``/admin/staff/`` in the integration suite.
 """
 
 import uuid
@@ -34,7 +34,7 @@ def test_admin_satisfies_only_itself() -> None:
 
 
 def _staff(role: Role) -> Staff:
-    return Staff(id=uuid.uuid4(), role=role)
+    return Staff(id=uuid.uuid4(), role=role, email="aziz@example.uz", name="Aziz")
 
 
 async def test_require_owner_lets_the_owner_through() -> None:

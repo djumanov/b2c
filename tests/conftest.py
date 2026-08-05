@@ -42,13 +42,19 @@ async def client() -> AsyncIterator[AsyncClient]:
 def issue_token(
     audience: Audience,
     *,
+    subject_id: uuid.UUID | None = None,
     role: Role | str | None = None,
     token_type: TokenType = TokenType.ACCESS,
 ) -> str:
-    """``role`` also takes a raw string, so a test can mint a token carrying a
-    role the enum no longer has and assert it is refused."""
+    """Mint a token without going through a login.
+
+    ``role`` also takes a raw string, so a test can mint a token carrying a
+    role the enum no longer has and assert it is refused. ``subject_id``
+    defaults to a fresh UUID, which is what the rejection tests want — no such
+    employee exists, and none of them get far enough to look.
+    """
     token, _ = create_token(
-        subject_id=uuid.uuid4(),
+        subject_id=subject_id or uuid.uuid4(),
         audience=audience,
         token_type=token_type,
         role=str(role) if role else None,
@@ -56,14 +62,24 @@ def issue_token(
     return token
 
 
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def staff_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {issue_token(Audience.ADMIN, role=Role.OWNER)}"}
+    """An ``owner`` token for an employee who does not exist.
+
+    Good enough for every check that happens before the row is loaded — which
+    is all of them in the contract suite. A token that must survive
+    ``current_staff`` needs a real row; see the integration suite.
+    """
+    return bearer(issue_token(Audience.ADMIN, role=Role.OWNER))
 
 
 @pytest.fixture
 def admin_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {issue_token(Audience.ADMIN, role=Role.ADMIN)}"}
+    return bearer(issue_token(Audience.ADMIN, role=Role.ADMIN))
 
 
 @pytest.fixture

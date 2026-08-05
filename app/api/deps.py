@@ -39,6 +39,7 @@ from app.core.security import (
     denylist_key,
 )
 from app.db.redis import get_redis
+from app.db.session import SessionDep
 
 MAX_PAGE_SIZE: Final = 100
 DEFAULT_PAGE_SIZE: Final = 20
@@ -56,10 +57,17 @@ class Customer:
 
 @dataclass(frozen=True, slots=True)
 class Staff:
-    """A panel user behind an ``aud: admin`` token."""
+    """A panel user behind an ``aud: admin`` token, as the row currently reads.
+
+    ``email`` and ``name`` ride along because they are already loaded and the
+    two things that ask for them — ``auth/me/`` and the audit journal, which
+    records who did what — would otherwise each fetch the row again.
+    """
 
     id: uuid.UUID
     role: Role
+    email: str
+    name: str
 
 
 def _bearer_token(request: Request) -> str:
@@ -89,16 +97,31 @@ async def current_customer(request: Request) -> Customer:
     return Customer(id=claims.subject_id)
 
 
-async def current_staff(request: Request) -> Staff:
+async def current_staff(request: Request, session: SessionDep) -> Staff:
     claims = await _claims_for(request, Audience.ADMIN)
     try:
-        role = Role(claims.role or "")
+        Role(claims.role or "")
     except ValueError as exc:
         # A role the enum no longer knows is refused rather than downgraded:
         # a token minted before the two-role model must stop working, not
         # quietly become an ``admin``.
         raise Forbidden(f"Unknown staff role: {claims.role!r}") from exc
-    return Staff(id=claims.subject_id, role=role)
+
+    # Imported here, not at the top: the staff module's service imports this
+    # file for ``Pagination``, so a module-level import would close the loop.
+    # The dependency is real either way — cross-cutting auth has to ask a
+    # module who the subject is.
+    from app.modules.staff import service as staff_service
+
+    # The row, not the claim, decides. An account blocked or deleted since the
+    # token was issued loses access now rather than in fifteen minutes, and the
+    # role that governs ``require_owner`` is the current one.
+    row = await staff_service.get_active(session, claims.subject_id)
+    principal = Staff(id=row.id, role=row.role, email=row.email, name=row.name)
+    # The audit middleware runs after the handler and has no dependencies of
+    # its own; this is where it learns who was acting (ARCHITECTURE.md §11).
+    request.state.principal = principal
+    return principal
 
 
 CurrentCustomer = Annotated[Customer, Depends(current_customer)]
@@ -195,7 +218,7 @@ RATE_LIMITS: Final[dict[str, tuple[int, int]]] = {
 }
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     # X-Forwarded-For is set by the client's reverse proxy; the first entry is
     # the original caller.
     forwarded = request.headers.get("x-forwarded-for")
@@ -213,7 +236,7 @@ def _rate_limit_subject(request: Request) -> str:
             return f"sub:{decode_token(token.strip()).subject_id}"
         except TokenError:
             pass
-    return f"ip:{_client_ip(request)}"
+    return f"ip:{client_ip(request)}"
 
 
 def RateLimit(  # noqa: N802 - reads as a marker at the use site
@@ -259,6 +282,8 @@ __all__ = [
     "PaginationDep",
     "RateLimit",
     "Staff",
+    "client_ip",
+    "current_customer",
     "current_staff",
     "require_owner",
 ]

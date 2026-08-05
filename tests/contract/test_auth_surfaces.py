@@ -2,6 +2,12 @@
 
 The 403-not-401 rule is the one worth a test of its own: answering 401 would
 tell the panel to refresh a token that is perfectly valid, and it would loop.
+
+Every case here is a **rejection**, and every rejection is decided from the
+token alone — before ``current_staff`` looks the employee up. That is what
+keeps this suite runnable with no services up. The mirror image, that a good
+token is *accepted*, needs a real staff row and lives in
+``tests/integration/test_auth_surfaces.py``.
 """
 
 from httpx import AsyncClient
@@ -46,24 +52,6 @@ async def test_refresh_token_is_not_accepted_as_access(client: AsyncClient) -> N
     )
 
     assert response.status_code == 401
-
-
-async def test_staff_token_is_accepted(
-    client: AsyncClient, staff_headers: dict[str, str]
-) -> None:
-    response = await client.get(VERSION_URL, headers=staff_headers)
-
-    assert response.status_code == 200
-    assert response.json()["data"]["backend"]
-
-
-async def test_admin_token_is_accepted(
-    client: AsyncClient, admin_headers: dict[str, str]
-) -> None:
-    """`admin` reads system state too — API.md §5 gives it 👁 there."""
-    response = await client.get(VERSION_URL, headers=admin_headers)
-
-    assert response.status_code == 200
 
 
 async def test_a_role_that_no_longer_exists_is_403(client: AsyncClient) -> None:
