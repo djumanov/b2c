@@ -1,0 +1,97 @@
+# The stack a client runs (ARCHITECTURE.md §12, PROJECT.md §14).
+#
+# Backup covers three things and the third is the one people forget:
+#   1. the `pgdata` volume        — all data and settings
+#   2. the `uploads` volume       — logos, images, exports
+#   3. the ENCRYPTION_KEYS value  — NOT in the database dump, and without it
+#      every integration credential has to be re-entered by hand.
+
+name: b2c
+
+# One image, three roles. Only `api` declares the build: three services
+# building the same tag at once race on the export and the first, uncached
+# `docker compose up --build` fails — on the client's machine, where nobody
+# can debug it. Building once and reusing the tag is also simply faster.
+x-app: &app
+  image: b2c-backend:local
+  env_file: .env
+  environment:
+    # Inside the network the service names are the hosts, whatever .env says
+    # for local development.
+    POSTGRES_HOST: postgres
+    REDIS_HOST: redis
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *app
+    build:
+      context: .
+    command: ["api"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - uploads:/app/uploads
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    volumes:
+      - uploads:/app/uploads
+
+  beat:
+    <<: *app
+    command: ["beat"]
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-b2c}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    # Persist the broker: an unacknowledged saga step must survive a restart
+    # (ARCHITECTURE.md §8).
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # TLS termination for a real installation. Behind a profile so day-to-day
+  # `docker compose up` stays light: `docker compose --profile proxy up`.
+  proxy:
+    image: nginx:1.27-alpine
+    profiles: ["proxy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
