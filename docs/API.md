@@ -132,6 +132,8 @@ Ikki xil sub'ekt, ikki xil token — bir-biriga o'tmaydi:
 | Staff (xodim) | `admin` | `/api/v1/admin/*` | 15 daqiqa | 12 soat |
 
 Token payload'i: `sub` (foydalanuvchi id), `aud`, `role` (faqat staff uchun), `exp`, `iat`, `jti`.
+`role` faqat ikkita qiymat oladi — `owner` yoki `admin` (§5); boshqa qiymatli token qabul
+qilinmaydi.
 
 - Customer tokeni bilan `/admin/*` ga urinish → `403 forbidden`.
 - Refresh **rotatsiya bilan**: har `refresh/` chaqiruvida eski refresh bekor qilinadi.
@@ -142,32 +144,40 @@ o'tish, login, webhook'lar).
 
 ---
 
-## 5. Rollar va ruxsatlar (RBAC)
+## 5. Rollar va kirish
 
-Rollar [PROJECT.md](PROJECT.md) §9 da tasvirlangan. Resurs guruhlari bo'yicha matritsa:
+Rollar **ikkita**, ular [PROJECT.md](PROJECT.md) §9 da tasvirlangan. Resurs guruhlari bo'yicha
+matritsa:
 
-| Resurs guruhi | `owner` | `admin` | `content` | `operator` | `finance` | `gts_support` |
-|---|---|---|---|---|---|---|
-| Sozlamalar (brending, domen, menyu) | ✎ | ✎ | — | — | — | 👁 |
-| Integratsiya kalitlari | ✎ | 👁 | — | — | — | 👁 |
-| Kontent va sharhlar | ✎ | ✎ | ✎ | 👁 | — | 👁 |
-| Buyurtmalar | ✎ | ✎ | — | ✎ | 👁 | 👁 |
-| To'lovlar va qaytarishlar | ✎ | ✎ | — | 👁 | ✎ | 👁 |
-| Promokodlar | ✎ | ✎ | 👁 | 👁 | ✎ | 👁 |
-| Mijozlar | ✎ | ✎ | — | ✎ | 👁 | 👁 |
-| Hisobotlar | ✎ | ✎ | — | 👁 | ✎ | 👁 |
-| Jamoa va rollar | ✎ | — | — | — | — | 👁 |
-| Tizim va audit | ✎ | 👁 | — | — | — | ✎ |
+| Resurs guruhi | `owner` | `admin` |
+|---|---|---|
+| Sozlamalar (brending, domen, menyu) | ✎ | ✎ |
+| Integratsiya kalitlari | ✎ | 👁 |
+| Kontent va sharhlar | ✎ | ✎ |
+| Buyurtmalar | ✎ | ✎ |
+| To'lovlar va qaytarishlar | ✎ | ✎ |
+| Promokodlar | ✎ | ✎ |
+| Mijozlar | ✎ | ✎ |
+| Hisobotlar | ✎ | ✎ |
+| Jamoa | ✎ | — |
+| Tizim va audit | ✎ | 👁 |
 
 ✎ o'qish + yozish · 👁 faqat o'qish · — kirish yo'q
 
-`gts_support` hech qayerga yozmaydi (tizim diagnostikasidan tashqari) va faqat client yoqib
-qo'ygan muddat davomida amal qiladi.
+**Ierarxiya: `owner ⊃ admin`.** `admin` hech bir joyda `owner` dan ko'proq huquqqa ega emas,
+shuning uchun tekshiruv **ikki pog'onali**: endpoint yo `admin` talab qiladi (ikkala rol ham
+o'tadi), yo `owner` (faqat `owner`). Ruxsat satrlari katalogi yo'q — kirish rol nomi bo'yicha
+hal qilinadi.
 
-**Ruxsat satrlari.** Matritsadagi har bir resurs guruhi ikkita satr beradi — `.read` va `.write`:
-`settings`, `integrations`, `content`, `orders`, `payments`, `promos`, `customers`, `reports`,
-`staff`, `system`. Jami 20 ta. `GET /admin/auth/me/` xodimning yakuniy ro'yxatini qaytaradi va
-panel menyuni **shu ro'yxat bo'yicha** yig'adi, rol nomi bo'yicha emas.
+`admin` `owner` talab qiladigan endpointga urinsa → **`403 forbidden`**.
+
+`GET /admin/auth/me/` xodimning `role` qiymatini qaytaradi va panel menyuni **shu qiymat
+bo'yicha** yig'adi (§27).
+
+> **Alohida amallar guruhdan qattiqroq bo'lishi mumkin.** Qaytarib bo'lmaydigan bir nechta
+> endpoint guruh darajasi `✎` bo'lsa ham `owner` da qoladi — hozircha bittasi:
+> `DELETE /admin/customers/{id}/` (shaxsiy ma'lumotni tozalash, §34). Buning teskarisi
+> bo'lmaydi: guruhda `—` yoki `👁` turgan joyda endpoint hech qachon kengroq ruxsat bermaydi.
 
 ---
 
@@ -311,8 +321,7 @@ GTS javoblarini o'girish va status xaritasi — [ARCHITECTURE.md](ARCHITECTURE.m
   qilinadi va javobda qaytariladi. Barcha loglar shu id bilan bog'lanadi.
 - **Har bir mutatsiya** (`POST`/`PATCH`/`DELETE`) admin yuzasida audit log'ga tushadi:
   kim, qachon, qaysi resurs, qanday o'zgarish. `GET /api/v1/admin/system/audit/`.
-- Autentifikatsiya hodisalari (kirish, muvaffaqiyatsiz urinish, `gts_support` yoqilishi)
-  alohida belgilanadi.
+- Autentifikatsiya hodisalari (kirish, muvaffaqiyatsiz urinish) alohida belgilanadi.
 
 ---
 
@@ -665,8 +674,8 @@ Prefiks: **`/api/v1/admin/`**. Foydalanuvchi: React admin panel.
 Sub'ekt — **staff**, token `aud: admin`. Barcha endpointlar auth talab qiladi
 (`auth/login/` va `auth/refresh/` dan tashqari).
 
-Ruxsatlar §5 dagi RBAC matritsasi bo'yicha. Jadvallardagi **Rol** ustuni — **yozish uchun
-minimal talab**; o'qish odatda kengroq rolga ochiq.
+Kirish §5 dagi matritsa bo'yicha. Jadvallardagi **Rol** ustuni — **talab qilinadigan rol**:
+`admin` (ikkala rol ham o'tadi) yoki `owner` (faqat `owner`).
 
 **CRUD** deb belgilangan resurslar §8 dagi standart naqshda ishlaydi.
 
@@ -679,7 +688,7 @@ minimal talab**; o'qish odatda kengroq rolga ochiq.
 | `POST` | `/admin/auth/login/` | Kirish → access + refresh |
 | `POST` | `/admin/auth/refresh/` | Token yangilash |
 | `POST` | `/admin/auth/logout/` | Sessiyani yopish |
-| `GET` | `/admin/auth/me/` | Joriy xodim: profil, rol, ruxsatlar |
+| `GET` | `/admin/auth/me/` | Joriy xodim: profil va rol |
 | `POST` | `/admin/auth/password/change/` | Parolni o'zgartirish |
 | `POST` | `/admin/auth/password/reset/request/` | Tiklash so'rovi (email orqali) |
 | `POST` | `/admin/auth/password/reset/confirm/` | Yangi parol |
@@ -688,11 +697,12 @@ minimal talab**; o'qish odatda kengroq rolga ochiq.
 GET /admin/auth/me/
 → { "status": "success",
     "data": { "id": "…", "name": "Aziz", "email": "…",
-              "role": "admin",
-              "permissions": ["content.write", "orders.write", "payments.read"] } }
+              "role": "admin" } }
 ```
 
-Frontend menyuni `permissions` bo'yicha yig'adi — rolni qattiq kodlamaydi (§5).
+`role` — `owner` yoki `admin`. Frontend menyuni shu qiymat bo'yicha yig'adi: `admin` da jamoa
+bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish rejimida ochiladi
+(§5).
 
 ---
 
@@ -730,12 +740,14 @@ O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` `PATCH` | `/admin/integrations/gts/` | `owner` | GTS ulanishi: URL, credential'lar |
+| `GET` | `/admin/integrations/gts/` | `admin` | GTS ulanishi: URL, maskalangan credential'lar |
+| `PATCH` | `/admin/integrations/gts/` | `owner` | GTS ulanishi va credential'larini o'zgartirish |
 | `POST` | `/admin/integrations/gts/test/` | `owner` | Ulanishni tekshirish |
 | `GET` | `/admin/integrations/payments/` | `admin` | To'lov provayderlari ro'yxati va holati |
 | `PATCH` | `/admin/integrations/payments/{code}/` | `owner` | Yoqish/o'chirish, kalitlar, tartib |
 | `POST` | `/admin/integrations/payments/{code}/test/` | `owner` | Provayderni tekshirish |
-| `GET` `PATCH` | `/admin/integrations/notifications/` | `owner` | Email (SMTP); SMS/push — **§41** |
+| `GET` | `/admin/integrations/notifications/` | `admin` | Email (SMTP) sozlamasi; SMS/push — **§41** |
+| `PATCH` | `/admin/integrations/notifications/` | `owner` | Sozlamani o'zgartirish — **§41** |
 | `POST` | `/admin/integrations/notifications/test/` | `owner` | Sinov xabari yuborish |
 
 **Sirlar qaytarilmaydi.** Javobda kalit maskalangan holda keladi, faqat oxirgi belgilar
@@ -757,13 +769,13 @@ GET /admin/integrations/payments/payme/
 
 | Resurs | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| Blog | `/admin/content/blogs/` | `content` | CRUD; `?status=draft\|published`, `?category=` |
-| Aksiyalar | `/admin/content/promotions/` | `content` | CRUD; `placement`, `starts_at`, `ends_at` |
-| FAQ | `/admin/content/faq/` | `content` | CRUD; `?category=` |
-| Kontaktlar | `/admin/content/contacts/` | `content` | CRUD — ofis nuqtalari, koordinatalar |
-| Sahifalar | `/admin/content/pages/` | `content` | CRUD — statik sahifalar — **§41** |
-| Bannerlar | `/admin/content/banners/` | `content` | CRUD; `?placement=` |
-| Mashhur yo'nalishlar | `/admin/content/popular-directions/` | `content` | CRUD |
+| Blog | `/admin/content/blogs/` | `admin` | CRUD; `?status=draft\|published`, `?category=` |
+| Aksiyalar | `/admin/content/promotions/` | `admin` | CRUD; `placement`, `starts_at`, `ends_at` |
+| FAQ | `/admin/content/faq/` | `admin` | CRUD; `?category=` |
+| Kontaktlar | `/admin/content/contacts/` | `admin` | CRUD — ofis nuqtalari, koordinatalar |
+| Sahifalar | `/admin/content/pages/` | `admin` | CRUD — statik sahifalar — **§41** |
+| Bannerlar | `/admin/content/banners/` | `admin` | CRUD; `?placement=` |
+| Mashhur yo'nalishlar | `/admin/content/popular-directions/` | `admin` | CRUD |
 
 **Qo'shimcha amallar:**
 
@@ -788,10 +800,10 @@ Barcha tillar to'ldirilishi shart emas — bo'sh til uchun public API fallback q
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/content/feedbacks/` | `content` | `?status=pending\|accepted\|rejected` |
-| `GET` | `/admin/content/feedbacks/{id}/` | `content` | Tafsilot |
-| `POST` | `/admin/content/feedbacks/{id}/accept/` | `content` | Chop etish |
-| `POST` | `/admin/content/feedbacks/{id}/reject/` | `content` | Rad etish (`reason` bilan) |
+| `GET` | `/admin/content/feedbacks/` | `admin` | `?status=pending\|accepted\|rejected` |
+| `GET` | `/admin/content/feedbacks/{id}/` | `admin` | Tafsilot |
+| `POST` | `/admin/content/feedbacks/{id}/accept/` | `admin` | Chop etish |
+| `POST` | `/admin/content/feedbacks/{id}/reject/` | `admin` | Rad etish (`reason` bilan) |
 | `DELETE` | `/admin/content/feedbacks/{id}/` | `admin` | O'chirish |
 
 ---
@@ -800,13 +812,13 @@ Barcha tillar to'ldirilishi shart emas — bo'sh til uchun public API fallback q
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/orders/` | `operator` | Barcha vertikal; filtrlar quyida |
-| `GET` | `/admin/orders/{id}/` | `operator` | To'liq tafsilot: yo'lovchilar, narx, to'lov, tarix |
-| `GET` | `/admin/orders/{id}/receipt/` | `operator` | Kvitansiya |
-| `POST` | `/admin/orders/{id}/cancel/` | `operator` | Bekor qilish |
-| `POST` | `/admin/orders/{id}/push/` | `operator` | Mijozga push xabar yuborish — **§41** |
-| `POST` | `/admin/orders/{id}/note/` | `operator` | Ichki izoh qo'shish |
-| `POST` | `/admin/orders/{id}/sync/` | `operator` | GTS'dan holatni qayta olish |
+| `GET` | `/admin/orders/` | `admin` | Barcha vertikal; filtrlar quyida |
+| `GET` | `/admin/orders/{id}/` | `admin` | To'liq tafsilot: yo'lovchilar, narx, to'lov, tarix |
+| `GET` | `/admin/orders/{id}/receipt/` | `admin` | Kvitansiya |
+| `POST` | `/admin/orders/{id}/cancel/` | `admin` | Bekor qilish |
+| `POST` | `/admin/orders/{id}/push/` | `admin` | Mijozga push xabar yuborish — **§41** |
+| `POST` | `/admin/orders/{id}/note/` | `admin` | Ichki izoh qo'shish |
+| `POST` | `/admin/orders/{id}/sync/` | `admin` | GTS'dan holatni qayta olish |
 
 **Filtrlar**: `?product=`, `?status=`, `?payment_status=`, `?customer_id=`, `?search=`
 (buyurtma raqami, PNR, yo'lovchi ismi, telefon), `?created_from=`, `?created_to=`.
@@ -830,12 +842,12 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/payments/` | `finance` | To'lovlar; `?status=`, `?method=` |
-| `GET` | `/admin/payments/{id}/` | `finance` | Tafsilot va tranzaksiyalar |
-| `GET` | `/admin/payments/transactions/` | `finance` | Barcha tranzaksiyalar |
-| `GET` | `/admin/payments/transactions/{id}/` | `finance` | Tranzaksiya tafsiloti |
-| `POST` | `/admin/payments/{id}/refund/` | `finance` | Qaytarish (to'liq yoki qisman) |
-| `POST` | `/admin/payments/{id}/sync/` | `finance` | Provayderdan holatni qayta olish |
+| `GET` | `/admin/payments/` | `admin` | To'lovlar; `?status=`, `?method=` |
+| `GET` | `/admin/payments/{id}/` | `admin` | Tafsilot va tranzaksiyalar |
+| `GET` | `/admin/payments/transactions/` | `admin` | Barcha tranzaksiyalar |
+| `GET` | `/admin/payments/transactions/{id}/` | `admin` | Tranzaksiya tafsiloti |
+| `POST` | `/admin/payments/{id}/refund/` | `admin` | Qaytarish (to'liq yoki qisman) |
+| `POST` | `/admin/payments/{id}/sync/` | `admin` | Provayderdan holatni qayta olish |
 
 `refund/` — `Idempotency-Key` majburiy (§10).
 
@@ -845,11 +857,11 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| CRUD | `/admin/promos/` | `finance` | Kod, chegirma turi, chegaralar, amal muddati |
-| `POST` | `/admin/promos/{id}/activate/` | `finance` | Faollashtirish |
-| `POST` | `/admin/promos/{id}/deactivate/` | `finance` | To'xtatish |
-| `GET` | `/admin/promos/{id}/stats/` | `finance` | Ishlatilish statistikasi |
-| `GET` | `/admin/promos/{id}/usages/` | `finance` | Kim, qachon, qaysi buyurtmada ishlatgan |
+| CRUD | `/admin/promos/` | `admin` | Kod, chegirma turi, chegaralar, amal muddati |
+| `POST` | `/admin/promos/{id}/activate/` | `admin` | Faollashtirish |
+| `POST` | `/admin/promos/{id}/deactivate/` | `admin` | To'xtatish |
+| `GET` | `/admin/promos/{id}/stats/` | `admin` | Ishlatilish statistikasi |
+| `GET` | `/admin/promos/{id}/usages/` | `admin` | Kim, qachon, qaysi buyurtmada ishlatgan |
 
 ---
 
@@ -857,9 +869,9 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/customers/` | `operator` | `?search=` (ism, email, telefon) |
-| `GET` | `/admin/customers/{id}/` | `operator` | Profil va statistika |
-| `GET` | `/admin/customers/{id}/orders/` | `operator` | Buyurtmalari |
+| `GET` | `/admin/customers/` | `admin` | `?search=` (ism, email, telefon) |
+| `GET` | `/admin/customers/{id}/` | `admin` | Profil va statistika |
+| `GET` | `/admin/customers/{id}/orders/` | `admin` | Buyurtmalari |
 | `POST` | `/admin/customers/{id}/block/` | `admin` | Bloklash |
 | `POST` | `/admin/customers/{id}/unblock/` | `admin` | Blokdan chiqarish |
 | `DELETE` | `/admin/customers/{id}/` | `owner` | O'chirish (shaxsiy ma'lumotni tozalash) |
@@ -870,12 +882,12 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/leads/` | `operator` | `?source=`, `?status=` |
-| `GET` | `/admin/leads/{id}/` | `operator` | Tafsilot |
-| `PATCH` | `/admin/leads/{id}/` | `operator` | Holat, mas'ul, izoh |
+| `GET` | `/admin/leads/` | `admin` | `?source=`, `?status=` |
+| `GET` | `/admin/leads/{id}/` | `admin` | Tafsilot |
+| `PATCH` | `/admin/leads/{id}/` | `admin` | Holat, mas'ul, izoh |
 | CRUD | `/admin/leads/sources/` | `admin` | Lead manbalari: `code`, nomi va `fields` sxemasi |
-| `GET` | `/admin/subscriptions/` | `content` | Obunachi'lar ro'yxati |
-| `GET` | `/admin/subscriptions/export/` | `content` | CSV eksport (async) |
+| `GET` | `/admin/subscriptions/` | `admin` | Obunachi'lar ro'yxati |
+| `GET` | `/admin/subscriptions/export/` | `admin` | CSV eksport (async) |
 
 `leads/sources/` — §25 dagi `source` qiymatlari va har biriga tegishli `fields` sxemasi shu
 yerdan boshqariladi. Public `POST /public/leads/` kelgan `fields` ni shu sxema bo'yicha tekshiradi.
@@ -898,11 +910,11 @@ Birinchi relizda kanal — **email**. SMS va push keyingi bosqichda (§41).
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/reports/dashboard/` | `operator` | Bosh sahifadagi ko'rsatkichlar |
-| `GET` | `/admin/reports/sales/` | `finance` | Sotuv; `?group_by=day\|product\|method` |
-| `GET` | `/admin/reports/fields/` | `finance` | Eksport uchun mavjud maydonlar katalogi |
-| CRUD | `/admin/reports/views/` | `finance` | Saqlangan hisobot ko'rinishlari |
-| `POST` | `/admin/reports/export/` | `finance` | Eksport (async job → `xlsx`/`csv`) |
+| `GET` | `/admin/reports/dashboard/` | `admin` | Bosh sahifadagi ko'rsatkichlar |
+| `GET` | `/admin/reports/sales/` | `admin` | Sotuv; `?group_by=day\|product\|method` |
+| `GET` | `/admin/reports/fields/` | `admin` | Eksport uchun mavjud maydonlar katalogi |
+| CRUD | `/admin/reports/views/` | `admin` | Saqlangan hisobot ko'rinishlari |
+| `POST` | `/admin/reports/export/` | `admin` | Eksport (async job → `xlsx`/`csv`) |
 
 ```json
 POST /admin/reports/export/
@@ -924,10 +936,14 @@ Kun bo'yicha guruhlash o'rnatma vaqt mintaqasida hisoblanadi (saqlash UTC'da).
 | CRUD | `/admin/staff/` | `owner` | Xodimlar |
 | `POST` | `/admin/staff/{id}/block/` | `owner` | Bloklash |
 | `POST` | `/admin/staff/{id}/reset-password/` | `owner` | Parol tiklash havolasini yuborish |
-| `GET` | `/admin/roles/` | `owner` | Rollar va ularning ruxsatlari |
 
-Rollar oldindan belgilangan ([PROJECT.md](PROJECT.md) §9) — panel orqali yangi rol
-yaratilmaydi, faqat xodimga rol biriktiriladi.
+Rollar ikkita va **kodda qat'iy belgilangan** ([PROJECT.md](PROJECT.md) §9) — panel orqali na
+yangi rol yaratiladi, na mavjudining ruxsati o'zgartiriladi. Xodim yaratilganda yoki
+tahrirlanganda unga `owner` yoki `admin` biriktiriladi, boshqa qiymat `422 validation_error`
+beradi.
+
+Bu bo'lim butunlay `owner` da: `admin` §5 matritsasidagi **Jamoa** guruhiga umuman kirmaydi,
+shuning uchun bu yo'llarga urinsa `403 forbidden` oladi.
 
 ---
 
@@ -938,22 +954,14 @@ yaratilmaydi, faqat xodimga rol biriktiriladi.
 | `GET` | `/admin/system/health/` | `admin` | DB, Redis, GTS, to'lov provayderlari holati |
 | `GET` | `/admin/system/version/` | `admin` | Backend va panel versiyasi |
 | `GET` | `/admin/system/audit/` | `admin` | Audit log; `?actor=`, `?resource=`, `?action=` |
-| `GET` | `/admin/jobs/{id}/` | `operator` | Async ish holati (§9) |
-| `POST` | `/admin/uploads/` | `content` | Fayl yuklash (§11) |
+| `GET` | `/admin/jobs/{id}/` | `admin` | Async ish holati (§9) |
+| `POST` | `/admin/uploads/` | `admin` | Fayl yuklash (§11) |
 
 `system/health/` va `system/version/` — muammo qaysi tomonda ekanini ajratish uchun birinchi
 murojaat qilinadigan endpointlar ([PROJECT.md](PROJECT.md) §4, §14).
 
-### Support kirishi
-
-| Metod | Yo'l | Rol | Izoh |
-|---|---|---|---|
-| `GET` | `/admin/system/support-access/` | `owner` | Joriy holat va muddat |
-| `POST` | `/admin/system/support-access/` | `owner` | Yoqish (`hours` bilan) |
-| `DELETE` | `/admin/system/support-access/` | `owner` | Darhol o'chirish |
-
-`gts_support` roli faqat shu oyna ochiq bo'lganda ishlaydi. Muddati tugaganda avtomatik
-yopiladi; barcha amallar audit log'da alohida belgilanadi.
+Bu yo'llarning hammasi `admin` uchun **faqat o'qish** (§5, *Tizim va audit* satri) —
+`/admin/uploads/` bundan mustasno, u kontent guruhiga tegishli.
 
 ---
 ---

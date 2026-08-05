@@ -72,7 +72,7 @@ Hujjatlar bo'ylab shu atamalar aynan shu ma'noda ishlatiladi.
 - Hisobotlar va eksport
 - Ko'p tillilik (uz / ru / en) va ko'p valyutalilik
 - Brending va sayt sozlamalari — paneldan, deploysiz
-- Rollar, audit log, GTS support kirishi
+- Rollar (`owner` / `admin`), audit log
 
 **Kirmaydi** — ataylab, chunki bu GTS tomonda yoki umuman mahsulot doirasidan tashqarida:
 
@@ -82,7 +82,7 @@ Hujjatlar bo'ylab shu atamalar aynan shu ma'noda ishlatiladi.
 | Agentlik ierarxiyasi, shartnomalar, balanslar | GTS'ning o'z modeli. B2C bunga aralashmaydi |
 | Provayderlarga to'g'ridan-to'g'ri integratsiya | Barcha supplier'lar GTS ortida |
 | Ko'p tenantlik | Bitta o'rnatma = bitta client |
-| Rol konstruktori | Rollar oldindan belgilangan (§9) |
+| Rol konstruktori | Rollar ikkita va oldindan belgilangan (§9) |
 | Korporativ mijoz kabineti | GTS tomonda mavjud, B2C'da yo'q |
 | Loyalty / bonus dasturi | `site-config` da `features.loyalty` bor, lekin birinchi relizda `false` |
 | Oflayn rejim | Sayt ham, ilova ham GTS'siz sotolmaydi (§12) |
@@ -96,7 +96,7 @@ boshqargani uchun (§14).
 
 | Kim | Nimaga javobgar |
 |---|---|
-| **Biz** (mahsulot jamoasi) | Kod, Docker artefaktlari, migratsiyalar, hujjatlar, xatolarni tuzatish, yangi versiyalar chiqarish, `gts_support` orqali diagnostika |
+| **Biz** (mahsulot jamoasi) | Kod, Docker artefaktlari, migratsiyalar, hujjatlar, xatolarni tuzatish, yangi versiyalar chiqarish, `health`/`version`/loglar bo'yicha diagnostika |
 | **GTS** | Mahsulot inventari, narx va markup, shartnoma va balans, chipta chiqarish, provayderlarga ulanish, buyurtma statusi |
 | **Client** | Server va domen, SSL, o'rnatish, **yangilash**, **zaxira nusxa**, to'lov provayderi bilan shartnoma, kontent va brend, o'z mijozlariga qo'llab-quvvatlash |
 
@@ -214,23 +214,26 @@ chetlanishlar bundan mustasno. Shuning uchun backend'da har bir vertikal alohida
 
 ## 9. Rollar
 
-Bitta o'rnatma ichida oltita rol. Rollar **oldindan belgilangan** — panel orqali yangi rol
-yaratilmaydi, faqat xodimga mavjud rol biriktiriladi.
+Bitta o'rnatma ichida **ikkita** rol. Rollar **oldindan belgilangan** — panel orqali na yangi
+rol yaratiladi, na mavjudining ruxsati o'zgartiriladi; xodimga faqat shu ikkitadan biri
+biriktiriladi.
 
 | Rol | Nima qila oladi |
 |---|---|
-| `owner` | Hammasi, jumladan xodimlarni boshqarish va integratsiya kalitlari |
-| `admin` | Sozlamalar, kontent, buyurtmalar, to'lovlar — kalitlardan tashqari |
-| `content` | Faqat kontent va sharh moderatsiyasi |
-| `operator` | Buyurtmalar, mijozlar bilan ishlash, push yuborish |
-| `finance` | To'lovlar, qaytarishlar, promokodlar, hisobotlar |
-| `gts_support` | GTS xodimi uchun vaqtinchalik diagnostika kirishi — client yoqadi/o'chiradi |
+| `owner` | **Hammasi**, jumladan jamoani boshqarish, integratsiya kalitlarini o'zgartirish, tizim va auditga yozish |
+| `admin` | Kundalik ish: sozlamalar, kontent va sharhlar, buyurtmalar, to'lovlar va qaytarishlar, promokodlar, mijozlar, hisobotlar. **Jamoaga kirmaydi**; integratsiya kalitlari bilan tizim/auditni faqat **o'qiydi** |
 
-Resurs guruhlari bo'yicha to'liq ruxsat matritsasi — [API.md](API.md) §5. Bu yerda takrorlanmaydi.
+**`owner ⊃ admin`** — `admin` hech bir joyda `owner` dan ko'proq huquqqa ega emas. Shu sababli
+kirish tekshiruvi ikki pog'onali: endpoint yo `admin` talab qiladi (ikkalasi ham o'tadi), yo
+`owner`. Ruxsat satrlari katalogi yo'q.
 
-`gts_support` — muammo bo'lganda GTS jamoasi client o'rnatmasiga kira olishi uchun. Doim
-yoqilgan emas: client paneldan yoqadi, amal muddati tugaganda **o'zi o'chadi**, barcha amallar
-audit log'ga alohida belgi bilan tushadi. Yozish huquqi yo'q (tizim diagnostikasidan tashqari).
+Resurs guruhlari bo'yicha to'liq matritsa — [API.md](API.md) §5. Bu yerda takrorlanmaydi.
+
+**Nega ikkita.** Bitta o'rnatmada ishlaydigan jamoa kichik — bir necha kishi. Beshta-oltita
+tor rol bunday jamoada real ajratish bermaydi, lekin har bir yangi endpoint uchun "bu qaysi
+rolga tegishli?" degan savolni tug'diradi va matritsa vaqt o'tib haqiqatdan uzoqlashadi.
+Ikkita rol bitta aniq chegara qo'yadi: **kim o'rnatmani boshqaradi** (`owner`) va **kim uni
+kundalik ishlatadi** (`admin`).
 
 ---
 
@@ -252,7 +255,7 @@ audit log'ga alohida belgi bilan tushadi. Yozish huquqi yo'q (tizim diagnostikas
 | **Bildirishnomalar** | Shablonlar, ommaviy yuborish, push | qisman — email ✓, SMS/push keyinroq |
 | **Hisobotlar** | Dashboard, sotuv, Excel/CSV eksport (async) | ✓ |
 | **Jamoa** | Xodimlar va rollar | ✓ |
-| **Tizim** | Holat, versiya, audit log, support kirishi | ✓ |
+| **Tizim** | Holat, versiya, audit log | ✓ |
 
 ---
 
@@ -314,7 +317,7 @@ va raqami (yo'lovchi ma'lumoti sifatida), buyurtma tarixi, IP manzil, qurilma pu
 | Kalit rotatsiyasi | Har bir yozuvda `key_version` bor, shuning uchun kalitni almashtirish uchun credential'larni qayta kiritish shart emas |
 | Transport | Barcha muhitlarda HTTPS majburiy |
 | Tokenlar | Access qisqa muddatli; refresh **rotatsiya bilan** — har yangilashda eskisi bekor qilinadi |
-| Audit | Paneldagi **har bir mutatsiya** yoziladi: kim, qachon, qaysi resurs, qanday o'zgarish. Auth hodisalari va `gts_support` yoqilishi alohida belgilanadi |
+| Audit | Paneldagi **har bir mutatsiya** yoziladi: kim, qachon, qaysi resurs, qanday o'zgarish. Auth hodisalari alohida belgilanadi |
 | CORS | Public — sayt va ilova domenlari; admin — faqat panel domeni |
 
 **Akkaunt o'chirilganda** (`DELETE /public/profile/`) shaxsiy ma'lumot tozalanadi, lekin
@@ -373,7 +376,9 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 - `GET /admin/system/health/` — DB, Redis, GTS va to'lov provayderlari holati (§4).
 - `GET /admin/system/version/` — backend va panel versiyasi. Yordam so'raganda birinchi so'raladigan narsa.
 - Loglar JSON shaklida stdout'ga; har bir so'rov `X-Request-Id` bilan bog'lanadi.
-- Muammo chuqurroq bo'lsa — client `gts_support` oynasini yoqadi (§9), muddati tugaganda o'zi yopiladi.
+- Muammo chuqurroq bo'lsa — client konteyner loglarini va `system/audit/` chiqarmasini beradi;
+  o'rnatmaga kirish kerak bo'lsa **o'zi vaqtinchalik staff akkaunt ochadi** va ish tugagach
+  o'chiradi. Doimiy "support roli" yo'q — kirish har safar client qaroriga bog'liq (§9).
 
 ---
 
@@ -381,13 +386,13 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 
 | Bosqich | Natija | Qabul mezoni |
 |---|---|---|
-| **1. Yadro** | FastAPI skeleti, envelope va xato katalogi, auth (customer + staff), RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health | Panelga `owner` sifatida kirish mumkin · brend rangi o'zgartirilsa `site-config` da **deploysiz** aks etadi · RBAC matritsa testi o'tadi |
+| **1. Yadro** | FastAPI skeleti, envelope va xato katalogi, auth (customer + staff), RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health | Panelga `owner` sifatida kirish mumkin · brend rangi o'zgartirilsa `site-config` da **deploysiz** aks etadi · ikki rolli kirish testi o'tadi: `admin` tokeni `owner` talab qiladigan endpointda `403` oladi |
 | **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va anti-corruption qatlami, `ProductAdapter` porti, **aviachipta** adapteri, holatsiz qidiruv oqimi (D2), verify/bron, Payme + Click, saga, buyurtmalar | Aviachipta bo'yicha qidiruv → bron → to'lov → chipta uchidan-uchiga ishlaydi · chipta xatosida avtomatik qaytarish ishlaydi · takroriy webhook ikki marta yechmaydi |
 | **3. Qolgan vertikallar** | Poyezd, sug'urta, eSIM, transfer — har biri adapter sifatida | To'rttasi ham to'liq oqimdan o'tadi · **oqim va saga kodiga o'zgarish kiritilmagan** — adapter porti o'zini shu bilan oqlaydi |
-| **4. Panel** | Brending, sozlamalar, integratsiyalar, kontent, buyurtmalar, to'lovlar, mijozlar, promokodlar, xodimlar, dashboard | Har bir rol faqat o'ziga ruxsat etilgan ekranlarni ko'radi · sirlar maskalangan holda qaytadi |
+| **4. Panel** | Brending, sozlamalar, integratsiyalar, kontent, buyurtmalar, to'lovlar, mijozlar, promokodlar, xodimlar, dashboard | `admin` da jamoa bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish rejimida ochiladi · sirlar maskalangan holda qaytadi |
 | **5. Sayt** | Web frontend `site-config` va public API ustida, uz/ru/en | Paneldagi rang/logo o'zgarishi saytda **qayta build'siz** ko'rinadi · tarjima bo'lmagan maydon fallback bilan ko'rsatiladi |
 | **6. Mobil ilova** | Flutter, per-client build pipeline, **Sign in with Apple** (D5) | Ikkala store uchun build tayyor · brending `site-config` dan keladi |
-| **7. Yetuklik va topshirish** | Hisobotlar va eksport, ommaviy yuborish, support kirishi, **o'rnatish/yangilash/zaxira hujjati** | Client hujjat bo'yicha o'z serveriga **mustaqil** o'rnata oladi |
+| **7. Yetuklik va topshirish** | Hisobotlar va eksport, ommaviy yuborish, **o'rnatish/yangilash/zaxira hujjati** | Client hujjat bo'yicha o'z serveriga **mustaqil** o'rnata oladi |
 
 3 va 4-bosqichlar turli modullarga tegadi, shuning uchun parallel bajarilishi mumkin.
 
@@ -399,7 +404,7 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 |---|---|---|
 | 1 | **Menyu va sahifalar modeli** — qat'iy tuzilmami yoki erkin konstruktor? Sahifa tanasi sxemasi qanday (til bo'yicha rich-text yoki bloklar konstruktori)? | CMS moduli va sayt frontendi. Birinchi relizga kirmagani uchun 5-bosqichgacha kutadi |
 | 2 | **Buyurtmani tahrirlash** — panel yo'lovchi ma'lumotini o'zgartira oladimi yoki bu faqat GTS tomonda bo'ladimi? | Buyurtmalar moduli |
-| 3 | **Qaytarish siyosati** — qisman qaytarish qanday hisoblanadi, kim tasdiqlaydi? | To'lovlar moduli. Vaqtinchalik taxmin: `finance` boshlaydi, summa GTS `refund-check` dan olinadi |
+| 3 | **Qaytarish siyosati** — qisman qaytarish qanday hisoblanadi, kim tasdiqlaydi? | To'lovlar moduli. Vaqtinchalik taxmin: `admin` boshlaydi, summa GTS `refund-check` dan olinadi |
 | 4 | **Dashboard ko'rsatkichlari** — aniq ro'yxat kerak (sotuv, konversiya, o'rtacha chek, …) | Hisobotlar moduli |
 | 5 | **Saqlash muddatlari** — audit log va anonimlashtirilgan buyurtmalar necha muddat saqlanadi? | §13, DB o'sishi |
 | 6 | **Kutilayotgan yuk** — bir vaqtdagi foydalanuvchilar va yiliga buyurtmalar soni | Server o'lchami va GTS'ga ketadigan so'rovlar soni (§12, D2) |

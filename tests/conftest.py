@@ -11,7 +11,7 @@ import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.permissions import Role
+from app.core.roles import Role
 from app.core.security import Audience, TokenType, create_token
 from app.db import redis as redis_module
 from app.main import app
@@ -42,14 +42,16 @@ async def client() -> AsyncIterator[AsyncClient]:
 def issue_token(
     audience: Audience,
     *,
-    role: Role | None = None,
+    role: Role | str | None = None,
     token_type: TokenType = TokenType.ACCESS,
 ) -> str:
+    """``role`` also takes a raw string, so a test can mint a token carrying a
+    role the enum no longer has and assert it is refused."""
     token, _ = create_token(
         subject_id=uuid.uuid4(),
         audience=audience,
         token_type=token_type,
-        role=role.value if role else None,
+        role=str(role) if role else None,
     )
     return token
 
@@ -57,6 +59,11 @@ def issue_token(
 @pytest.fixture
 def staff_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {issue_token(Audience.ADMIN, role=Role.OWNER)}"}
+
+
+@pytest.fixture
+def admin_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {issue_token(Audience.ADMIN, role=Role.ADMIN)}"}
 
 
 @pytest.fixture

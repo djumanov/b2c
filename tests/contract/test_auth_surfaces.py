@@ -6,7 +6,7 @@ tell the panel to refresh a token that is perfectly valid, and it would loop.
 
 from httpx import AsyncClient
 
-from app.core.permissions import Role
+from app.core.roles import Role
 from app.core.security import Audience, TokenType
 from tests.conftest import issue_token
 
@@ -57,16 +57,25 @@ async def test_staff_token_is_accepted(
     assert response.json()["data"]["backend"]
 
 
-async def test_role_without_the_permission_is_403(client: AsyncClient) -> None:
-    """`content` has no access to system (API.md §5)."""
-    token = issue_token(Audience.ADMIN, role=Role.CONTENT)
+async def test_admin_token_is_accepted(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """`admin` reads system state too — API.md §5 gives it 👁 there."""
+    response = await client.get(VERSION_URL, headers=admin_headers)
+
+    assert response.status_code == 200
+
+
+async def test_a_role_that_no_longer_exists_is_403(client: AsyncClient) -> None:
+    """A token minted before the two-role model is refused, not downgraded."""
+    token = issue_token(Audience.ADMIN, role="content")
 
     response = await client.get(
         VERSION_URL, headers={"Authorization": f"Bearer {token}"}
     )
 
     assert response.status_code == 403
-    assert "system.read" in response.json()["errors"][0]["message"]
+    assert response.json()["errors"][0]["code"] == "forbidden"
 
 
 async def test_revoked_token_is_401(

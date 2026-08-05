@@ -77,12 +77,12 @@ app/
     v1/router.py           # public / admin / webhooks routerlarini yig'ish
     envelope.py            # {status, data, errors, meta} javob o'rami
     errors.py              # istisno → xato katalogi
-    deps.py                # CurrentCustomer, CurrentStaff, RequirePermission, Pagination
+    deps.py                # CurrentCustomer, CurrentStaff, require_owner, Pagination
     idempotency.py         # Idempotency-Key dependency
   core/
     config.py              # FAQAT env: DB, Redis, shifrlash kaliti, log darajasi
     security.py            # JWT, argon2, refresh rotatsiyasi, jti qora ro'yxati
-    permissions.py         # ruxsatlar katalogi + rol→ruxsat xaritasi
+    roles.py               # ikkita rol va ular orasidagi ierarxiya (owner ⊃ admin)
     crypto.py              # DB'dagi sirlar uchun AES-GCM shifrlash
     i18n.py                # tarjima obyektlari + fallback zanjiri
     money.py               # Decimal va valyuta
@@ -96,7 +96,7 @@ app/
     feedback/              # sharhlar va moderatsiya
     catalog/               # shahar, stansiya, davlat, aviakompaniya, valyuta
     customers/             # akkaunt, profil, yo'lovchilar, kartalar, qurilmalar
-    staff/                 # xodimlar, rollar, support kirish oynasi
+    staff/                 # xodimlar va ularning roli
     products/              # qidiruv oqimi routerlari + ProductAdapter registry (stateless)
     booking/               # verify → bron → to'lov/chipta sagasi
     orders/                # buyurtmalar, status xaritasi, sync, available_actions
@@ -131,7 +131,7 @@ yupqa yig'uvchi.
 | `feedback` | Sharhlar va moderatsiya holati | `pending → accepted \| rejected` |
 | `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar | GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish |
 | `customers` | Akkaunt, auth, profil, saqlangan yo'lovchi/karta, qurilma, ichki bildirishnomalar | `aud: public` tokenlari |
-| `staff` | Xodimlar, qat'iy rollar, support kirish oynasi | `aud: admin` tokenlari |
+| `staff` | Xodimlar va ularning roli — `owner` yoki `admin`, kodda qat'iy belgilangan | `aud: admin` tokenlari |
 | `products` | Qidiruv oqimi routerlari (`search`/`offers`/`verify`/`upsell`) va `ProductAdapter` registry | **Holatsiz** (D2): hech narsa saqlamaydi, GTS'ga uzatadi va javobni normallashtiradi |
 | `booking` | `verify` dan keyingi bron va buyurtmani chiptagacha yoki qaytarishgacha olib boruvchi **saga** | D3 bo'yicha — **eng yuqori xavfli modul** |
 | `orders` | Lokal buyurtma yozuvlari, GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba |
@@ -274,7 +274,7 @@ ko'tarilganda ishga tushadi.
 singletonlari, menu, integration configs) · *cms* (7 ta kontent jadvali, feedbacks) ·
 *commerce* (orders, order passengers, payments, transactions, refunds, promo codes, promo usages) ·
 *engagement* (leads, lead sources, subscriptions, templates, broadcasts, devices, notifications) ·
-*ops* (jobs, audit log, uploads, support access).
+*ops* (jobs, audit log, uploads).
 
 > Qidiruv uchun jadval **yo'q** — bu D2 ning bevosita natijasi.
 
@@ -293,12 +293,14 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 - **Barcha yo'llarda trailing slash** ([API.md](API.md) §1).
 - **Kesishuvchi vazifalarni dependency'lar bajaradi**: `CurrentCustomer` / `CurrentStaff`
   (`aud` tekshiriladi — shuning uchun customer tokeni `/admin/*` da `401` emas, **`403`** oladi),
-  `RequirePermission("orders.write")`, `Pagination`, `IdempotencyKey`, `AuditContext`.
-- **RBAC** — kodda qat'iy belgilangan ruxsatlar katalogi: 10 ta resurs guruhi × `.read`/`.write`
-  = 20 ta satr, to'g'ridan-to'g'ri [API.md](API.md) §5 matritsasidan. Rollar — shu to'plamlarga
-  bog'langan konstantalar. `GET /admin/auth/me/` yakuniy ro'yxatni qaytaradi, panel menyuni
-  **ruxsatlar bo'yicha** yig'adi, rol nomi bo'yicha emas ([API.md](API.md) §27).
-  `gts_support` qo'shimcha ravishda **ochiq support oynasi** shartiga bog'lanadi.
+  `require_owner`, `Pagination`, `IdempotencyKey`, `AuditContext`.
+- **RBAC — ikki pog'onali rol tekshiruvi.** Rollar ikkita va kodda qat'iy belgilangan:
+  `owner ⊃ admin` ([API.md](API.md) §5). Shuning uchun ruxsat satrlari katalogi yo'q va
+  endpoint ikki holatdan birida bo'ladi: `CurrentStaff` yetarli (ikkala rol ham o'tadi), yoki
+  ustiga `require_owner` qo'shiladi (`admin` → **`403`**). Bitta dependency, ikkita holat —
+  ~150 endpoint bo'ylab yodda tutish kerak bo'lgan yagona narsa shu.
+- `GET /admin/auth/me/` xodimning `role` qiymatini qaytaradi va panel menyuni **shu qiymat
+  bo'yicha** yig'adi ([API.md](API.md) §27).
 - **Audit** mutatsiyani avtorizatsiya qilgan o'sha dependency tomonidan yoziladi: kim, qaysi
   resurs, qanday amal, maydon darajasidagi farq (sirlar berkitilgan), request id, IP.
 - OpenAPI — shu qoidalarning **artefakti**, aksincha emas ([API.md](API.md) muqaddimasi).
@@ -310,20 +312,20 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 | Soha | Tanlov | Nega |
 |---|---|---|
 | Stek | Python 3.13, FastAPI, SQLAlchemy 2.0 async + asyncpg, Alembic, Pydantic v2, httpx, argon2, structlog, `uv`, ruff + mypy strict | [GTS.md](GTS.md) §11 dagi tashkilot standartiga mos — jamoa buni allaqachon ishlatadi |
-| Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash, katalog yangilash va support oynasi uchun beat kerak |
+| Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash va katalog yangilash uchun beat kerak |
 | Kesh / broker | Redis | `site-config`, statik kataloglar, idempotency, GTS sessiyasi, rate limit, Celery brokeri. **Qidiruv uchun emas** (D2, §9) |
 | To'lov | `PaymentProvider` porti + Payme, Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Keyinchalik Paygine = bitta adapter va karta/OTP yo'llarini ulash |
 | Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi |
 | Fayl saqlash | `Storage` porti + lokal disk adapteri | Bitta serverli o'rnatma; Docker volume — zaxira birligi. Client xohlasa S3 shunchaki adapter almashtirish |
-| **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa [API.md](API.md) §38 da qat'iy belgilangan |
+| **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa ikkita va [API.md](API.md) §5 da qat'iy belgilangan |
 
 **Yetkazib berish:** Docker Compose — `api`, `worker`, `beat`, `postgres`, `redis`, reverse proxy.
 Entrypoint `alembic upgrade head` ni bajaradi, so'ng **faqat birinchi ko'tarilishda** env'dan
 birinchi `owner` ni yaratadi. Postgres va yuklangan fayllar uchun volume.
 
 **Beat jadvali:** ochiq buyurtmalar statusini GTS'dan sinxronlash · bog'lanmagan fayllarni tozalash
-(24 soat, [API.md](API.md) §11) · support oynasini yopish · idempotency kalitlarini tozalash ·
-katalog yangilash · valyuta kurslarini yangilash.
+(24 soat, [API.md](API.md) §11) · idempotency kalitlarini tozalash · katalog yangilash ·
+valyuta kurslarini yangilash.
 
 > Buyurtma sinxronizatsiyasi ataylab **polling** sifatida quriladi: [GTS.md](GTS.md) §12 faqat
 > B2C→GTS yo'nalishini hujjatlashtirgan, ya'ni GTS bizga o'zi qo'ng'iroq qilishiga tayanib
@@ -366,7 +368,7 @@ Bular ishni to'xtatmaydi, lekin tasdiqlanishi kerak.
 | A4 | Promokod chegirmasi **client marjasidan** ketadi, GTS to'liq tarifni oladi | Tijorat tomoni tasdiqlasa |
 | A5 | Yoqilgan mahsulotlar ro'yxati GTS shartnomasidan o'qiladi va beat vazifa bilan keshlanadi | Aniq GTS endpoint'i ko'rsatilsa |
 | A6 | Hisobotlarda kun bo'yicha guruhlash uchun o'rnatma darajasidagi vaqt mintaqasi (default `Asia/Tashkent`); saqlash UTC'da qoladi | — |
-| A7 | Qisman qaytarishni `finance` roli boshlaydi, summa GTS `refund-check` dan olinadi | Siyosat aniqlansa |
+| A7 | Qisman qaytarishni `admin` boshlaydi, summa GTS `refund-check` dan olinadi | Siyosat aniqlansa |
 | A8 | Yuklamalar va eksportlar lokal diskda, storage porti ortida | S3 talab qilinsa |
 | A9 | GTS `offers/` da sahifalash (`next_token`) va saralashni qo'llaydi | Qo'llamasa — [API.md](API.md) §20 kontrakti qisqartiriladi (`sort` olib tashlanadi) |
 
@@ -386,13 +388,13 @@ nazaridan qisqacha:
 
 | Bosqich | Backend ishi |
 |---|---|
-| **1. Yadro** | Ilova skeleti, envelope + xato katalogi, ikki sub'ektli auth, RBAC va ruxsatlar katalogi, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health |
+| **1. Yadro** | Ilova skeleti, envelope + xato katalogi, ikki sub'ektli auth, ikki rolli RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health |
 | **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va ACL (§7), `ProductAdapter` porti (§6), `flight` adapteri, holatsiz qidiruv oqimi (§9), verify/bron, Payme + Click adapterlari, **saga** (§8), buyurtmalar |
 | **3. Qolgan vertikallar** | `railway`, `insurance`, `esim`, `transfer` adapterlari. **Oqim va saga kodi o'zgarmasligi shart** — port shu bilan sinovdan o'tadi |
 | **4. Panel** | Admin yuzasining qolgan qismi: kontent, mijozlar, promokodlar, murojaatlar, hisobot asoslari |
 | **5. Sayt** | Backend tomonda yangi ish kam; `site-config` va public kontent yuzasini yakunlash |
 | **6. Mobil ilova** | Push infratuzilmasi, qurilma reyestri, **Sign in with Apple** (D5) |
-| **7. Yetuklik** | Hisobot eksporti, ommaviy yuborish, support kirishi, o'rnatish/yangilash hujjati |
+| **7. Yetuklik** | Hisobot eksporti, ommaviy yuborish, o'rnatish/yangilash hujjati |
 
 ---
 
@@ -409,8 +411,10 @@ nazaridan qisqacha:
   server o'chishi → qayta ko'tarilganda tiklanish. **Test eng ko'p foyda beradigan modul shu.**
 - **Adapter porti testi** (3-bosqich qabul mezoni): to'rtta yangi vertikal qo'shilganda oqim va
   saga kodi o'zgarmaganini diff bilan tasdiqlash.
-- **RBAC matritsa testi** [API.md](API.md) §5 dan generatsiya qilinadi: har bir rol × har bir
-  resurs guruhi hujjatdagi ✎ / 👁 / — qiymatiga tekshiriladi.
+- **Ikki rolli kirish testi** route jadvali bo'ylab sidirg'a o'tadi: har bir `/admin/*` yo'l
+  yo `admin`, yo `owner` talab qilishini e'lon qiladi, keyin `admin` tokeni `owner`-only
+  yo'llarda **`403`** olishi, customer tokeni esa ikkalasida ham **`403`** olishi tekshiriladi
+  ([API.md](API.md) §5). Rolsiz yoki noma'lum rolli token ham `403`.
 - **i18n fallback testi**: so'ralgan til → asosiy til → mavjud birinchi til zanjiri va qaytarilgan
   `lang` qiymati.
 - **Qo'lda e2e** compose stack'da: ko'tarilish → migratsiya → `owner` yaratish → panelga kirish →

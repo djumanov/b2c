@@ -10,6 +10,10 @@ proved who they are; a customer is simply not a kind of user that ``/admin/*``
 serves. Answering 401 would tell a panel client to go and refresh a token that
 is perfectly fine.
 
+Authorisation is one bit wide: the roles are ``owner`` and ``admin`` and the
+first contains the second (API.md §5). So a route either takes any staff token
+or carries ``require_owner`` — there is no permission string to look up.
+
 While the ``staff`` and ``customers`` tables do not exist yet, the principals
 below are built from the token's own claims. Loading the row — to honour a
 block, a deleted account or a role changed since the token was issued — lands
@@ -25,7 +29,7 @@ from fastapi import Depends, Query, Request
 
 from app.api.errors import Forbidden, RateLimited, Unauthorized
 from app.core import i18n
-from app.core.permissions import Role, permissions_of
+from app.core.roles import Role, satisfies
 from app.core.security import (
     Audience,
     TokenClaims,
@@ -56,10 +60,6 @@ class Staff:
 
     id: uuid.UUID
     role: Role
-    permissions: frozenset[str]
-
-    def can(self, required: str) -> bool:
-        return required in self.permissions
 
 
 def _bearer_token(request: Request) -> str:
@@ -94,34 +94,28 @@ async def current_staff(request: Request) -> Staff:
     try:
         role = Role(claims.role or "")
     except ValueError as exc:
-        raise Forbidden("Token carries no usable role") from exc
-    return Staff(
-        id=claims.subject_id,
-        role=role,
-        permissions=frozenset(permissions_of(role)),
-    )
+        # A role the enum no longer knows is refused rather than downgraded:
+        # a token minted before the two-role model must stop working, not
+        # quietly become an ``admin``.
+        raise Forbidden(f"Unknown staff role: {claims.role!r}") from exc
+    return Staff(id=claims.subject_id, role=role)
 
 
 CurrentCustomer = Annotated[Customer, Depends(current_customer)]
 CurrentStaff = Annotated[Staff, Depends(current_staff)]
 
 
-def RequirePermission(  # noqa: N802 - reads as a marker at the use site
-    required: str,
-) -> Callable[[Staff], Awaitable[Staff]]:
-    """Guard a route: ``dependencies=[Depends(RequirePermission("orders.write"))]``.
+async def require_owner(staff: CurrentStaff) -> Staff:
+    """Guard an owner-only route: ``dependencies=[Depends(require_owner)]``.
 
-    Permission strings come from ``core.permissions``; the panel receives the
-    caller's final list from ``GET /admin/auth/me/`` and builds its menu from
-    that, never from the role name (API.md §5, §27).
+    The roles are two and ordered — ``owner ⊃ admin`` (API.md §5) — so a route
+    is either open to any staff token, in which case ``current_staff`` alone is
+    the guard, or restricted to the owner, in which case this is. There is no
+    third case and no permission catalogue to consult.
     """
-
-    async def dependency(staff: CurrentStaff) -> Staff:
-        if not staff.can(required):
-            raise Forbidden(f"This action requires the {required} permission")
-        return staff
-
-    return dependency
+    if not satisfies(staff.role, Role.OWNER):
+        raise Forbidden("This action requires the owner role")
+    return staff
 
 
 # --- pagination ----------------------------------------------------------------
@@ -264,6 +258,7 @@ __all__ = [
     "Pagination",
     "PaginationDep",
     "RateLimit",
-    "RequirePermission",
     "Staff",
+    "current_staff",
+    "require_owner",
 ]

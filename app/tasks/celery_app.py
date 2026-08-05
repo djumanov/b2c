@@ -60,7 +60,6 @@ celery_app.conf.update(
 #
 #   * sync open orders from GTS            -> modules/orders
 #   * sweep unattached uploads (24 h)      -> modules/uploads   (API.md §11)
-#   * close the expired support window     -> modules/staff
 #   * sweep expired idempotency keys       -> api/idempotency   (Redis TTL does
 #                                             most of this already)
 #   * refresh the static catalogues        -> modules/catalog
