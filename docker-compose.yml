@@ -37,16 +37,36 @@ services:
       - "${API_PORT:-8000}:8000"
     volumes:
       - uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   worker:
     <<: *app
     command: ["worker"]
     volumes:
       - uploads:/app/uploads
+    healthcheck:
+      # Asks this worker to answer over the broker: it proves the process is
+      # alive *and* still consuming, which a process check would not.
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app:celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
 
   beat:
     <<: *app
     command: ["beat"]
+    # Beat has nothing to answer on: no HTTP port, and it is a scheduler rather
+    # than a consumer, so `inspect ping` does not reach it. Reporting "no
+    # health data" is honest; if it dies, `restart: unless-stopped` brings it
+    # back and its absence shows in the schedule.
+    healthcheck:
+      disable: true
 
   postgres:
     image: postgres:17-alpine

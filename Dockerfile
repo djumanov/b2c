@@ -55,8 +55,10 @@ USER app
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8000/healthz || exit 1
+# No HEALTHCHECK here on purpose. The same image runs the API, the worker and
+# beat, and only the API serves HTTP — an image-level HTTP probe would mark the
+# other two permanently unhealthy, which is exactly the signal a client needs
+# to stay meaningful. Each role declares its own check in docker-compose.yml.
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["api"]
