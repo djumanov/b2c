@@ -80,7 +80,11 @@ async def create(
 ) -> UploadOut:
     _validate(purpose, content_type, content)
 
-    key = await get_storage().save(content=content, filename=filename, purpose=purpose)
+    key = await get_storage().save(
+        content=content,
+        extension=rules.extension_for(content_type),
+        purpose=purpose,
+    )
     upload = Upload(
         filename=filename[:255],
         content_type=content_type,

@@ -28,9 +28,15 @@ class UploadPurpose(StrEnum):
 
 class Storage(Protocol):
     async def save(
-        self, *, content: bytes, filename: str, purpose: UploadPurpose
+        self, *, content: bytes, extension: str, purpose: UploadPurpose
     ) -> str:
-        """Store the file; returns the key it can be fetched and deleted by."""
+        """Store the file; returns the key it can be fetched and deleted by.
+
+        ``extension`` comes from the **validated content type**, never from the
+        name the client sent (``modules.uploads.rules.extension_for``). It is
+        what decides the ``Content-Type`` the bytes are served back with, so an
+        attacker-chosen one would be an attacker-chosen content type.
+        """
         ...
 
     async def url(self, key: str, *, private: bool = False) -> str:

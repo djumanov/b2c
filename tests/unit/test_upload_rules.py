@@ -75,3 +75,46 @@ def test_the_overall_cap_matches_the_proxy() -> None:
     accepted — with a bare 413 that is not in the error catalogue.
     """
     assert rules.MAX_UPLOAD_BYTES == 25 * rules.MEGABYTE
+
+
+# --- what a stored file is served as ------------------------------------------------
+
+
+def test_every_accepted_type_has_an_extension() -> None:
+    """Otherwise a file would be stored without one and served as a download."""
+    accepted = {mime for rule in rules.RULES.values() for mime in rule.types}
+    assert accepted <= set(rules.EXTENSION_FOR)
+
+
+def test_the_extension_map_is_reversible() -> None:
+    """Two types sharing an extension would make the served type ambiguous."""
+    assert len(set(rules.EXTENSION_FOR.values())) == len(rules.EXTENSION_FOR)
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("logo/ab/abcd.png", rules.PNG),
+        ("logo/ab/abcd.svg", rules.SVG),
+        ("document/ab/abcd.pdf", rules.PDF),
+        # Written before the extension came from the validated type.
+        ("logo/ab/abcd.jpeg", rules.JPEG),
+        ("logo/ab/abcd.PNG", rules.PNG),
+    ],
+)
+def test_a_known_extension_maps_back_to_its_type(key: str, expected: str) -> None:
+    assert rules.mime_for_key(key) == expected
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        # The whole point: an extension a client chose must never become a type
+        # a browser will execute in this installation's origin.
+        "logo/ab/abcd.html",
+        "logo/ab/abcd.svgz",
+        "logo/ab/abcd",
+    ],
+)
+def test_an_unknown_extension_is_served_as_an_opaque_download(key: str) -> None:
+    assert rules.mime_for_key(key) == rules.FALLBACK_MIME

@@ -56,18 +56,19 @@ class LocalStorage:
             raise ValueError(f"key escapes the storage root: {key!r}")
         return candidate
 
-    def build_key(self, *, filename: str, purpose: UploadPurpose) -> str:
-        # The client's filename is never part of the key: it would be a second
-        # place for traversal to hide, and two people uploading `logo.png`
-        # would collide.
-        suffix = Path(filename).suffix.lower()[:16]
+    def build_key(self, *, extension: str, purpose: UploadPurpose) -> str:
+        # Nothing the client sent is part of the key. The name would be a second
+        # place for traversal to hide and two people uploading `logo.png` would
+        # collide; the name's *extension* is worse still, because it is what the
+        # file route serves the bytes as — so the extension comes from the
+        # validated content type instead (``uploads.rules.extension_for``).
         stamp = uuid.uuid4()
-        return f"{purpose.value}/{stamp.hex[:2]}/{stamp.hex}{suffix}"
+        return f"{purpose.value}/{stamp.hex[:2]}/{stamp.hex}{extension}"
 
     async def save(
-        self, *, content: bytes, filename: str, purpose: UploadPurpose
+        self, *, content: bytes, extension: str, purpose: UploadPurpose
     ) -> str:
-        key = self.build_key(filename=filename, purpose=purpose)
+        key = self.build_key(extension=extension, purpose=purpose)
         path = AsyncPath(self._path(key))
         await path.parent.mkdir(parents=True, exist_ok=True)
         await path.write_bytes(content)

@@ -57,6 +57,34 @@ RULES: Final[dict[UploadPurpose, PurposeRule]] = {
     ),
 }
 
+#: The extension a stored file gets, chosen from the type we **validated** and
+#: never from the name the client sent. The name is attacker-controlled, and the
+#: extension is what decides the ``Content-Type`` the bytes come back with: a
+#: "PNG" called ``x.html`` would otherwise be served as HTML from this
+#: application's own origin.
+EXTENSION_FOR: Final[dict[str, str]] = {
+    PNG: ".png",
+    JPEG: ".jpg",
+    WEBP: ".webp",
+    GIF: ".gif",
+    SVG: ".svg",
+    ICO: ".ico",
+    PDF: ".pdf",
+}
+
+#: The other direction, for the route that serves the bytes. It is the exact
+#: inverse of ``EXTENSION_FOR`` plus the aliases a key written before that map
+#: existed may carry; anything else is not a type this application ever stored
+#: and is served as an opaque download.
+MIME_FOR_EXTENSION: Final[dict[str, str]] = {
+    **{ext: mime for mime, ext in EXTENSION_FOR.items()},
+    ".jpeg": JPEG,
+}
+
+#: What an unrecognised extension is served as. Not a type any browser will
+#: execute or render in place.
+FALLBACK_MIME: Final = "application/octet-stream"
+
 #: Leading bytes that must match the declared type. SVG is absent on purpose —
 #: it is XML, so it has no fixed signature and is checked separately.
 _SIGNATURES: Final[dict[str, tuple[bytes, ...]]] = {
@@ -70,6 +98,30 @@ _SIGNATURES: Final[dict[str, tuple[bytes, ...]]] = {
 
 def rule_for(purpose: UploadPurpose) -> PurposeRule:
     return RULES[purpose]
+
+
+def extension_for(content_type: str) -> str:
+    """The extension to store a validated type under. Empty if unknown.
+
+    Unknown cannot happen for an uploaded file — the type whitelist runs first
+    — but an extensionless key is still safe: it comes back as an opaque
+    download rather than as something a browser will run.
+    """
+    return EXTENSION_FOR.get(content_type, "")
+
+
+def mime_for_key(key: str) -> str:
+    """What to serve a stored key as, without asking the database.
+
+    The extension is trustworthy because this application writes it from the
+    validated content type (``extension_for``), so the map is exact rather than
+    a guess. ``mimetypes.guess_type`` is deliberately not used: it would happily
+    return ``text/html``.
+    """
+    _, dot, suffix = key.rpartition(".")
+    if not dot:
+        return FALLBACK_MIME
+    return MIME_FOR_EXTENSION.get(f".{suffix.lower()}", FALLBACK_MIME)
 
 
 def content_matches(content_type: str, content: bytes) -> bool:
@@ -94,10 +146,15 @@ MAX_UPLOAD_BYTES: Final = max(rule.max_bytes for rule in RULES.values())
 
 
 __all__ = [
+    "EXTENSION_FOR",
+    "FALLBACK_MIME",
     "MAX_UPLOAD_BYTES",
     "MEGABYTE",
+    "MIME_FOR_EXTENSION",
     "RULES",
     "PurposeRule",
     "content_matches",
+    "extension_for",
+    "mime_for_key",
     "rule_for",
 ]

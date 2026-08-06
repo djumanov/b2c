@@ -76,6 +76,55 @@ async def test_a_logo_can_be_uploaded_and_read_back(
     assert fetched.headers["content-type"] == "image/png"
 
 
+async def test_the_served_type_comes_from_the_bytes_not_the_filename(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """A "PNG" called `x.html` must not come back as HTML.
+
+    The extension decides the `Content-Type`, and served from this
+    installation's own origin `text/html` is stored XSS: the file is public,
+    needs no token, and shares the panel's cookies.
+    """
+    status, body = await _upload(
+        api,
+        owner,
+        content=PNG + b"<script>alert(1)</script>",
+        filename="x.html",
+        mime="image/png",
+    )
+    assert status == 201, body
+
+    url = str(body["data"]["url"])
+    assert url.endswith(".png")
+    assert ".html" not in url
+
+    fetched = await api.get(url)
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "image/png"
+
+
+async def test_a_served_file_forbids_sniffing_and_scripting(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """An SVG is XML, and XML can carry a `<script>`.
+
+    The signature check cannot see that — a script-bearing SVG still starts
+    with `<svg`. The sandbox is what makes it harmless: opened directly it
+    lands in an origin of its own, with nothing of this installation in reach.
+    """
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    status, body = await _upload(
+        api, owner, content=svg, filename="logo.svg", mime="image/svg+xml"
+    )
+    assert status == 201, body
+
+    fetched = await api.get(str(body["data"]["url"]))
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "image/svg+xml"
+    assert fetched.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in fetched.headers["content-security-policy"]
+
+
 async def test_a_public_file_needs_no_token(api: AsyncClient, owner: Staff) -> None:
     """The website is anonymous; its logo cannot require a login."""
     _, body = await _upload(api, owner)

@@ -20,6 +20,12 @@ cannot swallow it.
 A soft-deleted upload cannot be served, without this route needing a database
 query per image: the only thing that soft-deletes one is the sweep, and the
 sweep deletes the bytes in the same breath.
+
+**What the bytes come back as** is decided the same way, and for the same
+reason. The key's extension is written from the *validated* content type
+(``uploads.rules.extension_for``), so mapping it back is exact rather than a
+guess — and an extension the client chose can no longer turn a "PNG" into
+``text/html`` served from this installation's own origin.
 """
 
 from fastapi import APIRouter, Depends
@@ -37,6 +43,16 @@ router = APIRouter(prefix=URL_PREFIX, include_in_schema=False)
 #: An hour. Long enough that a page of blog covers is not re-fetched on every
 #: navigation, short enough that a replaced logo appears without a hard reload.
 _PUBLIC_CACHE = "public, max-age=3600"
+
+#: Sent with every file. ``nosniff`` stops a browser from second-guessing the
+#: type we declare, and the sandbox puts anything that *is* a document — an SVG
+#: is XML with a ``<script>`` element available — in an opaque origin of its
+#: own, where it can neither read this installation's cookies nor call its API.
+#: Neither header affects an ``<img>``, which is how these files are loaded.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+}
 
 
 def _resolved(key: str, *, want_public: bool) -> FileResponse:
@@ -63,8 +79,13 @@ def _resolved(key: str, *, want_public: bool) -> FileResponse:
 
     return FileResponse(
         path,
+        # Explicit, and from our own map. Left to ``FileResponse`` this is
+        # ``mimetypes.guess_type(path)``, which answers with whatever the
+        # extension suggests — including ``text/html``.
+        media_type=rules.mime_for_key(key),
         headers={
-            "Cache-Control": _PUBLIC_CACHE if want_public else "private, no-store"
+            "Cache-Control": _PUBLIC_CACHE if want_public else "private, no-store",
+            **_SECURITY_HEADERS,
         },
     )
 
