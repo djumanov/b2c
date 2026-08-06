@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `feat/feature-gate`
+**Oxirgi yangilanish:** 2026-08-06 · `feat/customer-auth`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 28 ta yo'l / 40 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 12 ta + `alembic_version` |
-| Migratsiyalar | 7 ta, bitta head (`d89da85832da`) |
-| Testlar | 402 ta — unit 15 fayl · contract 7 · integration 12 |
+| Endpointlar | 37 ta yo'l / 49 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 15 ta + `alembic_version` |
+| Migratsiyalar | 8 ta, bitta head (`8c64b732eb50`) |
+| Testlar | 437 ta — unit 15 fayl · contract 7 · integration 14 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -33,9 +33,10 @@ takrorlamaydi.
 | `admin` tokeni `owner` talab qiladigan endpointda `403` oladi | ✅ `tests/integration/test_staff_crud.py` |
 
 > Uchala mezon ham texnik jihatdan bajarildi, lekin 1-bosqichning **qamrovi**
-> hali to'liq emas: `integrations` ning to'lov qismi va `customers` moduli
-> yo'q (§3). **2-fazani ham, 6-bo'lakni ham to'sib turgan narsa qolmadi** —
-> GTS credential'lari saqlanadi, pochta esa haqiqatan yuboriladi.
+> hali to'liq emas: `integrations` ning to'lov qismi va `customers` ning
+> **profil** yarmi qolgan (§3). Auth yarmi endi bor, ya'ni `aud: public`
+> tokeni birinchi marta haqiqiy egaga ega — 2-fazaning `orders` moduli
+> shuni kutayotgan edi (PROJECT.md D4: akkauntsiz xarid yo'q).
 
 ---
 
@@ -61,16 +62,19 @@ kontrakt testlari.
 | `integrations` | GTS credential'lari: ro'yxat, bittasi aktiv, shifrlangan parol | 3 |
 | `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari | 2 |
 | `system` | health, version (setup'dan) | 2 |
-| `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq | — |
+| `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
+| `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2 = 28). Operatsiyalar
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+9 = 37). Operatsiyalar
 > ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi
 > `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/` faqat
-> `POST`); `integrations` ning GTS qismida 6 ta.
+> `POST`); `integrations` ning GTS qismida 6 ta. `customers` da 9 yo'l = 9
+> operatsiya, hammasi `POST`.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
-`gts_credentials`, `smtp_settings`.
+`gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
+`email_otps`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -82,8 +86,8 @@ To'liq reja — [PHASES.md](PHASES.md). Bu yerda faqat **navbatdagi uchtasi**:
 
 | # | Bo'lak | Nega shu tartibda |
 |---|---|---|
-| 6 | **`customers`** (PHASES.md §3) | Hech narsa to'smaydi: SMTP tayyor, ya'ni email OTP yo'li ochiq. ⚠ Lekin `social/google/` credential'i **kontraktda yo'q** — API.md §29 ga satr qo'shilishi kerak |
-| 5b | **`integrations`** — to'lov provayderlari va uchala `test/` | 2-fazani to'smaydi; `providers/payments/` adapterlari bilan birga qilingani mantiqiyroq |
+| 6b | **`customers`** — profil (API.md §19) | Jadval va auth tayyor; qolgani shu jadval ustiga quriladi. `avatar/` uchun `uploads` ga **yangi `purpose`** kerak (pastda) |
+| 5b | **`integrations`** — to'lov provayderlari, uchala `test/` va social credential'i | 2-fazani to'smaydi; `providers/payments/` adapterlari bilan birga qilingani mantiqiyroq. `social/{provider}/` shu yerda ochiladi (PHASES.md §2.11) |
 | 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala mezon toza baza ustida, uchidan-uchiga |
 
 Shu bo'laklar kutayotgan **koddagi aniq nuqtalar**:
@@ -99,8 +103,12 @@ Shu bo'laklar kutayotgan **koddagi aniq nuqtalar**:
 - `app/modules/integrations/` — `POST /admin/integrations/gts/test/`
   (API.md §29) hali **yozilmagan**. Probe `providers/gts/` ga tushadi va
   2FA holatini alohida ko'rsatishi kerak (D1).
-- `app/api/deps.py::current_customer` — qatorni **yuklamaydi**;
-  `current_staff` kabi `customers.service.get_active()` ga o'tkaziladi (§4.3).
+- `app/providers/storage/base.py::UploadPurpose` — `avatar` a'zosi yo'q, ya'ni
+  6b da qo'shiladi: yangi a'zo + `uploads/rules.py` da qoida (raster, kichik
+  limit, `public`) + `upload_purpose` CHECK'ini qayta yozadigan migratsiya.
+- `app/modules/customers/` — `social/{provider}/` va `devices/` **mount
+  qilinmagan**, ya'ni `404`. Ikkalasining sababi boshqa: birinchisi §29 dagi
+  credential satrini kutadi, ikkinchisi API.md §41 da.
 
 **Qolgan beat vazifalari** (`app/tasks/celery_app.py` dagi izohda): GTS'dan
 buyurtma statuslarini sync · idempotency kalitlarini tozalash · kataloglarni
@@ -146,6 +154,12 @@ tug'ilmasligi uchun.
 | 29 | `CORE_PREFIXES` **testda**, ilova kodida emas | Bu sozlama emas — qabul qilingan qarorning yozuvi. Unga e'tiroz bildiriladigan joy — diff |
 | 30 | `RequireFeature` — class, `RateLimit`/`Audited` esa funksiya-fabrika | Sweep uni dependency daraxtidan `isinstance` bilan topishi kerak; closure'ga atribut osish ishlardi-yu, birinchi o'quvchidan omon qolmasdi |
 | 31 | Noma'lum bayroq **import vaqtida** yiqiladi | `RATE_LIMITS[kind]` bilan bir xil: xato yozilgan bayroq jarayonni boot'da to'xtatadi, aks holda hech kim o'chira olmaydigan bo'lim jimgina xizmat qilaverardi |
+| 32 | `register/` akkaunt qatorini **darhol**, tasdiqlanmagan holda yaratadi — kutayotgan ro'yxatlar uchun alohida joy yo'q | Bitta manzil bitta joyda turadi. Muqobili — tasdiqlanmagan yozuvlar do'koni, keyin uni `customers` bilan sinxron saqlash. `is_active` `email_verified_at` ni talab qilgani uchun bunday qator hech narsa bermaydi: u akkaunt emas, band qilingan joy |
+| 33 | Band manzilga ham **`204`**, xabar esa **o'sha manzilning o'ziga** ketadi | `409` bo'lsa `register/` "bu odamning bizda akkaunti bormi?" degan savolga javob beradigan vositaga aylanardi, va u autentifikatsiyasiz. Kimga bilish kerak — manzil egasiga — o'ziga boradi |
+| 34 | Kodlar **Postgres'da**, parol tiklash tokeni esa Redis'da | Olti raqam faqat urinishlar shifti bilan yetarli, shift esa kesh tozalanganda nolga qaytmasligi kerak. Token boshqa narsa: uzun, bir martalik va qisqa umrli — `getdel` unga aynan mos |
+| 35 | Qayta yuborish oynasi **jim** ishlaydi: `204`, lekin xat ketmaydi | Ko'rinadigan `429` "bu manzilda kutayotgan kod bormi?" deb aytardi — ya'ni §4.33 dagi `204` ning ma'nosini yo'q qilardi. Ko'rinadigan chegara API.md §14 niki bo'lib qoladi, u manzilni emas, IP'ni sanaydi |
+| 36 | Mijoz auth hodisalari `audit_log` ga **yozilmaydi** | PROJECT.md §13 jurnalni **paneldagi** mutatsiyalar bilan chegaralaydi va `tests/contract/test_audit_coverage.py` faqat `/admin/*` ni supuradi. Mijoz login'lari `/admin/system/audit/` ni ko'mib tashlardi — u aynan xodimlar faoliyatini ko'rsatish uchun bor |
+| 37 | Parol pastki chegarasi `customers` da **qayta yozilgan**, `staff` dan import qilinmagan | Bugun ikkalasi 8, lekin ular boshqa-boshqa narsa: biri client o'z xodimlariga qo'ygan siyosat, ikkinchisi ommaga qo'yilgani. Umumiy konstanta bo'lsa bittasini o'zgartirish ikkalasini o'zgartirgandek ko'rinardi |
 
 ---
 
@@ -291,7 +305,13 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
    yo'q, `Set-Cookie` paydo bo'lsa muhim bo'ladi.
 10. `api/deps.py::_rate_limit_subject` refresh tokenni ham autentifikatsiyalangan
     sub'ekt deb sanaydi.
-11. `core/crypto.py` AAD ishlatmaydi — shifrmatnni bir ustundan boshqasiga
+11. **Muddati o'tgan sessiya va kod qatorlarini hech kim tozalamaydi.**
+    `customer_refresh_tokens`, `email_otps` va `staff_refresh_tokens` faqat
+    o'sadi. Hech biri noto'g'ri javob bermaydi — o'qishlar `expires_at` va
+    `revoked_at` ni tekshiradi — lekin bu uchtasi bitta beat vazifasi bilan
+    hal bo'ladigan **bitta** ish, shuning uchun `customers` bo'lagining ichiga
+    yashirilmadi. Qolgan beat vazifalari bilan birga (§3).
+12. `core/crypto.py` AAD ishlatmaydi — shifrmatnni bir ustundan boshqasiga
     ko'chirishni aniqlab bo'lmaydi. **Endi haqiqiy**: `smtp_settings.password`
     bilan shifrmatn saqlaydigan ikkinchi ustun paydo bo'ldi, ya'ni "ko'chirish"
     nazariy bo'lmay qoldi. SMTP bo'lagida **ataylab qilinmadi**, chunki AAD
@@ -302,7 +322,7 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
 
 ### 2026-08-06 — GTS credential'lari yozilayotganda topilgani
 
-12. 🟠 **`mask_secret(value, visible=0)` sirni to'liq qaytarardi.**
+13. 🟠 **`mask_secret(value, visible=0)` sirni to'liq qaytarardi.**
     `value[-0:]` — bu `value[0:]`, ya'ni butun satr; umumiy ifoda uni o'z
     maskasiga qo'shib qo'yardi. Hech kim hali bunday chaqirmagan edi, lekin
     "hech narsa ko'rinmasin" degan so'rov sirni chop etishi jimgina kutib
