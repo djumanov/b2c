@@ -15,8 +15,10 @@ from app.modules.integrations.models import (
     GtsCredential,
     PaymentProvider,
     SmtpSettings,
+    SocialCredential,
 )
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.social.base import SocialProviderCode
 
 _ORDERED = select(GtsCredential).order_by(
     GtsCredential.is_active.desc(), GtsCredential.label
@@ -147,6 +149,42 @@ async def payment_provider(
     return row
 
 
+_SOCIAL_ORDERED = select(SocialCredential).order_by(SocialCredential.provider)
+
+
+async def social_credentials(session: AsyncSession) -> list[SocialCredential]:
+    """Every social provider the release supports, creating any that are missing.
+
+    Same seeding rule as ``payment_providers``, and for the same reason: the
+    set comes from the code, so an installation that upgrades finds a newly
+    supported provider already listed and switched off.
+    """
+    missing = set(SocialProviderCode) - {
+        row.provider for row in (await session.scalars(_SOCIAL_ORDERED)).all()
+    }
+    if missing:
+        await session.execute(
+            pg_insert(SocialCredential)
+            .values(
+                [
+                    {"id": uuid.uuid4(), "provider": provider.value}
+                    for provider in sorted(missing)
+                ]
+            )
+            .on_conflict_do_nothing()
+        )
+    return list((await session.scalars(_SOCIAL_ORDERED)).all())
+
+
+async def social_credential(
+    session: AsyncSession, provider: SocialProviderCode
+) -> SocialCredential | None:
+    row: SocialCredential | None = await session.scalar(
+        select(SocialCredential).where(SocialCredential.provider == provider)
+    )
+    return row
+
+
 __all__ = [
     "active",
     "all_credentials",
@@ -157,4 +195,6 @@ __all__ = [
     "payment_provider",
     "payment_providers",
     "smtp",
+    "social_credential",
+    "social_credentials",
 ]

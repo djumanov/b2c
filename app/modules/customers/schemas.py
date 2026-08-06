@@ -56,6 +56,12 @@ class RefreshIn(BaseModel):
     refresh_token: str
 
 
+class SocialLoginIn(BaseModel):
+    """The identity token the provider handed the browser (API.md §18)."""
+
+    id_token: Annotated[str, Field(min_length=1, max_length=4096)]
+
+
 class TokenPairOut(BaseModel):
     """API.md §18. ``expires_in`` describes the **access** token, in seconds."""
 
@@ -193,6 +199,7 @@ __all__ = [
     "RegisterConfirmIn",
     "RegisterIn",
     "ResendCodeIn",
+    "SocialLoginIn",
     "ResetTokenOut",
     "TokenPairOut",
 ]

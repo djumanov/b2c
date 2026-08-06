@@ -29,6 +29,7 @@ from app.modules.integrations.models import (
     GtsCredential,
     PaymentProvider,
     SmtpSettings,
+    SocialCredential,
 )
 from app.modules.integrations.schemas import (
     CredentialCreateIn,
@@ -39,13 +40,17 @@ from app.modules.integrations.schemas import (
     SmtpIn,
     SmtpOut,
     SmtpTestOut,
+    SocialCredentialIn,
+    SocialCredentialOut,
 )
 from app.modules.uploads import service as uploads_service
-from app.providers import notifications
+from app.providers import notifications, social
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.social.base import SocialProviderCode, SocialVerifier
+from app.providers.social.google import GoogleVerifier
 from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
@@ -694,6 +699,109 @@ async def any_payment_provider_ready(session: AsyncSession) -> bool:
     return any(row.enabled and row.credentials for row in rows)
 
 
+# --- social sign-in (API.md §29) ------------------------------------------------------
+
+
+def _social_aud(row: SocialCredential) -> dict[str, Any]:
+    """The secret is not among them; that it changed shows in ``updated_at``."""
+    return {"enabled": row.enabled, "client_id": row.client_id}
+
+
+def _social_out(row: SocialCredential) -> SocialCredentialOut:
+    return SocialCredentialOut(
+        provider=row.provider,
+        enabled=row.enabled,
+        # In the clear on purpose — this value is published to every browser
+        # that draws the sign-in button.
+        client_id=row.client_id,
+        client_secret=MASKED_PASSWORD if row.client_secret else None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def list_social_credentials(session: AsyncSession) -> list[SocialCredentialOut]:
+    rows = await repository.social_credentials(session)
+    if session.in_transaction():
+        await session.commit()
+    return [_social_out(row) for row in rows]
+
+
+async def update_social_credential(
+    session: AsyncSession, provider: SocialProviderCode, data: SocialCredentialIn
+) -> SocialCredentialOut:
+    await repository.social_credentials(session)
+    row = await repository.social_credential(session, provider)
+    if row is None:  # pragma: no cover - the seeding read above just made it
+        raise NotFound("Social provider not found")
+    before = _social_aud(row)
+
+    if data.client_id is not None:
+        row.client_id = data.client_id.strip() or None
+    if data.client_secret is not None:
+        if data.client_secret:
+            row.client_secret, row.key_version = encrypt(data.client_secret)
+        else:
+            row.client_secret, row.key_version = None, None
+    elif row.client_secret is not None and needs_reencryption(row.key_version or 0):
+        # Lazy rotation, free here because the row is being written anyway.
+        row.client_secret, row.key_version = encrypt(
+            decrypt(row.client_secret, row.key_version or 0)
+        )
+
+    if data.enabled is not None:
+        if data.enabled and not row.client_id:
+            # The client id is what a token is checked against, so without it
+            # there is nothing to verify against and the button would fail on
+            # the first press.
+            raise ValidationFailed(
+                "Add the provider's client id before switching it on",
+                field="enabled",
+            )
+        row.enabled = data.enabled
+
+    await session.commit()
+    await session.refresh(row)
+    audit_context.describe(changes=audit_context.diff(before, _social_aud(row)))
+    logger.info(
+        "social_credential_updated", provider=row.provider.value, enabled=row.enabled
+    )
+    return _social_out(row)
+
+
+async def social_verifier(
+    session: AsyncSession, provider: str
+) -> SocialVerifier | None:
+    """Which verifier this installation signs people in with, right now.
+
+    ``None`` means the provider is switched off or unconfigured, and the caller
+    turns that into a `404` — "there is no such sign-in here", the same shape a
+    switched-off section uses (API.md §28).
+
+    Built per call rather than cached in a module global, for the reason
+    ``notifier`` gives: the settings behind it are edited from the panel and
+    there are several worker processes.
+    """
+    # Scoped to the provider it stands for, not to every name: a pinned Google
+    # verifier must not make an unsupported provider start working, or the
+    # tests would agree with themselves about a route nobody can reach.
+    override = social.get_override()
+    if override is not None and override.code == provider:
+        return override
+
+    try:
+        code = SocialProviderCode(provider)
+    except ValueError:
+        # A name this release has no adapter for. Indistinguishable from a
+        # switched-off one to the caller, and deliberately so.
+        return None
+
+    row = await repository.social_credential(session, code)
+    if row is None or not row.enabled or not row.client_id:
+        return None
+    return GoogleVerifier(client_id=row.client_id)
+
+
 __all__ = [
     "ActiveGtsCredential",
     "ConfiguredPaymentProvider",
@@ -708,9 +816,12 @@ __all__ = [
     "get_smtp",
     "list_credentials",
     "list_payment_providers",
+    "list_social_credentials",
     "notifier",
     "payment_providers",
+    "social_verifier",
     "test_smtp",
+    "update_social_credential",
     "update_credential",
     "update_payment_provider",
     "update_smtp",

@@ -13,6 +13,7 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 
 from app.modules.integrations.models import DEFAULT_BASE_URL, TlsMode
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.social.base import SocialProviderCode
 
 Label = Annotated[str, Field(min_length=1, max_length=64)]
 GtsPassword = Annotated[str, Field(min_length=1, max_length=128)]
@@ -181,6 +182,32 @@ class PaymentProviderIn(BaseModel):
     credentials: Credentials | None = None
 
 
+# --- social sign-in (API.md §29) ----------------------------------------------------
+
+
+class SocialCredentialOut(BaseModel):
+    """``client_id`` in full, ``client_secret`` masked.
+
+    Not an oversight: the client id is handed to every browser that renders the
+    sign-in button, so hiding it in the panel would cost the operator the one
+    value they need to compare against the Google console.
+    """
+
+    provider: SocialProviderCode
+    enabled: bool
+    client_id: str | None
+    client_secret: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SocialCredentialIn(BaseModel):
+    enabled: bool | None = None
+    #: An empty string clears it — the same convention as the SMTP username.
+    client_id: Annotated[str | None, Field(max_length=255)] = None
+    client_secret: Annotated[str | None, Field(max_length=255)] = None
+
+
 __all__ = [
     "CredentialCreateIn",
     "CredentialOut",
@@ -191,4 +218,6 @@ __all__ = [
     "SmtpOut",
     "SmtpTestIn",
     "SmtpTestOut",
+    "SocialCredentialIn",
+    "SocialCredentialOut",
 ]

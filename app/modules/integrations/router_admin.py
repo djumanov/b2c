@@ -31,8 +31,11 @@ from app.modules.integrations.schemas import (
     SmtpOut,
     SmtpTestIn,
     SmtpTestOut,
+    SocialCredentialIn,
+    SocialCredentialOut,
 )
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.social.base import SocialProviderCode
 
 router = enveloped_router(
     prefix="/integrations/gts",
@@ -187,4 +190,34 @@ async def update_payment_provider(
 # phase 2 (API.md §29, PHASES.md §2.13).
 
 
-__all__ = ["notifications_router", "payments_router", "router"]
+# --- social sign-in (API.md §29) -----------------------------------------------------
+
+social_router = enveloped_router(
+    prefix="/integrations/social",
+    tags=["integrations"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@social_router.get("/", summary="Social sign-in providers — secret masked")
+async def list_social_credentials(session: SessionDep) -> list[SocialCredentialOut]:
+    return await service.list_social_credentials(session)
+
+
+@social_router.patch(
+    "/{provider}/",
+    dependencies=[Depends(require_owner)],
+    summary="Switch on or off and set the OAuth client",
+)
+async def update_social_credential(
+    provider: SocialProviderCode, data: SocialCredentialIn, session: SessionDep
+) -> SocialCredentialOut:
+    return await service.update_social_credential(session, provider, data)
+
+
+__all__ = [
+    "notifications_router",
+    "payments_router",
+    "router",
+    "social_router",
+]

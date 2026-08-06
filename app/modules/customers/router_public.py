@@ -3,12 +3,12 @@
 Handlers stay thin: parse, call the service, return a model. The envelope comes
 from the route class and errors from the exception handlers.
 
-``social/{provider}/`` is **not** mounted. The endpoint is in the first
-release's scope, but API.md §29 has nowhere to keep a Google client id and
-secret, so there is no way to configure it; it is built with the rest of the
-integrations surface (PHASES.md §2.11). Unmounted means 404, which is what the
-contract says an unwired endpoint answers. ``devices/`` is absent for the other
-reason — API.md §41 defers it to the push work.
+``social/{provider}/`` is mounted here but configured in ``integrations``: the
+OAuth client belongs with the other credentials (API.md §29, PHASES.md §2.11),
+while the sign-in itself is an account question and so belongs to this module.
+
+``devices/`` is absent — API.md §41 defers it to the push work, so it answers
+404.
 """
 
 from fastapi import Depends, Request, Response
@@ -27,6 +27,7 @@ from app.modules.customers.schemas import (
     RegisterIn,
     ResendCodeIn,
     ResetTokenOut,
+    SocialLoginIn,
     TokenPairOut,
 )
 
@@ -92,6 +93,26 @@ async def refresh(
     return await service.refresh_session(
         session,
         data.refresh_token,
+        user_agent=request.headers.get("user-agent"),
+        ip=client_ip(request),
+    )
+
+
+@router.post("/social/{provider}/", summary="Sign in with a social provider")
+async def social_login(
+    # A plain string, not the enum: a name this release does not know has to
+    # read the same as one the client switched off — both are 404, "there is no
+    # such sign-in here" (API.md §18). Typing it would make an unknown provider
+    # a 422 instead, which describes our enum to an anonymous caller.
+    provider: str,
+    data: SocialLoginIn,
+    request: Request,
+    session: SessionDep,
+) -> TokenPairOut:
+    return await service.authenticate_social(
+        session,
+        provider,
+        data.id_token,
         user_agent=request.headers.get("user-agent"),
         ip=client_ip(request),
     )

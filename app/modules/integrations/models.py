@@ -39,6 +39,7 @@ from app.db.mixins import (
     singleton_check,
 )
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.social.base import SocialProviderCode
 
 #: Where GTS lives unless the client says otherwise (GTS.md §3). Held per row
 #: rather than once for the installation, so production and a test environment
@@ -223,12 +224,55 @@ class PaymentProvider(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_test_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+#: Same VARCHAR + CHECK idiom, for the same reason.
+SOCIAL_PROVIDER_COLUMN = Enum(
+    SocialProviderCode,
+    name="social_provider_code",
+    native_enum=False,
+    create_constraint=True,
+    length=16,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+
+class SocialCredential(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One social sign-in provider's OAuth client — API.md §29.
+
+    A registry like the payment providers rather than a Google-shaped
+    singleton: PROJECT.md D5 requires Sign in with Apple once Google is offered
+    on iOS, and ARCHITECTURE.md §2 says adding it must be a new row rather than
+    a new branch in the sign-in flow.
+    """
+
+    __tablename__ = "social_credentials"
+
+    provider: Mapped[SocialProviderCode] = mapped_column(
+        SOCIAL_PROVIDER_COLUMN, nullable=False, unique=True
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    #: Not a secret, and stored in the clear on purpose: it is published to
+    #: every browser that renders the sign-in button, so encrypting it here
+    #: would protect nothing while making the panel unable to show it.
+    client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: AES-GCM ciphertext. Unused by the ID-token flow, which verifies against
+    #: Google's public keys — kept because the authorization-code flow needs it
+    #: and an installation configures both halves at once.
+    client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 __all__ = [
     "DEFAULT_BASE_URL",
     "PROVIDER_CODE_COLUMN",
+    "SOCIAL_PROVIDER_COLUMN",
     "TLS_MODE_COLUMN",
     "GtsCredential",
     "PaymentProvider",
     "SmtpSettings",
+    "SocialCredential",
     "TlsMode",
 ]

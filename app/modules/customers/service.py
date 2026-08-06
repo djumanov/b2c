@@ -99,6 +99,7 @@ from app.modules.customers.schemas import (
 )
 from app.modules.integrations import service as integrations_service
 from app.modules.uploads import service as uploads_service
+from app.providers.social.base import SocialAuthError
 from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
@@ -459,6 +460,75 @@ async def authenticate(
     return pair
 
 
+async def authenticate_social(
+    session: AsyncSession,
+    provider: str,
+    id_token: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> TokenPairOut:
+    """Sign in with a provider's identity token (API.md §18).
+
+    The account comes back **verified**. That is not a shortcut: the email OTP
+    exists to prove somebody controls an address, and a provider that says
+    ``email_verified`` has proved exactly that already. A provider that says
+    otherwise is refused rather than trusted — an unverified address on a
+    profile is a claim anybody can make about somebody else's mailbox.
+    """
+    verifier = await integrations_service.social_verifier(session, provider)
+    if verifier is None:
+        # Switched off, unconfigured, or a provider this release does not have.
+        # All three are "there is no such sign-in here" (API.md §29).
+        raise NotFound("This sign-in method is not available")
+
+    try:
+        identity = await verifier.verify(id_token)
+    except SocialAuthError as exc:
+        logger.warning("social_token_rejected", provider=provider, error=str(exc))
+        # One answer for every way a token can be bad. Which way it is bad is
+        # not something the holder of a bad token benefits from learning.
+        raise Unauthorized("This sign-in could not be verified") from exc
+
+    if not identity.email_verified:
+        raise Unauthorized("This sign-in could not be verified")
+
+    email = _normalize_email(identity.email)
+    customer = await repository.by_email(session, email)
+    now = utcnow()
+
+    if customer is None:
+        customer = Customer(
+            email=email,
+            # No password is set, and none can be guessed: an empty hash never
+            # verifies. Whoever wants one asks for a password reset, which
+            # proves the same address a second time.
+            password_hash="",
+            first_name=identity.first_name or email.split("@")[0],
+            last_name=identity.last_name,
+            email_verified_at=now,
+        )
+        session.add(customer)
+        await session.flush()
+        logger.info("customer_registered_social", customer_id=str(customer.id))
+    elif not customer.is_verified:
+        # The address was typed here first and never confirmed. The provider
+        # has now confirmed it, so the pending row becomes the account rather
+        # than a second one appearing beside it.
+        customer.email_verified_at = now
+
+    if customer.is_blocked:
+        raise Forbidden("This account has been blocked")
+
+    customer.last_login_at = now
+    pair = await _issue_pair(session, customer, user_agent=user_agent, ip=ip)
+    await session.commit()
+    logger.info(
+        "customer_login_social", customer_id=str(customer.id), provider=provider
+    )
+    return pair
+
+
 async def refresh_session(
     session: AsyncSession,
     refresh_token: str,
@@ -812,6 +882,7 @@ __all__ = [
     "OTP_TTL",
     "RESET_TOKEN_TTL_SECONDS",
     "authenticate",
+    "authenticate_social",
     "change_password",
     "clear_avatar",
     "confirm_password_reset",
