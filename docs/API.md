@@ -174,9 +174,11 @@ hal qilinadi.
 `GET /admin/auth/me/` xodimning `role` qiymatini qaytaradi va panel menyuni **shu qiymat
 bo'yicha** yig'adi (§27).
 
-> **Alohida amallar guruhdan qattiqroq bo'lishi mumkin.** Qaytarib bo'lmaydigan bir nechta
-> endpoint guruh darajasi `✎` bo'lsa ham `owner` da qoladi — hozircha bittasi:
-> `DELETE /admin/customers/{id}/` (shaxsiy ma'lumotni tozalash, §34). Buning teskarisi
+> **Alohida amallar guruhdan qattiqroq bo'lishi mumkin.** Qaytarib bo'lmaydigan yoki
+> o'rnatmaning qamrovini o'zgartiradigan bir nechta endpoint guruh darajasi `✎` bo'lsa ham
+> `owner` da qoladi — hozircha ikkitasi:
+> `DELETE /admin/customers/{id}/` (shaxsiy ma'lumotni tozalash, §34) va
+> `PATCH /admin/settings/features/` (butun bo'limni o'chirish, §28). Buning teskarisi
 > bo'lmaydi: guruhda `—` yoki `👁` turgan joyda endpoint hech qachon kengroq ruxsat bermaydi.
 
 ---
@@ -412,6 +414,12 @@ qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
 ```
 
 Javob keshlanadi (`Cache-Control` + `ETag`); paneldan o'zgarish kiritilganda kesh tozalanadi.
+
+`features` — sayt va ilova qaysi bo'limlarni ko'rsatishini shundan biladi: bayroq `false`
+bo'lsa menyu elementi ham, sahifa ham chizilmaydi. Bu **yagona himoya emas** — backend ham
+o'sha bayroqni majburlaydi va o'chirilgan bo'lim `404 not_found` qaytaradi (§28). Ikki
+tomonlama, chunki eski build yoki to'g'ridan-to'g'ri chaqiruv bayroqni hisobga olmasligi
+mumkin.
 
 ---
 
@@ -715,7 +723,7 @@ bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish reji
 | `GET` `PATCH` | `/admin/settings/languages/` | `admin` | Asosiy til va mavjud tillar |
 | `GET` `PATCH` | `/admin/settings/currencies/` | `admin` | Asosiy valyuta va ko'rsatiladigan valyutalar |
 | CRUD | `/admin/settings/menu/` | `admin` | Menyu elementlari (ierarxik) — **§41** |
-| `GET` `PATCH` | `/admin/settings/features/` | `admin` | Bo'limlarni yoqish/o'chirish (blog, sharhlar, …) |
+| `GET` `PATCH` | `/admin/settings/features/` | `GET` `admin` · `PATCH` **`owner`** | Bo'limlarni yoqish/o'chirish (blog, sharhlar, …) |
 | `GET` | `/admin/settings/products/` | — | Yoqilgan mahsulot vertikallari — **faqat o'qish** |
 | `POST` | `/admin/settings/cache/purge/` | `admin` | `site-config` keshini tozalash |
 
@@ -729,6 +737,47 @@ O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
 > `settings/products/` faqat o'qish uchun: qaysi vertikallar sotilishi GTS shartnomasi bilan
 > belgilanadi. Panel ularni ko'rsatadi, o'zgartira olmaydi — sabab
 > [PROJECT.md](PROJECT.md) §5 da.
+
+### `features` — bo'lim o'chirilsa u yo'q bo'ladi
+
+Mahsulot ko'p clientga o'rnatiladi va ba'zi clientga ayrim bo'limlar kerak emas
+([PROJECT.md](PROJECT.md) §1). Farq **kodda emas, shu bayroqlarda**: bitta image, ko'p
+o'rnatma.
+
+Bayroq `false` bo'lsa tegishli yo'llar **ikkala yuzada ham `404 not_found`** qaytaradi —
+`/public/…` da ham, `/admin/…` da ham. Panel ham bo'limni ko'rsatmaydi. Sabab: modul
+"o'chiq" bo'lib panelda turaversa, xodim unga kontent yozadi va u hech qayerda ko'rinmaydi.
+
+**Ma'lumot o'chirilmaydi.** Blogni o'chirish bloglarni o'chirmaydi — qayta yoqilsa
+hammasi joyida. Bu tugma, mina emas.
+
+`403` emas, `404`: `403` "sizga ruxsat yo'q" degani, holbuki hech kimga ruxsat yo'q —
+bu o'rnatmada bunday resurs umuman mavjud emas.
+
+| Bayroq | Nimani o'chiradi |
+|---|---|
+| `blog` | `/admin/content/blogs/` · `/public/content/blogs/` |
+| `promotions` | `…/content/promotions/` — aksiyalar |
+| `faq` | `…/content/faq/` |
+| `contacts` | `…/content/contacts/` |
+| `banners` | `…/content/banners/` |
+| `popular_directions` | `…/content/popular-directions/` |
+| `feedbacks` | `/admin/content/feedbacks/` · `/public/content/feedbacks/` · `/public/feedbacks/` |
+| `promo_codes` | `/admin/promos/` · `/public/promo/apply\|discard/` |
+| `leads` | `/admin/leads/` · `/admin/subscriptions/` va public juftliklari |
+| `reports` | `/admin/reports/` |
+| `broadcast` | `/admin/notifications/` — shablonlar va ommaviy yuborish (§36) |
+| `loyalty` | Qamrovga kirmaydi va yoqib bo'lmaydi — **§41** |
+
+`promo_codes` ataylab `promo` deb atalmagan: `promotions` (CMS aksiyalari) yonida turadi
+va bir harfli farq noto'g'ri tugmani bosishga olib keladi.
+
+**Vertikallar bu ro'yxatga kirmaydi.** Aviachipta, poyezd, sug'urta, eSIM va transfer
+`settings/products/` bilan boshqariladi va u paneldan o'zgartirilmaydi — client nima
+sotishi GTS shartnomasidan keladi, bayroqdan emas.
+
+Tranzaksion pochta (OTP, parol tiklash) `broadcast` ga **bog'liq emas** — u yadro va
+`integrations` orqali ketadi (§29).
 
 > Brendingning qaysi qismi runtime'da, qaysi biri build vaqtida qotib qolishi —
 > [PROJECT.md](PROJECT.md) §7 dagi jadval. App ikonkasi va nomi bu yerda saqlanadi, lekin
@@ -1083,3 +1132,9 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 
 Kontrakt **hozirdan** to'liq belgilangan: bu endpointlar API'da mavjud, lekin birinchi relizda
 ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
+
+> `404` ning **ikkita sababi** bor va ular boshqa-boshqa. Bu yerdagisi — relizga
+> kirmagan, ya'ni **har bir o'rnatmada** bir xil. Ikkinchisi — client bo'limni
+> paneldan o'chirgan (§28), ya'ni **shu o'rnatmaga xos** va qaytarib yoqilishi mumkin.
+> Javob tanasi ikkalasida bir xil: mijozga ikkalasi ham "bunday narsa yo'q" degani, va
+> qaysi biri ekanini aytish o'rnatma haqida keraksiz ma'lumot berardi.
