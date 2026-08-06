@@ -579,8 +579,8 @@ Idempotency-Key: …
 
 | Metod | Yo'l | Izoh |
 |---|---|---|
-| `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash |
-| `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish |
+| `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash — **§41** |
+| `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish — **§41** |
 
 > **Karta ma'lumoti serverda saqlanmaydi va log'ga tushmaydi.** Birinchi relizda Payme va Click
 > faqat redirect oqimida ishlagani uchun karta raqami **umuman serverimizdan o'tmaydi**
@@ -997,6 +997,7 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 | Endpoint / imkoniyat | Nega keyinroq | Qachon |
 |---|---|---|
 | `/public/transactions/{id}/card/`, `/confirm/`, `/resend-otp/` | Payme va Click redirect oqimida ishlaydi; karta+OTP faqat Paygine kabi provayder qo'shilganda kerak (D7) | Yangi provayder qo'shilganda |
+| `/public/payments/{payment_id}/installment/calculate/`, `/apply/` | D7 relizni **Payme va Click** bilan cheklaydi va ikkalasi ham bo'lib to'lash bermaydi — bu qadamlar uchun provayder umuman nomlanmagan | Bo'lib to'lash provayderi belgilanganda |
 | `/public/auth/social/apple/` | iOS ilovada Google bo'lgani uchun Apple qoidalari talab qiladi (D5) | 6-bosqich |
 | Telefon + SMS OTP (`login`, `register/confirm`, `password/reset`) | MVP'da faqat email/SMTP (D6) | SMS xizmati ulanganda |
 | `/public/auth/devices/`, `/admin/orders/{id}/push/`, push broadcast | Push xizmati birinchi relizga kirmaydi | 6–7-bosqich |

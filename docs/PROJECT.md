@@ -387,14 +387,19 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 | Bosqich | Natija | Qabul mezoni |
 |---|---|---|
 | **1. Yadro** | FastAPI skeleti, envelope va xato katalogi, auth (customer + staff), RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health | Panelga `owner` sifatida kirish mumkin · brend rangi o'zgartirilsa `site-config` da **deploysiz** aks etadi · ikki rolli kirish testi o'tadi: `admin` tokeni `owner` talab qiladigan endpointda `403` oladi |
-| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va anti-corruption qatlami, `ProductAdapter` porti, **aviachipta** adapteri, holatsiz qidiruv oqimi (D2), verify/bron, Payme + Click, saga, buyurtmalar | Aviachipta bo'yicha qidiruv → bron → to'lov → chipta uchidan-uchiga ishlaydi · chipta xatosida avtomatik qaytarish ishlaydi · takroriy webhook ikki marta yechmaydi |
+| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va anti-corruption qatlami, `ProductAdapter` porti, **aviachipta** adapteri, holatsiz qidiruv oqimi (D2), verify/bron, Payme + Click, saga, buyurtmalar, **to'lovga promokod qo'llash** | Aviachipta bo'yicha qidiruv → bron → to'lov → chipta uchidan-uchiga ishlaydi · chipta xatosida avtomatik qaytarish ishlaydi · takroriy webhook ikki marta yechmaydi |
 | **3. Qolgan vertikallar** | Poyezd, sug'urta, eSIM, transfer — har biri adapter sifatida | To'rttasi ham to'liq oqimdan o'tadi · **oqim va saga kodiga o'zgarish kiritilmagan** — adapter porti o'zini shu bilan oqlaydi |
-| **4. Panel** | Brending, sozlamalar, integratsiyalar, kontent, buyurtmalar, to'lovlar, mijozlar, promokodlar, xodimlar, dashboard | `admin` da jamoa bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish rejimida ochiladi · sirlar maskalangan holda qaytadi |
+| **4. Panel** | Brending, sozlamalar, integratsiyalar, kontent, buyurtmalar, to'lovlar, mijozlar, promokodlar, xodimlar, dashboard — **panel ekranlari**; ularning ortidagi API o'z fazasida quriladi (masalan integratsiyalar API'si 1-fazada) | `admin` da jamoa bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish rejimida ochiladi · sirlar maskalangan holda qaytadi |
 | **5. Sayt** | Web frontend `site-config` va public API ustida, uz/ru/en | Paneldagi rang/logo o'zgarishi saytda **qayta build'siz** ko'rinadi · tarjima bo'lmagan maydon fallback bilan ko'rsatiladi |
 | **6. Mobil ilova** | Flutter, per-client build pipeline, **Sign in with Apple** (D5) | Ikkala store uchun build tayyor · brending `site-config` dan keladi |
 | **7. Yetuklik va topshirish** | Hisobotlar va eksport, ommaviy yuborish, **o'rnatish/yangilash/zaxira hujjati** | Client hujjat bo'yicha o'z serveriga **mustaqil** o'rnata oladi |
 
 3 va 4-bosqichlar turli modullarga tegadi, shuning uchun parallel bajarilishi mumkin.
+
+> Bu jadval — **qamrov manbai**: qaysi natija qaysi bosqichda. Har bir bosqich
+> [API.md](API.md) ning qaysi bo'limlariga tegishi va ish qanday bo'laklarga
+> bo'linishi — [PHASES.md](PHASES.md) da. U **avtoritet emas**: ziddiyat bo'lsa
+> shu jadval ustun turadi.
 
 ---
 

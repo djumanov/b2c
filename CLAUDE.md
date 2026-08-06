@@ -13,10 +13,14 @@ docstrings and commit messages are in English.
 | `docs/ARCHITECTURE.md` | Internal structure: modules, layers, DB, saga, adapters |
 | `docs/PROJECT.md` | Product and project: scope, decisions, phases, operations |
 | `docs/GTS.md` | Background on GTS, the upstream B2B platform |
+| `docs/PHASES.md` | **Not an authority.** The execution plan: which `API.md` section belongs to which phase, and how each phase breaks down. `PROJECT.md` §15 wins any conflict about phase boundaries |
 | `docs/STATUS.md` | **Not an authority.** Where the build has got to and what is next — read it first when picking the work back up |
 
 OpenAPI (`/api/v1/openapi.json`) is an **artefact** of `API.md`, never the
 other way round. When the contract changes, `API.md` is edited first.
+
+Picking up work: `STATUS.md` says where the build stopped, `PHASES.md` says
+what comes next and why it belongs to that phase.
 
 ## Workflow rules
 

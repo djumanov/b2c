@@ -4,8 +4,12 @@
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
-[PROJECT.md](PROJECT.md) ustun turadi. Bu yerda faqat **hozir nima qurilgan,
-nima qolgan** va yo'lda topilgan, koddan ko'rinmaydigan qarorlar yozilgan.
+[PROJECT.md](PROJECT.md) ustun turadi.
+
+Bu yerda **hozir nima qurilgan** va yo'lda topilgan, koddan ko'rinmaydigan
+qarorlar. **Nima qurilishi kerak va qaysi tartibda** — [PHASES.md](PHASES.md);
+ikkalasi bir savolga ikki marta javob bermasligi uchun bu hujjat rejani
+takrorlamaydi.
 
 ---
 
@@ -65,69 +69,34 @@ kontrakt testlari.
 
 ---
 
-## 3. Qolgan ish — 1-bosqich
+## 3. Keyingi ish
 
-### 5-bo'lak: `integrations`
+To'liq reja — [PHASES.md](PHASES.md). Bu yerda faqat **navbatdagi uchtasi**:
 
-> Bu **2-bosqichni to'sib turibdi**: GTS credential'lari shusiz saqlanmaydi.
-
-- Jadvallar: `integration_configs` (`code`, `enabled`, `settings` JSONB,
-  `last_tested_at`, `last_test_ok`) va `integration_credentials` (shifrlangan
-  qiymat + **`key_version`** — kalit rotatsiyasi credential'larni qayta
-  kiritishsiz o'tishi uchun, ARCHITECTURE.md §10).
-- `app/core/crypto.py` (`encrypt`/`decrypt`/`needs_reencryption`) shu yerda
-  **birinchi marta** ishlatiladi — hozircha faqat testlari bor.
-- Endpointlar (API.md §29, 9 ta): `GET` — `admin`, `PATCH` va `test/` —
-  **`owner`**. `gts/`, `payments/{code}` (`payme`, `click`), `notifications/`.
-- Sirlar `core.crypto.mask_secret` bilan maskalanadi, hech qachon to'liq
-  qaytmaydi.
-- `providers/notifications/smtp.py` — hozirgi `log.py` adapterining o'rniga
-  (`providers/notifications/__init__.py` dagi `get_notifier()` seam'i orqali).
-- **`system/health/` haqiqiy bo'ladi:** `app/modules/system/service.py:47` da
-  `gts` va `payments` hozir qattiq `NOT_CONFIGURED`.
-- **`site-config`ning `payment_methods` bloki to'ladi** — hozir bo'sh ro'yxat
-  (`settings/service.py::_assemble`).
-
-### 6-bo'lak: `customers`
-
-- Jadvallar: `customers`, `customer_refresh_tokens`, `passengers`,
-  `email_otps`.
-- API.md §18–19: `register/` + `confirm/` + `resend/`, `login/`, `refresh/`,
-  `logout/`, `password/reset/{request,verify,confirm}/`; `GET`/`PATCH`/`DELETE
-  /public/profile/`, `password/`, `CRUD passengers/`.
-- `avatar/` uchun mavjud `uploads` ishlatiladi.
-- `api/deps.py::current_customer` hozir **qatorni yuklamaydi** — `current_staff`
-  kabi `customers.service.get_active()` ga o'tkaziladi.
-- 1-relizga kirmaydi (API.md §41): telefon+SMS OTP, `devices/`,
-  `social/apple/`. `social/google/` credential'lari `integrations` da.
-
-### Bo'laklardan keyin
-
-`tests/e2e/test_phase1_acceptance.py` — uchala mezon toza baza ustida,
-`docker compose up` bilan uchidan-uchiga.
-
----
-
-## 4. 2–7 bosqichlar
-
-To'liq yo'l xaritasi — PROJECT.md §15 va ARCHITECTURE.md §15. Qisqacha:
-
-| Bosqich | Asosiy ish | Diqqat |
+| # | Bo'lak | Nega shu tartibda |
 |---|---|---|
-| **2. GTS + aviachipta** | `providers/gts/` ACL, `catalog`, `products` (holatsiz), `orders`, `payments` + Payme/Click, **`booking` sagasi**, `jobs` | ⚠ GTS mashina akkaunti uchun **2FA o'chirilishi** kerak (D1) — bizga bog'liq emas, oldindan hal qilinsin |
-| **3. Qolgan vertikallar** | `railway`, `insurance`, `esim`, `transfer` — har biri bitta adapter + registry yozuvi | Qabul mezoni: **oqim va saga kodi o'zgarmagan** |
-| **4. Panel** | `cms`, `feedback`, `promo`, `leads`, `notifications`, `reports`, `customers`ning admin tomoni | 3 bilan parallel bo'lishi mumkin |
-| **5. Sayt** | Public kontent yuzasi; `settings/menu/` va `content/pages/` §41 dan chiqadi | Menyu modeli shu paytga qadar aniqlanishi kerak |
-| **6. Mobil ilova** | Push, `devices/`, **Sign in with Apple** (D5) | |
-| **7. Yetuklik** | Eksport, ommaviy yuborish, **o'rnatish/yangilash/zaxira hujjati** | |
+| 5 | **`integrations`** (PHASES.md §3) | **2-fazani to'sib turibdi** — GTS credential'lari shusiz saqlanmaydi. `app/core/crypto.py` shu yerda birinchi marta ishlatiladi; hozircha faqat testlari bor |
+| 6 | **`customers`** (PHASES.md §3) | `integrations` dan keyin: `social/google/` credential'i va SMTP o'sha yerda |
+| 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala mezon toza baza ustida, uchidan-uchiga |
+
+Shu ikkita modul kutayotgan **koddagi aniq nuqtalar**:
+
+- `app/modules/system/service.py:47` — `gts` va `payments` qattiq
+  `NOT_CONFIGURED`; `integrations` bilan haqiqiy bo'ladi.
+- `app/modules/settings/service.py::_assemble` — `payment_methods` bo'sh
+  ro'yxat; `integrations` bilan to'ladi.
+- `app/providers/notifications/` — `smtp.py` yo'q; `log.py` o'rniga
+  `__init__.py` dagi `get_notifier()` seam'i orqali qo'yiladi.
+- `app/api/deps.py::current_customer` — qatorni **yuklamaydi**;
+  `current_staff` kabi `customers.service.get_active()` ga o'tkaziladi (§4.3).
 
 **Qolgan beat vazifalari** (`app/tasks/celery_app.py` dagi izohda): GTS'dan
 buyurtma statuslarini sync · idempotency kalitlarini tozalash · kataloglarni
-yangilash · valyuta kurslarini yangilash.
+yangilash · valyuta kurslarini yangilash. Hammasi 2-fazada.
 
 ---
 
-## 5. Yo'lda qabul qilingan qarorlar
+## 4. Yo'lda qabul qilingan qarorlar
 
 Kontraktda yo'q, lekin kodda bor — kelajakda "nega bunday?" degan savol
 tug'ilmasligi uchun.
@@ -145,17 +114,17 @@ tug'ilmasligi uchun.
 | 9 | Settings qatorlari **birinchi o'qishda** yaratiladi, migratsiyada emas | Default'lar tegishli maydon yonida turadi; migratsiya chiqqach muzlaydi |
 | 10 | `settings/menu/` va `features.loyalty` — **yozilmagan / yoqib bo'lmaydi** | API.md §41, PROJECT.md §3 |
 | 11 | `document`/`export` fayllari `/uploads/private/` ortida, staff token bilan | Eksport uchun keyinchalik imzolangan URL kerak (7-bosqich) |
-| 12 | Saqlash kaliti kengaytmasi **tasdiqlangan MIME'dan** olinadi, client fayl nomidan emas; fayl route'i `media_type` ni o'sha jadvaldan beradi | Kengaytma javobning `Content-Type` ini belgilaydi — ya'ni client tanlagan kengaytma client tanlagan content type demakdir (§6.5) |
+| 12 | Saqlash kaliti kengaytmasi **tasdiqlangan MIME'dan** olinadi, client fayl nomidan emas; fayl route'i `media_type` ni o'sha jadvaldan beradi | Kengaytma javobning `Content-Type` ini belgilaydi — ya'ni client tanlagan kengaytma client tanlagan content type demakdir (§5.5) |
 | 13 | Har bir fayl javobida `nosniff` + `Content-Security-Policy: default-src 'none'; sandbox` | SVG — XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi. Sandbox uni alohida origin'ga tushiradi; `<img>` ga ta'sir qilmaydi |
 | 14 | `Idempotency-Key` da in-flight belgisi **60 s**, saqlangan natija **24 soat** | Xato bergan handler kalitni bir kunga qulflab qo'ymasligi kerak — aks holda caller to'lovni umuman qila olmaydi |
 | 15 | `.env.sample` dagi placeholder qiymatlar bilan **ko'tarilmaydi** (`DEBUG=true` dan tashqari) | `ENCRYPTION_KEYS` allaqachon shunday qilardi (base64 emas). Qolganlari uchun ham ataylab: `JWT_SECRET_KEY` — bu owner tokenini yasash imkoni |
 | 16 | CORS ro'yxati **har so'rovda** `site.domain` dan olinadi, faqat `https` | Starlette uni bir marta, start'da o'qiydi — bu paneldan tahrirlanadigan qiymat uchun noto'g'ri umr. `http://` domenni qabul qilish PROJECT.md §13 dan paneldan chiqib ketish yo'li bo'lardi |
 | 17 | `revoked_before` belgisi: sub'ekt bo'yicha "shu vaqtdan oldingi hamma narsa yaroqsiz". Xuddi **shu soniyada** berilgan token omon qoladi | Access token saqlanmaydi, demak `jti` bilan nomlab bo'lmaydi. Soniya oynasi ataylab: `iat` soniya aniqligida, aks holda odam o'z parolini o'zgartirgach darhol qilgan login'idan chiqib ketardi |
-| 18 | Orphan grace `updated_at` dan hisoblanadi | Fayl ikki marta orphan bo'lishi mumkin; `created_at` almashtirilgan logoni darhol o'chirardi (§6.6) |
+| 18 | Orphan grace `updated_at` dan hisoblanadi | Fayl ikki marta orphan bo'lishi mumkin; `created_at` almashtirilgan logoni darhol o'chirardi (§5.6) |
 
 ---
 
-## 6. Topilgan va tuzatilgan tuzoqlar
+## 5. Topilgan va tuzatilgan tuzoqlar
 
 Bular yana takrorlanishi mumkin — shuning uchun yozib qo'yilgan.
 
@@ -191,7 +160,7 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
    `media_type` bermasdi — Starlette uni `guess_type(path)` bilan topardi.
    PNG imzosi + `filename="x.html"` → `logo/ab/<hex>.html` → autentifikatsiyasiz
    **stored XSS**, panel bilan bitta origin'da. Imzo tekshiruvi buni ko'ra
-   olmasdi, chunki u faqat baytlarning boshiga qaraydi. Tuzatish — §5.12–13.
+   olmasdi, chunki u faqat baytlarning boshiga qaraydi. Tuzatish — §4.12–13.
 
 6. 🔴 **`Idempotency-Key` da'vosi atomik emas edi.** `SET … NX` chaqirilardi,
    lekin **javobi tashlab yuborilardi** — qaror hamon undan oldingi `GET` da
@@ -202,25 +171,25 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
 7. 🟠 **`JWT_SECRET_KEY` ning ishlaydigan default'i bor edi** va aynan o'sha
    satr `.env.sample` da chop etilgan. O'zgaruvchini unutgan o'rnatma
    ko'tarilardi va o'sha kalit bilan imzolardi — istalgan kishi `aud: admin`,
-   `role: owner` token yasay olardi. §5.15.
+   `role: owner` token yasay olardi. §4.15.
 
 8. 🟠 **Prod'da CORS `[]` edi** ("settings moduli paydo bo'lguncha" izohi bilan),
    ya'ni panel o'z API'siga murojaat qila olmasdi; `debug` da esa `["*"]` +
-   `allow_credentials=True` — brauzer rad etadigan juftlik. §5.16.
+   `allow_credentials=True` — brauzer rad etadigan juftlik. §4.16.
 
 9. 🟠 **Parol o'zgartirilganda access token tirik qolardi.** Denylist'ga faqat
    **refresh** jti yozilardi, `change_password` esa "har bir sessiya o'ladi"
-   deb yozilgan — sizib chiqqan access token yana 15 daqiqa ishlardi. §5.17.
+   deb yozilgan — sizib chiqqan access token yana 15 daqiqa ishlardi. §4.17.
 
 10. 🟠 **Faylni uzish uni darhol supurilishga ochardi.** `sweep_orphans` cutoff'ni
     `created_at` bo'yicha hisoblardi, `unlink` esa uni o'zgartirmasdi — olti oy
     tirik turgan logo almashtirilsa keyingi soatlik supurish baytlarni
     o'chirardi. Va'da qilingan 24 soat aynan o'zi uchun yozilgan holatda
-    ishlamasdi. §5.18.
+    ishlamasdi. §4.18.
 
 ---
 
-## 7. Lokal muhit
+## 6. Lokal muhit
 
 - **`.env` dagi `POSTGRES_USER=postgres` lokal Postgres'ga mos emas** — mavjud
   rol `djumanov`. Buyruqlar hozircha shunday ishlatilmoqda:
@@ -230,7 +199,7 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
   Yo `.env` tuzatilsin, yo `postgres` roli yaratilsin.
 - **Lokal `.env` da `DEBUG=true` bo'lishi kerak.** U hozircha `.env.sample`
   nusxasi, ya'ni `DEBUG=false` va placeholder parollar bilan — endi bu
-  kombinatsiya ataylab ko'tarilmaydi (§5.15):
+  kombinatsiya ataylab ko'tarilmaydi (§4.15):
   ```
   Value error, FIRST_OWNER_PASSWORD, POSTGRES_PASSWORD still holds the value
   from .env.sample …
@@ -245,7 +214,7 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
 
 ---
 
-## 8. Ochiq savollar
+## 7. Ochiq savollar
 
 PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 
@@ -261,7 +230,7 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 
 ---
 
-## 9. Ma'lum kamchiliklar
+## 8. Ma'lum kamchiliklar
 
 2026-08-06 ko'rigida topilgan, lekin **hali tuzatilmagan**. Hech biri to'smaydi;
 yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
