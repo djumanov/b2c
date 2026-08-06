@@ -4,6 +4,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.settings import service
 from app.modules.settings.models import Branding
 from app.modules.staff.models import Staff
 from app.modules.uploads.models import Upload
@@ -11,6 +12,7 @@ from tests.integration.conftest import headers_for
 from tests.integration.test_uploads import PNG
 
 SETTINGS = "/api/v1/admin/settings/"
+SITE_CONFIG = "/api/v1/public/site-config/"
 
 
 async def _upload_logo(api: AsyncClient, staff: Staff, *, purpose: str = "logo") -> str:
@@ -225,6 +227,31 @@ async def test_features_can_be_switched_off(api: AsyncClient, owner: Staff) -> N
     assert flags["blog"] is False
     # The others keep their defaults.
     assert flags["faq"] is True
+
+
+async def test_switching_a_feature_off_reaches_the_gate_immediately(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """What ``RequireFeature`` will read, through the same cached document.
+
+    The sequence is the real one: a write purges the cache, the next
+    ``site-config`` request rebuilds it, and the gate reads that — which is why
+    the gate can be a Redis GET rather than a query.
+
+    The rebuild is driven through the API on purpose. ``feature_enabled``
+    opens its own session when the cache is cold, and that session cannot see
+    this test's uncommitted transaction — so a direct call would rebuild the
+    document from a database that has not heard about the PATCH yet.
+    """
+    await api.patch(
+        f"{SETTINGS}features/",
+        headers=headers_for(owner),
+        json={"flags": {"blog": False}},
+    )
+    assert (await api.get(SITE_CONFIG)).status_code == 200
+
+    assert await service.feature_enabled("blog") is False
+    assert await service.feature_enabled("faq") is True
 
 
 async def test_an_unknown_feature_is_refused(api: AsyncClient, owner: Staff) -> None:

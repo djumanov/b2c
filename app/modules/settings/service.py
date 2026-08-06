@@ -393,6 +393,27 @@ async def cors_origins() -> list[str]:
     return _origins_for(domain)
 
 
+async def feature_enabled(flag: str) -> bool:
+    """Is this section switched on for this installation? (API.md §28)
+
+    Session-less, for the same reason as ``cors_origins`` above: it is called
+    from a dependency on nearly every request, and it reads through the same
+    ``site-config`` cache that every settings write purges. So switching a
+    section off takes effect on the next request, not on the next restart —
+    one Redis GET, and no second source of truth to keep in step.
+
+    An unknown flag reads as its default rather than raising: the caller is
+    ``RequireFeature``, which already refused unknown flags at import.
+    """
+    document = await cache.read()
+    if document is None:
+        async with get_sessionmaker()() as session:
+            document = await _assemble(session)
+        await cache.write(document)
+    flags: dict[str, bool] = document["features"]
+    return bool(flags.get(flag, defaults.FEATURE_DEFAULTS.get(flag, False)))
+
+
 async def purge_cache() -> None:
     """``POST /admin/settings/cache/purge/`` (API.md §28).
 
@@ -405,6 +426,7 @@ async def purge_cache() -> None:
 __all__ = [
     "cors_origins",
     "etag_for",
+    "feature_enabled",
     "get_branding",
     "get_currencies",
     "get_features",

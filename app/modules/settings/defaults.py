@@ -42,7 +42,16 @@ DEFAULT_CURRENCIES: Final[list[str]] = [DEFAULT_CURRENCY]
 #: The sections a client may switch off, and how they start. Every key the
 #: contract's ``features`` object may contain is here — an unknown one is a
 #: typo in the panel, and answering 422 says so instead of storing it.
+#:
+#: A ``false`` here is not decoration: ``api.deps.RequireFeature`` turns the
+#: matching routes into ``404`` on both surfaces (API.md §28). Which is why
+#: adding a key is a contract change, not a line in a dict.
+#:
+#: **Not here on purpose:** the five verticals. What an installation may sell
+#: comes from its GTS agreement and lives in ``product_settings``, read-only
+#: from the panel (API.md §28, PROJECT.md §5).
 FEATURE_DEFAULTS: Final[dict[str, bool]] = {
+    # --- content (the `cms` and `feedback` modules) ---
     "blog": True,
     "promotions": True,
     "faq": True,
@@ -50,6 +59,16 @@ FEATURE_DEFAULTS: Final[dict[str, bool]] = {
     "banners": True,
     "popular_directions": True,
     "feedbacks": True,
+    # --- whole modules ---
+    #: Deliberately not "promo": ``promotions`` above is the CMS resource, and
+    #: the two sit next to each other on the same panel screen.
+    "promo_codes": True,
+    "leads": True,
+    "reports": True,
+    #: Templates and mass sending (API.md §36). Transactional mail — OTP, a
+    #: password reset — does **not** hang from this; it goes through
+    #: ``integrations`` and is core.
+    "broadcast": True,
     #: Out of scope for this product (PROJECT.md §3, API.md §41). It appears in
     #: ``site-config`` because the contract's example shows it, and it cannot
     #: be switched on.

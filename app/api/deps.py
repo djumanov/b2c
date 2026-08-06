@@ -27,7 +27,7 @@ from typing import Annotated, Final
 
 from fastapi import Depends, Query, Request
 
-from app.api.errors import Forbidden, RateLimited, Unauthorized
+from app.api.errors import Forbidden, NotFound, RateLimited, Unauthorized
 from app.core import i18n
 from app.core.roles import Role, satisfies
 from app.core.security import (
@@ -42,6 +42,11 @@ from app.core.security import (
 )
 from app.db.redis import get_redis
 from app.db.session import SessionDep
+
+# The flag names only — a leaf module that imports nothing but ``core.i18n``,
+# so no cycle. Reading a flag's *value* needs the service, and that import is
+# deferred inside ``RequireFeature.__call__``.
+from app.modules.settings.defaults import FEATURE_DEFAULTS
 
 MAX_PAGE_SIZE: Final = 100
 DEFAULT_PAGE_SIZE: Final = 20
@@ -279,6 +284,47 @@ def RateLimit(  # noqa: N802 - reads as a marker at the use site
     return dependency
 
 
+class RequireFeature:
+    """Gate a section behind its flag: ``Depends(RequireFeature("blog"))``.
+
+    A client who does not sell tours does not want a blog, and PROJECT.md §1
+    says that difference lives in the database rather than in the code. This is
+    the half that makes the flag mean something: switched off, the routes it
+    guards answer ``404`` on both surfaces (API.md §28).
+
+    **404, not 403.** Nobody is forbidden — the resource is not there. The same
+    shape API.md §41 uses for endpoints the release has not wired, and §6's
+    adapter registry uses for a step a vertical does not support.
+
+    A **class** where ``RateLimit`` and ``Audited`` are function factories, for
+    one reason: ``tests/contract/test_feature_gate.py`` has to recognise the
+    gate inside a route's dependency tree, and ``isinstance`` is the honest way
+    to do that. Hanging an attribute on a closure would work and would not
+    survive the first person who reads it.
+    """
+
+    __slots__ = ("flag",)
+
+    def __init__(self, flag: str) -> None:
+        if flag not in FEATURE_DEFAULTS:
+            # Import time, not request time — the same trick as
+            # ``RATE_LIMITS[kind]``. A typo takes the process down on boot
+            # instead of quietly serving a section nobody can switch off.
+            raise KeyError(
+                f"unknown feature {flag!r}; add it to "
+                "settings.defaults.FEATURE_DEFAULTS and to API.md §28 first"
+            )
+        self.flag = flag
+
+    async def __call__(self) -> None:
+        # Deferred like the staff import in ``current_staff``: this module is
+        # imported while the router tree is still being assembled.
+        from app.modules.settings import service as settings_service
+
+        if not await settings_service.feature_enabled(self.flag):
+            raise NotFound("This section is not available on this installation")
+
+
 __all__ = [
     "DEFAULT_PAGE_SIZE",
     "MAX_PAGE_SIZE",
@@ -291,6 +337,7 @@ __all__ = [
     "Pagination",
     "PaginationDep",
     "RateLimit",
+    "RequireFeature",
     "Staff",
     "client_ip",
     "current_customer",
