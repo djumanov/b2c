@@ -91,7 +91,10 @@ def mask_secret(value: str, *, visible: int = 4) -> str:
     """
     if not value:
         return ""
-    if len(value) <= visible * 2:
+    # ``visible=0`` has to be its own branch: ``value[-0:]`` is ``value[0:]``,
+    # so the general expression below would append the whole secret to its own
+    # mask. A caller asking for nothing to show must get nothing shown.
+    if visible <= 0 or len(value) <= visible * 2:
         return "•" * len(value)
     return "•" * (len(value) - visible) + value[-visible:]
 

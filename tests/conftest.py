@@ -4,6 +4,7 @@ Redis is faked for every test — the contract and unit suites must run in CI
 with no services up. PostgreSQL is only needed by the tests that say so.
 """
 
+import base64
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -15,6 +16,15 @@ from collections.abc import AsyncIterator, Iterator
 # a client's server and the wrong one here. ``setdefault``, so a run that means
 # to test the production path can still say so.
 os.environ.setdefault("DEBUG", "true")
+
+# Integration credentials are encrypted at rest, so anything that stores one
+# needs a key ring. Fixed rather than random: a failure that depends on the key
+# should reproduce on the next run. It is a throwaway used only by the suite —
+# the real one lives in the client's ``.env`` and never in a repository.
+os.environ.setdefault(
+    "ENCRYPTION_KEYS",
+    "1:" + base64.b64encode(b"b2c-test-encryption-key-32-bytes").decode(),
+)
 
 import fakeredis.aioredis  # noqa: E402
 import pytest  # noqa: E402
