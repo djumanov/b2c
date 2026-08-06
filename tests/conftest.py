@@ -4,17 +4,26 @@ Redis is faked for every test — the contract and unit suites must run in CI
 with no services up. PostgreSQL is only needed by the tests that say so.
 """
 
+import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 
-import fakeredis.aioredis
-import pytest
-from httpx import ASGITransport, AsyncClient
+# A test run is a development checkout, and this has to be true *before*
+# ``app.core.config`` builds its singleton on the first import below. Without
+# it the suite would refuse to start on the placeholder secrets in
+# ``.env.sample`` (``config.PLACEHOLDERS``) — which is the intended answer for
+# a client's server and the wrong one here. ``setdefault``, so a run that means
+# to test the production path can still say so.
+os.environ.setdefault("DEBUG", "true")
 
-from app.core.roles import Role
-from app.core.security import Audience, TokenType, create_token
-from app.db import redis as redis_module
-from app.main import app
+import fakeredis.aioredis  # noqa: E402
+import pytest  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from app.core.roles import Role  # noqa: E402
+from app.core.security import Audience, TokenType, create_token  # noqa: E402
+from app.db import redis as redis_module  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

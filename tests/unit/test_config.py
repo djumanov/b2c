@@ -6,7 +6,14 @@ fails here, at review time, rather than the day a client asks why their colour
 change needs a deploy.
 """
 
-from app.core.config import Settings
+import pytest
+
+from app.core.config import PLACEHOLDERS, Settings
+
+#: What a development checkout looks like. The placeholder check is skipped
+#: under ``debug``, so the tests below that are about something else say so once
+#: here rather than each carrying a secret of its own.
+DEV = {"debug": True}
 
 #: Every field ``Settings`` is allowed to have. Infrastructure only.
 ALLOWED_FIELDS = {
@@ -49,6 +56,7 @@ def test_no_branding_or_credential_fields_leaked_in() -> None:
 
 def test_database_url_is_derived_not_configured() -> None:
     settings = Settings(
+        **DEV,
         postgres_host="db",
         postgres_port=5433,
         postgres_user="u",
@@ -60,10 +68,49 @@ def test_database_url_is_derived_not_configured() -> None:
 
 
 def test_redis_url_is_derived() -> None:
-    settings = Settings(redis_host="cache", redis_port=6380, redis_db=2)
+    settings = Settings(**DEV, redis_host="cache", redis_port=6380, redis_db=2)
 
     assert settings.redis_url == "redis://cache:6380/2"
 
 
 def test_log_level_is_normalised() -> None:
-    assert Settings(log_level="debug").log_level == "DEBUG"
+    assert Settings(**DEV, log_level="debug").log_level == "DEBUG"
+
+
+# --- the values `.env.sample` publishes ----------------------------------------------
+
+
+PRODUCTION = {
+    "debug": False,
+    "jwt_secret_key": "a-real-key-of-at-least-thirty-two-characters",
+    "postgres_password": "a-real-password",
+    "first_owner_password": "a-real-password",
+}
+
+
+@pytest.mark.parametrize("field", sorted(PLACEHOLDERS))
+def test_a_published_placeholder_refuses_to_start(field: str) -> None:
+    """`.env.sample` is in the repository. Its values are not secrets.
+
+    The signing key is the sharp one: with it anybody mints an `aud: admin`,
+    `role: owner` token and the whole panel is theirs. A boot that fails with a
+    message is the cheapest possible version of finding that out.
+    """
+    with pytest.raises(ValueError, match=field.upper()):
+        Settings(**{**PRODUCTION, field: PLACEHOLDERS[field]})
+
+
+@pytest.mark.parametrize("field", sorted(PLACEHOLDERS))
+def test_a_placeholder_is_tolerated_in_development(field: str) -> None:
+    """A checkout should run with no ceremony; only a client's server is real."""
+    Settings(**{**PRODUCTION, **DEV, field: PLACEHOLDERS[field]})
+
+
+def test_a_short_signing_key_refuses_to_start() -> None:
+    """Replaced, but with something worth guessing."""
+    with pytest.raises(ValueError, match="JWT_SECRET_KEY"):
+        Settings(**{**PRODUCTION, "jwt_secret_key": "hunter2"})
+
+
+def test_a_configured_installation_starts() -> None:
+    assert Settings(**PRODUCTION).debug is False

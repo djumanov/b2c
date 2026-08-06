@@ -17,12 +17,30 @@ deploy the client cannot perform.
 
 import base64
 from functools import cached_property
+from typing import Final
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # AES-256-GCM: keys are exactly 32 bytes.
 ENCRYPTION_KEY_LENGTH = 32
+
+#: A signing key shorter than this is worth guessing.
+MIN_JWT_SECRET_LENGTH: Final = 32
+
+#: The values ``.env.sample`` ships as placeholders. They are published in this
+#: repository, so an installation still carrying one is not misconfigured — it
+#: is open: the signing key mints ``owner`` tokens for anybody who reads the
+#: sample, and the first-owner password logs them in without even that.
+#:
+#: ``ENCRYPTION_KEYS`` already refuses to boot with its placeholder, because the
+#: placeholder is not valid base64. That accident is the behaviour the rest of
+#: these are given deliberately.
+PLACEHOLDERS: Final[dict[str, str]] = {
+    "jwt_secret_key": "change-me-to-a-long-random-string",
+    "postgres_password": "postgres",
+    "first_owner_password": "change-me",
+}
 
 
 class Settings(BaseSettings):
@@ -106,6 +124,39 @@ class Settings(BaseSettings):
         return ring
 
     @model_validator(mode="after")
+    def _no_published_secrets_in_production(self) -> "Settings":
+        """Refuse to start on a value anybody can read in ``.env.sample``.
+
+        Skipped when ``debug`` is on, so a checkout runs with no ceremony. Every
+        other installation is a client's live server, and there the friendly
+        failure is the one that happens at boot with a message — not the one
+        discovered when somebody signs a token of their own.
+        """
+        if self.debug:
+            return self
+
+        carried = [
+            name
+            for name, placeholder in PLACEHOLDERS.items()
+            if getattr(self, name) == placeholder
+        ]
+        if carried:
+            variables = ", ".join(sorted(name.upper() for name in carried))
+            raise ValueError(
+                f"{variables} still holds the value from .env.sample, which is "
+                "published in the source repository. Set your own, or run with "
+                "DEBUG=true if this is a development checkout."
+            )
+
+        if len(self.jwt_secret_key) < MIN_JWT_SECRET_LENGTH:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least {MIN_JWT_SECRET_LENGTH} "
+                "characters. Generate one with: "
+                'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+            )
+        return self
+
+    @model_validator(mode="after")
     def _active_key_is_in_the_ring(self) -> "Settings":
         ring = self.encryption_key_ring
         if ring and self.encryption_key_version not in ring:
@@ -121,4 +172,10 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-__all__ = ["Settings", "settings"]
+__all__ = [
+    "ENCRYPTION_KEY_LENGTH",
+    "MIN_JWT_SECRET_LENGTH",
+    "PLACEHOLDERS",
+    "Settings",
+    "settings",
+]
