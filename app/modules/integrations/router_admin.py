@@ -16,9 +16,10 @@ import uuid
 
 from fastapi import Depends, Response
 
-from app.api.deps import current_staff, require_owner
+from app.api.deps import CurrentStaff, current_staff, require_owner
 from app.api.envelope import enveloped_router
 from app.db.session import SessionDep
+from app.modules.audit.deps import Audited
 from app.modules.integrations import service
 from app.modules.integrations.schemas import (
     CredentialCreateIn,
@@ -26,6 +27,8 @@ from app.modules.integrations.schemas import (
     CredentialUpdateIn,
     SmtpIn,
     SmtpOut,
+    SmtpTestIn,
+    SmtpTestOut,
 )
 
 router = enveloped_router(
@@ -112,6 +115,32 @@ async def get_smtp(session: SessionDep) -> SmtpOut:
 )
 async def update_smtp(data: SmtpIn, session: SessionDep) -> SmtpOut:
     return await service.update_smtp(session, data)
+
+
+@notifications_router.post(
+    "/test/",
+    dependencies=[
+        Depends(require_owner),
+        # The verb comes before any identifier, which is the one shape the
+        # audit middleware reads wrongly — so the route says so itself.
+        Depends(Audited("integrations.notifications", "test")),
+    ],
+    summary="Send a test message with the stored settings",
+)
+async def test_smtp(
+    data: SmtpTestIn, staff: CurrentStaff, session: SessionDep
+) -> SmtpTestOut:
+    return await service.test_smtp(
+        session,
+        # Whoever pressed the button, unless they named somebody else. Their
+        # own address is the one they can check.
+        recipient=str(data.to) if data.to else staff.email,
+        subject="Test message",
+        body=(
+            "This is a test message from your travel platform's admin panel.\n"
+            "If it reached you, the email settings are working."
+        ),
+    )
 
 
 __all__ = ["notifications_router", "router"]

@@ -74,6 +74,7 @@ from app.db.redis import get_redis
 from app.db.repository import live
 from app.modules.audit import context as audit_context
 from app.modules.audit import service as audit_service
+from app.modules.integrations import service as integrations_service
 from app.modules.staff import repository
 from app.modules.staff.models import Staff, StaffRefreshToken
 from app.modules.staff.schemas import (
@@ -85,7 +86,6 @@ from app.modules.staff.schemas import (
     StaffUpdateIn,
     TokenPairOut,
 )
-from app.providers.notifications import get_notifier
 
 logger = get_logger(__name__)
 
@@ -348,10 +348,13 @@ def _reset_key(token: str) -> str:
     return f"{_RESET_PREFIX}:{digest}"
 
 
-async def _send_reset_link(staff: Staff) -> None:
+async def _send_reset_link(session: AsyncSession, staff: Staff) -> None:
     token = secrets.token_urlsafe(32)
     await get_redis().set(_reset_key(token), str(staff.id), ex=RESET_TOKEN_TTL_SECONDS)
-    await get_notifier().send(
+    # Which notifier depends on the installation's SMTP settings, so it takes a
+    # session — a module owns that answer, not the provider package.
+    notifier = await integrations_service.notifier(session)
+    await notifier.send(
         recipient=staff.email,
         subject="Password reset",
         body=(
@@ -378,7 +381,7 @@ async def request_password_reset(session: AsyncSession, email: str) -> None:
     staff = await repository.by_email(session, _normalize_email(email))
     if staff is None or staff.is_blocked:
         return
-    await _send_reset_link(staff)
+    await _send_reset_link(session, staff)
     await _record_auth(session, "password_reset_requested", staff=staff, commit=True)
 
 
@@ -540,7 +543,7 @@ async def send_reset_password_link(session: AsyncSession, staff_id: uuid.UUID) -
     the employee chooses the password. No password is ever set for somebody
     else and then read out to them."""
     staff = await _require(session, staff_id)
-    await _send_reset_link(staff)
+    await _send_reset_link(session, staff)
 
 
 # --- first boot -------------------------------------------------------------------

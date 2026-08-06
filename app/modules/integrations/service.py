@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import Conflict, NotFound, ValidationFailed
 from app.core.crypto import decrypt, encrypt, mask_secret, needs_reencryption
 from app.core.logging import get_logger
+from app.db.mixins import utcnow
 from app.modules.audit import context as audit_context
 from app.modules.integrations import repository
 from app.modules.integrations.models import GtsCredential, SmtpSettings
@@ -30,7 +31,12 @@ from app.modules.integrations.schemas import (
     CredentialUpdateIn,
     SmtpIn,
     SmtpOut,
+    SmtpTestOut,
 )
+from app.providers import notifications
+from app.providers.notifications.base import Notifier
+from app.providers.notifications.log import LogNotifier
+from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
 
 logger = get_logger(__name__)
 
@@ -361,6 +367,76 @@ def _is_usable(row: SmtpSettings) -> bool:
     return bool(row.host and row.from_address)
 
 
+async def notifier(session: AsyncSession) -> Notifier:
+    """Which notifier this installation sends through, right now.
+
+    The only accessor. Built per call rather than cached in a module global:
+    the settings behind it are edited from the panel and there are several
+    worker processes, so a value computed once at import would be both stale
+    and inconsistent between them. Sending is rare enough that reading one row
+    first costs nothing worth saving.
+    """
+    override = notifications.get_override()
+    if override is not None:
+        return override
+
+    row = await repository.smtp(session)
+    if session.in_transaction():
+        await session.commit()
+    if not row.enabled or not _is_usable(row):
+        return LogNotifier()
+
+    assert row.host is not None and row.from_address is not None  # _is_usable
+    return SmtpNotifier(
+        SmtpConfig(
+            host=row.host,
+            port=row.port,
+            tls=row.tls.value,
+            from_address=row.from_address,
+            from_name=row.from_name,
+            username=row.username,
+            password=decrypt(row.password, row.key_version or 0)
+            if row.password
+            else None,
+        )
+    )
+
+
+async def test_smtp(
+    session: AsyncSession, *, recipient: str, subject: str, body: str
+) -> SmtpTestOut:
+    """Send a real message and record what happened (API.md §29).
+
+    A relay that refuses the password is **not** an error of this endpoint: it
+    answers `200` with ``ok: false`` and the reason. Returning `502` here would
+    tell the owner that something went wrong without telling them what, which
+    is the one thing this button exists to do.
+    """
+    row = await repository.smtp(session)
+    if not row.enabled or not _is_usable(row):
+        raise Conflict("Configure the SMTP settings and switch email on first")
+
+    detail: str | None = None
+    try:
+        await (await notifier(session)).send(
+            recipient=recipient, subject=subject, body=body
+        )
+        ok = True
+    except Exception as exc:  # noqa: BLE001 - the reason is the whole answer
+        ok = False
+        detail = f"{type(exc).__name__}: {exc}"[:500]
+        logger.warning("smtp_test_failed", error=detail)
+
+    row.last_tested_at = utcnow()
+    row.last_test_ok = ok
+    row.last_test_error = detail
+    await session.commit()
+    await session.refresh(row)
+
+    audit_context.describe(changes={"last_test_ok": ok})
+    return SmtpTestOut(ok=ok, detail=detail, tested_at=row.last_tested_at)
+
+
 __all__ = [
     "ActiveGtsCredential",
     "activate_credential",
@@ -370,6 +446,8 @@ __all__ = [
     "get_credential",
     "get_smtp",
     "list_credentials",
+    "notifier",
+    "test_smtp",
     "update_credential",
     "update_smtp",
 ]

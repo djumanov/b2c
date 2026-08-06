@@ -4,15 +4,23 @@ The claims: a fresh installation answers with defaults rather than a 404, the
 password goes in and never comes back, and only ``owner`` may change any of it.
 """
 
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.modules.audit.models import AuditLog
+from app.modules.integrations import service
 from app.modules.integrations.models import SmtpSettings
 from app.modules.staff.models import Staff
+from app.providers.notifications import set_notifier
+from app.providers.notifications.base import Channel
+from app.providers.notifications.log import LogNotifier
+from app.providers.notifications.smtp import SmtpNotifier
 from tests.integration.conftest import headers_for
 
 SMTP = "/api/v1/admin/integrations/notifications/"
@@ -28,6 +36,55 @@ CONFIGURED: dict[str, Any] = {
     "from_address": "no-reply@brand.uz",
     "from_name": "Brand Travel",
 }
+
+
+@dataclass
+class RecordingNotifier:
+    """Stands in for the relay and keeps what it was asked to send."""
+
+    channel: Channel = Channel.EMAIL
+    sent: list[dict[str, Any]] = field(default_factory=list)
+
+    async def send(
+        self,
+        *,
+        recipient: str,
+        subject: str | None,
+        body: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        self.sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+    async def verify(self) -> bool:
+        return True
+
+
+@dataclass
+class FailingNotifier:
+    """A relay that will not have us."""
+
+    channel: Channel = Channel.EMAIL
+
+    async def send(
+        self,
+        *,
+        recipient: str,
+        subject: str | None,
+        body: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        raise RuntimeError("authentication failed")
+
+    async def verify(self) -> bool:
+        return False
+
+
+@pytest.fixture
+def notifier() -> Iterator[RecordingNotifier]:
+    recorder = RecordingNotifier()
+    set_notifier(recorder)
+    yield recorder
+    set_notifier(None)
 
 
 async def _get(api: AsyncClient, staff: Staff) -> dict[str, Any]:
@@ -194,3 +251,119 @@ async def test_an_admin_may_not_change_them(api: AsyncClient, admin: Staff) -> N
     )
     assert response.status_code == 403, response.text
     assert response.json()["errors"][0]["code"] == "forbidden"
+
+
+async def test_an_admin_may_not_send_a_test_message(
+    api: AsyncClient, admin: Staff
+) -> None:
+    response = await api.post(f"{SMTP}test/", headers=headers_for(admin), json={})
+    assert response.status_code == 403, response.text
+
+
+# --- which notifier the application sends through -----------------------------------
+
+
+async def test_an_unconfigured_installation_still_only_logs(
+    session: AsyncSession,
+) -> None:
+    notifier = await service.notifier(session)
+    assert isinstance(notifier, LogNotifier)
+
+
+async def test_settings_that_are_filled_in_but_off_still_only_log(
+    session: AsyncSession, api: AsyncClient, owner: Staff
+) -> None:
+    await _patch(api, owner, **CONFIGURED)
+    assert isinstance(await service.notifier(session), LogNotifier)
+
+
+async def test_email_switched_on_sends_over_smtp(
+    session: AsyncSession, api: AsyncClient, owner: Staff
+) -> None:
+    await _patch(api, owner, **CONFIGURED)
+    await _patch(api, owner, enabled=True)
+
+    notifier = await service.notifier(session)
+    assert isinstance(notifier, SmtpNotifier)
+    # The password is decrypted on the way to the relay, and only there.
+    assert notifier._config.password == SMTP_PASSWORD
+    assert notifier._config.host == "smtp.brand.uz"
+    # …and the config must not print it when something goes wrong.
+    assert SMTP_PASSWORD not in repr(notifier._config)
+
+
+async def test_a_pinned_notifier_wins(
+    session: AsyncSession, api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    """The seam tests hang from — it has to beat a real configuration."""
+    await _patch(api, owner, **CONFIGURED)
+    await _patch(api, owner, enabled=True)
+
+    assert await service.notifier(session) is notifier
+
+
+# --- the test message (API.md §29) --------------------------------------------------
+
+
+async def test_sending_a_test_message_needs_email_switched_on(
+    api: AsyncClient, owner: Staff
+) -> None:
+    response = await api.post(f"{SMTP}test/", headers=headers_for(owner), json={})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["errors"][0]["code"] == "conflict"
+
+
+async def test_a_test_message_goes_to_whoever_pressed_the_button(
+    api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    await _patch(api, owner, **CONFIGURED)
+    await _patch(api, owner, enabled=True)
+
+    response = await api.post(f"{SMTP}test/", headers=headers_for(owner), json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["ok"] is True
+    assert notifier.sent[-1]["recipient"] == owner.email
+
+    # …and the outcome is remembered, so a plain GET can show it without
+    # sending anybody a second message.
+    settings = await _get(api, owner)
+    assert settings["last_test_ok"] is True
+    assert settings["last_tested_at"] is not None
+
+
+async def test_a_test_message_can_name_another_address(
+    api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    await _patch(api, owner, **CONFIGURED)
+    await _patch(api, owner, enabled=True)
+
+    response = await api.post(
+        f"{SMTP}test/", headers=headers_for(owner), json={"to": "boss@brand.uz"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert notifier.sent[-1]["recipient"] == "boss@brand.uz"
+
+
+async def test_a_relay_that_refuses_is_still_a_successful_call(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """A `502` here would tell the owner that something broke, not what."""
+    set_notifier(FailingNotifier())
+    try:
+        await _patch(api, owner, **CONFIGURED)
+        await _patch(api, owner, enabled=True)
+        response = await api.post(f"{SMTP}test/", headers=headers_for(owner), json={})
+    finally:
+        set_notifier(None)
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    assert body["ok"] is False
+    assert "authentication failed" in body["detail"]
+
+    settings = await _get(api, owner)
+    assert settings["last_test_ok"] is False
+    assert "authentication failed" in settings["last_test_error"]

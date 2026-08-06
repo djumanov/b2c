@@ -1,31 +1,32 @@
-"""Which notifier the application sends through.
+"""The notifier override — the seam tests and the log fallback hang from.
 
-One accessor, so no caller has to know. Today it is always the log adapter;
-when the ``integrations`` module lands it reads the installation's SMTP
-settings and returns an ``SmtpNotifier`` instead, and nothing that calls
-``get_notifier()`` changes (PROJECT.md §15, ARCHITECTURE.md §12).
+**Which notifier to use is a settings question, and settings belong to a
+module.** This package used to answer it itself, with a process-global built on
+first use. That was wrong twice over: a global set by one worker is invisible
+to the other three, and it cannot re-read a relay the owner has just changed.
+Worse, answering it here would mean a provider importing ``modules`` — the one
+direction ARCHITECTURE.md §4 does not allow.
 
-``set_notifier`` is the test seam, matching ``db.redis.set_redis``.
+So the choice moved to ``integrations.service.notifier(session)``, which reads
+the row and builds an ``SmtpNotifier`` or falls back to ``LogNotifier``. What
+stays here is the override: ``set_notifier`` lets a test — or anything else
+that must not touch the real relay — pin the answer.
 """
 
 from app.providers.notifications.base import Notifier
-from app.providers.notifications.log import LogNotifier
 
-_notifier: Notifier | None = None
-
-
-def get_notifier() -> Notifier:
-    global _notifier
-    if _notifier is None:
-        _notifier = LogNotifier()
-    return _notifier
+_override: Notifier | None = None
 
 
 def set_notifier(notifier: Notifier | None) -> None:
-    """Swap the notifier — used by tests, and by the integrations module once
-    an installation has configured a real one."""
-    global _notifier
-    _notifier = notifier
+    """Pin the notifier, or pass ``None`` to go back to the configured one."""
+    global _override
+    _override = notifier
 
 
-__all__ = ["get_notifier", "set_notifier"]
+def get_override() -> Notifier | None:
+    """The pinned notifier, if there is one. ``None`` means "use the settings"."""
+    return _override
+
+
+__all__ = ["get_override", "set_notifier"]
