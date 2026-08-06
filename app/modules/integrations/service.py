@@ -23,11 +23,13 @@ from app.core.crypto import decrypt, encrypt, mask_secret, needs_reencryption
 from app.core.logging import get_logger
 from app.modules.audit import context as audit_context
 from app.modules.integrations import repository
-from app.modules.integrations.models import GtsCredential
+from app.modules.integrations.models import GtsCredential, SmtpSettings
 from app.modules.integrations.schemas import (
     CredentialCreateIn,
     CredentialOut,
     CredentialUpdateIn,
+    SmtpIn,
+    SmtpOut,
 )
 
 logger = get_logger(__name__)
@@ -269,6 +271,96 @@ async def active_credential(session: AsyncSession) -> ActiveGtsCredential | None
     )
 
 
+# --- SMTP (API.md §29) ------------------------------------------------------------
+
+
+def _smtp_aud(row: SmtpSettings) -> dict[str, Any]:
+    """The audit-visible projection. The password is not in it, at all."""
+    return {
+        "enabled": row.enabled,
+        "host": row.host,
+        "port": row.port,
+        "tls": row.tls.value,
+        "username": row.username,
+        "from_address": row.from_address,
+        "from_name": row.from_name,
+    }
+
+
+def _smtp_out(row: SmtpSettings) -> SmtpOut:
+    return SmtpOut(
+        enabled=row.enabled,
+        host=row.host,
+        port=row.port,
+        tls=row.tls,
+        username=row.username,
+        # ``None`` and a mask mean different things to the panel: nothing
+        # stored versus stored and hidden. This path never decrypts.
+        password=MASKED_PASSWORD if row.password else None,
+        from_address=row.from_address,
+        from_name=row.from_name,
+        last_tested_at=row.last_tested_at,
+        last_test_ok=row.last_test_ok,
+        last_test_error=row.last_test_error,
+    )
+
+
+async def get_smtp(session: AsyncSession) -> SmtpOut:
+    row = await repository.smtp(session)
+    # First read of a fresh installation creates the row; without the commit it
+    # is rolled back and the next read makes it again.
+    if session.in_transaction():
+        await session.commit()
+    return _smtp_out(row)
+
+
+async def update_smtp(session: AsyncSession, data: SmtpIn) -> SmtpOut:
+    row = await repository.smtp(session)
+    before = _smtp_aud(row)
+
+    if data.host is not None:
+        row.host = data.host.strip()
+    if data.port is not None:
+        row.port = data.port
+    if data.tls is not None:
+        row.tls = data.tls
+    if data.username is not None:
+        # An empty string clears it — a relay that wants no authentication is a
+        # real configuration and has to be reachable from one that did.
+        row.username = data.username.strip() or None
+    if data.from_address is not None:
+        row.from_address = str(data.from_address)
+    if data.from_name is not None:
+        row.from_name = data.from_name.strip() or None
+    if data.password is not None:
+        row.password, row.key_version = encrypt(data.password)
+    elif row.password is not None and needs_reencryption(row.key_version or 0):
+        # Lazy rotation, free here because the row is being written anyway.
+        row.password, row.key_version = encrypt(
+            decrypt(row.password, row.key_version or 0)
+        )
+
+    if data.enabled is not None:
+        if data.enabled and not _is_usable(row):
+            raise ValidationFailed(
+                "Set at least a host and a from-address before switching "
+                "email on — otherwise nothing would be sent",
+                field="enabled",
+            )
+        row.enabled = data.enabled
+
+    await session.commit()
+    await session.refresh(row)
+
+    audit_context.describe(changes=audit_context.diff(before, _smtp_aud(row)))
+    return _smtp_out(row)
+
+
+def _is_usable(row: SmtpSettings) -> bool:
+    """Enough filled in to have a chance of delivering a message."""
+    return bool(row.host and row.from_address)
+
+
 __all__ = [
     "ActiveGtsCredential",
     "activate_credential",
@@ -276,6 +368,8 @@ __all__ = [
     "create_credential",
     "delete_credential",
     "get_credential",
+    "get_smtp",
     "list_credentials",
     "update_credential",
+    "update_smtp",
 ]

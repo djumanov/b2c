@@ -24,6 +24,8 @@ from app.modules.integrations.schemas import (
     CredentialCreateIn,
     CredentialOut,
     CredentialUpdateIn,
+    SmtpIn,
+    SmtpOut,
 )
 
 router = enveloped_router(
@@ -86,4 +88,30 @@ async def activate_credential(id: uuid.UUID, session: SessionDep) -> CredentialO
     return await service.activate_credential(session, id)
 
 
-__all__ = ["router"]
+# --- SMTP (API.md §29) ------------------------------------------------------------
+#
+# A singleton, so no ``{id}`` and no collection — the contract addresses it as
+# one resource because an installation sends its mail through one relay.
+
+notifications_router = enveloped_router(
+    prefix="/integrations/notifications",
+    tags=["integrations"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@notifications_router.get("/", summary="SMTP settings — password masked")
+async def get_smtp(session: SessionDep) -> SmtpOut:
+    return await service.get_smtp(session)
+
+
+@notifications_router.patch(
+    "/",
+    dependencies=[Depends(require_owner)],
+    summary="Change the SMTP settings; sending a password replaces it",
+)
+async def update_smtp(data: SmtpIn, session: SessionDep) -> SmtpOut:
+    return await service.update_smtp(session, data)
+
+
+__all__ = ["notifications_router", "router"]

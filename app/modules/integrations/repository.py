@@ -8,9 +8,10 @@ nobody trusts.
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.integrations.models import GtsCredential
+from app.modules.integrations.models import GtsCredential, SmtpSettings
 
 _ORDERED = select(GtsCredential).order_by(
     GtsCredential.is_active.desc(), GtsCredential.label
@@ -58,6 +59,29 @@ async def deactivate_all(session: AsyncSession) -> None:
     # partial unique index happy, and only the caller knows both halves.
 
 
+async def smtp(session: AsyncSession) -> SmtpSettings:
+    """The SMTP row, created on first read.
+
+    ``ON CONFLICT DO NOTHING`` then a read, rather than catching an integrity
+    error: two workers can answer the very first request at the same moment,
+    and a rollback here would take the caller's own work with it. Same shape as
+    ``settings/repository.py::_singleton``, same reasoning.
+    """
+    row: SmtpSettings | None = await session.scalar(select(SmtpSettings).limit(1))
+    if row is not None:
+        return row
+
+    await session.execute(
+        pg_insert(SmtpSettings)
+        .values(id=uuid.uuid4(), singleton=True)
+        .on_conflict_do_nothing()
+    )
+    created: SmtpSettings | None = await session.scalar(select(SmtpSettings).limit(1))
+    if created is None:  # pragma: no cover - the insert or a peer just made it
+        raise RuntimeError("smtp_settings could not be initialised")
+    return created
+
+
 __all__ = [
     "active",
     "all_credentials",
@@ -65,4 +89,5 @@ __all__ = [
     "count",
     "deactivate_all",
     "label_taken",
+    "smtp",
 ]
