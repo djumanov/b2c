@@ -420,6 +420,11 @@ qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
 
 Javob keshlanadi (`Cache-Control` + `ETag`); paneldan o'zgarish kiritilganda kesh tozalanadi.
 
+`payment_methods` — `products` dan farqli o'laroq **`enabled` maydoni yo'q**, va bu ataylab:
+bu yerda faqat **yoqilgan** provayderlar bo'ladi. Sayt bu ro'yxatni tugmalarga aylantiradi,
+o'chirilgan provayder esa bosilmaydigan tugma bo'lardi. Tartib ham shu massivning o'zida —
+paneldagi `sort_order` bo'yicha, teng bo'lsa `code` bo'yicha (§29).
+
 `features` — sayt va ilova qaysi bo'limlarni ko'rsatishini shundan biladi: bayroq `false`
 bo'lsa menyu elementi ham, sahifa ham chizilmaydi. Bu **yagona himoya emas** — backend ham
 o'sha bayroqni majburlaydi va o'chirilgan bo'lim `404 not_found` qaytaradi (§28). Ikki
@@ -499,6 +504,27 @@ qaytaradi va **eskisini bekor qiladi**, ikkinchisi `204`.
 Bekor qilingan refresh token qayta kelsa — bu o'g'irlik signali va **o'sha
 foydalanuvchining barcha sessiyalari** o'chadi (§4).
 
+### Social orqali kirish
+
+```json
+POST /public/auth/social/google/
+{ "id_token": "eyJhbGciOiJSUzI1NiIs…" }
+
+→ { "status": "success",
+    "data": { "access_token": "…", "refresh_token": "…", "expires_in": 1800 } }
+```
+
+`id_token` — provayder brauzerda bergan token; server uni provayderning o'z kaliti bilan
+tekshiradi.
+
+Manzil bo'yicha akkaunt topilsa **o'shanga kiriladi**, topilmasa yaratiladi. Yangi akkaunt
+**darhol tasdiqlangan** bo'ladi: manzilni provayder allaqachon tasdiqlagan, ya'ni email OTP
+isbotlaydigan narsa bu yerda boshqa yo'l bilan isbotlangan. Shu manzilda tasdiqlanmagan
+qator turgan bo'lsa u **tasdiqlanadi**, ikkinchi akkaunt yaratilmaydi — aks holda bitta
+odamning bitta manzilida ikkita akkaunti bo'lardi.
+
+Provayder o'chirilgan, sozlanmagan yoki noma'lum bo'lsa — `404` (§29).
+
 ### Parolni tiklash
 
 Uch qadam: kod so'raladi, kod tekshiriladi, yangi parol o'rnatiladi.
@@ -557,6 +583,8 @@ tushadi:
 | Noto'g'ri, muddati o'tgan yoki ishlatilgan kod | `validation` (`field: "code"`) | 422 |
 | Yaroqsiz yoki ishlatilgan `reset_token` | `validation` (`field: "reset_token"`) | 422 |
 | Noma'lum, muddati o'tgan yoki bekor qilingan refresh token | `unauthorized` | 401 |
+| Yaroqsiz `id_token` (social) | `unauthorized` | 401 |
+| Sozlanmagan, o'chirilgan yoki noma'lum social provayder | `not_found` | 404 |
 | So'rov chegarasi oshib ketdi (§14 — 5/daq/IP) | `rate_limited` | 429 |
 
 **Noto'g'ri parol va yo'q akkaunt bir xil javob beradi** — matni ham, kodi ham.
@@ -573,11 +601,6 @@ hech narsani oshkor qilmaydi.
 > **email orqali** yuboriladi. `{provider}` — hozircha faqat **`google`**; `apple` mobil ilova
 > bosqichida qo'shiladi (D5). Qurilma ro'yxati (`devices/`) push bilan birga keladi (§41).
 
-> ⚠ **`social/{provider}/` hali ulanmagan va `404` qaytaradi.** Sabab kontraktning
-> o'zida: §29 da Google `client_id`/`client_secret` ini saqlaydigan resurs **yo'q**,
-> ya'ni endpoint bor-u, uni sozlaydigan joy yo'q. §29 ga o'sha satr qo'shilganda
-> ulanadi ([PHASES.md](PHASES.md) §3, 5b-bo'lak). Bu §41 dagi "relizga kirmaydi"
-> emas — reliz qamrovida qoladi.
 
 ---
 
@@ -1037,11 +1060,24 @@ Tranzaksion pochta (OTP, parol tiklash) `broadcast` ga **bog'liq emas** — u ya
 | `POST` | `/admin/integrations/gts/credentials/{id}/activate/` | `owner` | **Shu credential'ni tanlash** |
 | `POST` | `/admin/integrations/gts/test/` | `owner` | Tanlangan credential bilan ulanishni tekshirish |
 | `GET` | `/admin/integrations/payments/` | `admin` | To'lov provayderlari ro'yxati va holati |
+| `GET` | `/admin/integrations/payments/{code}/` | `admin` | Bittasi |
 | `PATCH` | `/admin/integrations/payments/{code}/` | `owner` | Yoqish/o'chirish, kalitlar, tartib |
 | `POST` | `/admin/integrations/payments/{code}/test/` | `owner` | Provayderni tekshirish |
+| `GET` | `/admin/integrations/social/` | `admin` | Social kirish provayderlari; sir maskalangan |
+| `PATCH` | `/admin/integrations/social/{provider}/` | `owner` | Yoqish/o'chirish, `client_id`, `client_secret` |
 | `GET` | `/admin/integrations/notifications/` | `admin` | Email (SMTP) sozlamasi; SMS/push — **§41** |
 | `PATCH` | `/admin/integrations/notifications/` | `owner` | Sozlamani o'zgartirish — **§41** |
 | `POST` | `/admin/integrations/notifications/test/` | `owner` | Sinov xabari yuborish |
+
+> **Ikkita `test/` hozircha ulanmagan va `404` qaytaradi** — `gts/test/` va
+> `payments/{code}/test/`. Sinov *haqiqiy* ulanish demakdir, ulanishni esa
+> adapter biladi: GTS klienti va Payme/Click adapterlari
+> [PROJECT.md](PROJECT.md) §15 bo'yicha **2-bosqichda** quriladi. Ulargacha
+> yozilgan tugma "sozlangan" deb aytardi, "yetib boradi" deb emas — ya'ni tugma
+> mavjud bo'lishining yagona sababiga javob bermasdi. Sozlama va credential'lar
+> shu bosqichda saqlanadi, sinov adapteri bilan birga keladi
+> ([PHASES.md](PHASES.md) §2.13). `notifications/test/` ishlaydi: SMTP adapteri
+> bor.
 
 ### GTS: bir nechta credential, bittasi tanlangan
 
@@ -1085,11 +1121,76 @@ ko'rinadi; yangi qiymat yuborilsa almashtiriladi:
 GET /admin/integrations/payments/payme/
 → { "status": "success",
     "data": { "code": "payme", "enabled": true,
+              "title": "Payme", "logo_id": "1a7b…", "logo_url": "/uploads/payment_logo/…svg",
+              "sort_order": 10,
               "credentials": { "merchant_id": "…3f2a", "secret_key": "••••••7c" },
-              "last_tested_at": "2026-08-05T09:00:00Z", "last_test_ok": true } }
+              "last_tested_at": "2026-08-05T09:00:00Z",
+              "last_test_ok": true, "last_test_error": null } }
 ```
 
 Maskadagi ko'rinadigan belgilar soni kontraktning bir qismi emas.
+
+### To'lov provayderlari
+
+`{code}` — birinchi relizda `payme` va `click` ([PROJECT.md](PROJECT.md) D7). Ro'yxat
+**yopiq**: provayder qo'shish adapter yozishni talab qiladi, ya'ni bu paneldan emas,
+relizdan keladigan o'zgarish.
+
+Shu sababli qatorlar **birinchi o'qishda** yaratiladi — har bir kod uchun bittadan,
+o'chirilgan holatda. Bo'sh ro'yxat noto'g'ri bo'lardi: panel yoqadigan hech narsa
+ko'rmasdi. Bu SMTP bilan bir naqsh, faqat singleton emas.
+
+- `title` va `logo_id` — sayt to'lov usulini qanday ko'rsatishini belgilaydi;
+  ikkalasi ham §17 ga tushadi. `logo_id` — `payment_logo` purpose'i bilan
+  yuklangan fayl (§11).
+- `sort_order` — §29 jadvalidagi "tartib". §17 dagi massiv shu bo'yicha
+  saralanadi (teng bo'lsa `code` bo'yicha), ya'ni saytdagi tugmalar tartibi
+  paneldan boshqariladi.
+- **`enabled: true`** qilish uchun `credentials` bo'sh bo'lmasligi shart, aks
+  holda `422 validation` — SMTP dagi bir xil qoida (`host` + `from_address`).
+  Qaysi kalitlar aynan kerakligini **adapter biladi**, u esa 2-bosqichda
+  keladi; shu sababli hozircha faqat "bo'sh emas" tekshiriladi.
+- `credentials` — **erkin obyekt**, sxemasi qat'iy emas. Payme va Click turli
+  kalitlar so'raydi va ularning ro'yxati provayder hujjatidan keladi, kontrakt
+  esa uni belgilamaydi.
+
+`PATCH` da `credentials` **birlashtiriladi**, almashtirilmaydi:
+
+- yuborilgan kalit saqlangan qiymatni almashtiradi;
+- qiymat `null` bo'lsa kalit o'chiriladi;
+- qiymat **butunlay maska belgilaridan iborat bo'lsa e'tiborsiz qoldiriladi**.
+  Aks holda `GET` javobini o'zgartirmasdan qaytarib yuborgan panel hamma sirni
+  nuqtalar bilan ustidan yozardi.
+
+`last_tested_at`, `last_test_ok` va `last_test_error` — `test/` ulangunga qadar
+`null` (yuqoridagi ogohlantirish).
+
+### Social kirish
+
+Mijoz Google orqali kiradi ([PROJECT.md](PROJECT.md) D5), demak o'rnatmaning o'z
+Google client'i bo'lishi kerak. Bu ham **registry**: `apple` mobil ilova bosqichida
+qo'shilganda yangi qator bo'ladi, yangi oqim emas.
+
+```json
+GET /admin/integrations/social/
+→ { "status": "success",
+    "data": [
+      { "provider": "google", "enabled": true,
+        "client_id": "1234…apps.googleusercontent.com",
+        "client_secret": "••••••7c",
+        "created_at": "…", "updated_at": "…" }
+    ],
+    "errors": [], "meta": null }
+```
+
+- Qatorlar to'lov provayderlari kabi **birinchi o'qishda** yaratiladi.
+- `client_id` sir emas — u brauzerga baribir ko'rinadi, shuning uchun to'liq
+  qaytadi. `client_secret` esa maskalanadi va shifrlangan holda saqlanadi.
+- **`enabled: true`** uchun `client_id` bo'lishi shart, aks holda
+  `422 validation`.
+- Provayder o'chirilgan yoki sozlanmagan bo'lsa `POST /public/auth/social/{provider}/`
+  **`404`** qaytaradi — "bunday narsa yo'q", §28 dagi o'chirilgan bo'lim bilan
+  bir shakl. Noma'lum `{provider}` ham `404`.
 
 ### Bildirishnomalar: SMTP
 
@@ -1124,8 +1225,6 @@ GET /admin/integrations/notifications/
   `GET` da ko'rinadi — ya'ni holatni bilish uchun yana xabar yuborish shart emas.
 
 SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41).
-
-`{code}` — birinchi relizda `payme` va `click` ([PROJECT.md](PROJECT.md) D7).
 
 ---
 

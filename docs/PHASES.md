@@ -57,7 +57,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | § | Bo'lim | Faza | Holat | Izoh va manba |
 |---|---|---|---|---|
 | 17 | Sayt konfiguratsiyasi | **1** | ◐ | Yo'l va kesh bor; `payment_methods` `integrations` bilan to'ladi |
-| 18 | Autentifikatsiya | **1** | ◐ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a-bo'lakda qurildi. Chetlanishlar: `social/{provider}/` → 1-fazaning **5b**-bo'lagi (§2.11), `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
+| 18 | Autentifikatsiya | **1** | ✅ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a da, Google 5c da. Chetlanishlar: `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
 | 19 | Profil | **1** | ◐ | `profile/`, `avatar/`, `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7), `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
@@ -73,7 +73,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 |---|---|---|---|---|
 | 27 | Autentifikatsiya | **1** | ✅ | 7/7 |
 | 28 | Sayt sozlamalari | **1** | ✅ | 7/7. `settings/menu/` → **5** (§41) |
-| 29 | Integratsiyalar | **1** | ◐ | `PROJECT.md` §15 1-faza: "sozlamalar + shifrlangan credential'lar" (§2.1). GTS va SMTP qurildi; to'lov provayderlari, `test/` lar va **social credential'i** → 5b (§2.11). SMS/push qismi → §41 |
+| 29 | Integratsiyalar | **1** + **2** | ◐ | `PROJECT.md` §15 1-faza: "sozlamalar + shifrlangan credential'lar" (§2.1). GTS, SMTP, to'lov va social sozlamalari 1-fazada. Chetlanishlar: `gts/test/` va `payments/{code}/test/` → **2** (§2.13). SMS/push qismi → §41 |
 | 30 | Kontent | **4** | — | `PROJECT.md` §15 4-faza. `content/pages/` → **5** (§41) |
 | 31 | Buyurtmalar | **2** | — | `orders/{id}/push/` → **6** (§41) |
 | 32 | To'lovlar | **2** | — | `refund/` — `PROJECT.md` §16 3-savoli 2-faza oxirida kerak |
@@ -163,17 +163,16 @@ eksporti, ommaviy yuborish". Ya'ni shablon CRUD, `broadcasts/` tarixi,
 2-fazada. **§39 ni yaxlit iqtibos qilish xato** — har doim yo'l darajasida
 ayting.
 
-**2.11 · §18 `social/{provider}/` → 1-fazaning 5b-bo'lagi.** Faza o'zgarmaydi,
-bo'lak o'zgaradi. Endpoint 1-faza qamrovida, lekin uni **sozlaydigan joy yo'q**:
-§29 da Google `client_id`/`client_secret` ini saqlaydigan resurs yo'q edi
-(pastdagi 6-bo'lakdagi ogohlantirish shu haqda edi). Ikki yo'l bor edi —
-`customers` bo'lagining ichiga integratsiya shaklidagi resurs qo'shish, yoki
-endpointni qolgan integratsiyalar bilan birga qurish. Ikkinchisi tanlandi:
-credential 5b da §29 ning o'z jadvaliga qo'shiladi, oqim esa `customers`
-modulida qoladi. Shunda kontrakt bir joyda, bir marta kengayadi.
+**2.11 · §18 `social/{provider}/` → 1-fazaning 5c-bo'lagi.** Faza o'zgarmaydi,
+bo'lak o'zgaradi. Endpoint 1-faza qamrovida, lekin uni **sozlaydigan joy yo'q**
+edi: §29 da Google `client_id`/`client_secret` ini saqlaydigan resurs yo'q edi.
+Ikki yo'l bor edi — `customers` bo'lagining ichiga integratsiya shaklidagi
+resurs qo'shish, yoki endpointni qolgan integratsiyalar bilan birga qurish.
+Ikkinchisi tanlandi: credential §29 ning o'z jadvaliga qo'shiladi, oqim esa
+`customers` modulida qoladi. Shunda kontrakt bir joyda, bir marta kengayadi.
 
-Shu paytgacha endpoint **ulanmaydi va `404` qaytaradi**. Bu §41 dagi `404` emas
-— qamrovdan chiqmagan, faqat hali qurilmagan ([API.md](API.md) §18).
+O'z bo'lagi bor, chunki to'lov sozlamalari bilan hech narsani baham ko'rmaydi:
+5c ga na GTS, na to'lov adapteri kerak.
 
 **2.12 · §19 — `email` ni almashtirish qamrovda yo'q.** Bu qamrovni
 qisqartirish emas: `PATCH /public/profile/` "shaxsiy ma'lumot" deydi va qaysi
@@ -186,6 +185,24 @@ Shuning uchun `PATCH` to'rtta maydonni oladi va `email` yuborilsa `422`
 qaytaradi ([API.md](API.md) §19). Kerak bo'lsa avval §19 ga oqim yoziladi,
 keyin kod — [PROJECT.md](PROJECT.md) §17 dagi "spekulyativ" xavfning aynan
 o'zi shu tartibni talab qiladi.
+
+**2.13 · §29 dagi ikkita `test/` → 2-faza.** `gts/test/` va
+`payments/{code}/test/` sinov emas, **haqiqiy ulanish** demakdir — tugmaning
+butun ma'nosi shu. Ulanishni esa adapter biladi, va
+[PROJECT.md](PROJECT.md) §15 ikkalasini ham 2-fazaga qo'ygan: GTS klienti
+1-bo'lakda, Payme va Click adapterlari 7-bo'lakda.
+
+Bugungi kodda ular yo'q: `providers/gts/` faqat protokollar, `PaymentProvider`
+portida esa tekshirish uchun chaqiriladigan metod umuman yo'q — undagi har bir
+metod haqiqiy to'lovni boshlaydi. Shu holatda yozilgan `test/` "sozlangan" deb
+aytardi, "yetib boradi" deb emas.
+
+Shuning uchun 1-faza **sozlama va credential'ni** saqlaydi va tashqariga chiqish
+uchun **seam** qoldiradi — 5-bo'lak GTS uchun (`service.active_credential`) va
+5a pochta uchun (`service.notifier`) aynan shunday qilgan. Ikkala `test/` esa
+o'z adapteri bilan birga keladi va shu paytgacha `404` qaytaradi.
+
+`notifications/test/` bundan mustasno va ishlaydi: uning adapteri 5a da qurilgan.
 
 ---
 
@@ -221,7 +238,8 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | 4 | `settings` + `site-config` | ✅ |
 | 5 | **`integrations`** — GTS credential'lari (§29) | ✅ |
 | 5a | **`integrations`** — SMTP (§29) | ✅ |
-| 5b | **`integrations`** — to'lov provayderlari, uchala `test/` va social credential'i (§29) | ⬜ |
+| 5b | **`integrations`** — to'lov provayderlari sozlamasi (§29) | ⬜ |
+| 5c | **Social kirish** — §29 credential'i + `social/{provider}/` oqimi | ⬜ |
 | 5c | **Bo'lim bayroqlari** — `RequireFeature`, o'n bitta bayroq, sweep testi (§28) | ✅ |
 | 6a | **`customers`** — auth (§18) | ⬜ |
 | 6b | **`customers`** — profil (§19) | ⬜ |
@@ -256,14 +274,34 @@ SMTP'siz ishlamaydi (D6). To'lov provayderlari hech narsani to'smaydi.
 - `test/` haqiqiy xabar yuboradi; relay rad etsa bu `502` emas, `200` +
   `ok: false` va sabab.
 
-**5b-bo'lak — to'lov provayderlari.** 2-fazani to'smaydi; `providers/payments/`
-adapterlari bilan birga qilingani mantiqiyroq.
+**5b-bo'lak — to'lov provayderlari.** 2-fazani to'smaydi.
 
-- `payme`/`click` sozlamasi va credential'lari, `payments/{code}/test/` va
-  `gts/test/`.
+- `payment_providers` jadvali: har bir kod uchun bitta qator, birinchi o'qishda
+  yaratiladi. Credential'lar bitta shifrlangan JSON obyekt sifatida saqlanadi —
+  qaysi kalitlar kerakligini adapter biladi, u esa 2-fazada keladi.
+- Seam: `integrations.service.payment_providers(session)`. Qabul mezoni
+  5-bo'lakdagi bilan bir xil — 2-faza `providers/payments/{payme,click}.py`
+  qo'shadi, `integrations` ga tegmaydi.
+- `test/` bu yerda emas — §2.13.
 - Ergashuvchi ikkita ish: `system/health/` dagi qattiq `NOT_CONFIGURED`
-  haqiqiy holatga almashadi (`app/modules/system/service.py`), `site-config`
-  ning bo'sh `payment_methods` to'ladi (`settings/service.py::_assemble`).
+  haqiqiy holatga almashadi (`app/modules/system/service.py`, **tarmoqqa
+  chiqmasdan**), `site-config` ning bo'sh `payment_methods` to'ladi
+  (`settings/service.py::_assemble`).
+- `payment_logo` — yangi upload purpose. `logo` ni qayta ishlatish brend
+  logosini to'lov usuliga ulash imkonini berardi, `uploads.service.link` esa
+  aynan shuni to'sish uchun `purpose` oladi.
+
+**5c-bo'lak — social kirish.** `PROJECT.md` D5: email+parol ustiga Google.
+Adapter ham, GTS ham kerak emas, shuning uchun 5b dan mustaqil.
+
+- §29 da `social_credentials` — provayder bo'yicha registry, `apple` keyin
+  yangi qator bo'lishi uchun ([ARCHITECTURE.md](ARCHITECTURE.md) D5).
+- Yangi port: `providers/social/` — `SocialVerifier` va `google.py`.
+  `__init__.py` da faqat override qoladi, qaysi verifier ishlatilishini
+  **modul** hal qiladi (`integrations.service.social_verifier`) — 5a dagi
+  `notifier` bilan bir xil sabab (§4 dagi 25-qaror).
+- Oqim `customers` da qoladi (§2.11): manzil bo'yicha topiladi yoki
+  yaratiladi, va **tasdiqlangan** bo'ladi.
 
 **6-bo'lak — `customers`.** SMTP tayyor, ya'ni email OTP yo'li ochiq. Bo'lak
 ikkiga bo'lindi: kontraktdagi ikki bo'lim (§18 va §19) mustaqil o'qiladi va
@@ -335,13 +373,13 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 
 | # | Bo'lak | Izoh |
 |---|---|---|
-| 1 | `providers/gts/` — klient, sessiya menejeri, ACL | Sessiya Redis'da, **qulf ostida**; 401 da bitta avtomatik takror ([ARCHITECTURE.md](ARCHITECTURE.md) §7) |
+| 1 | `providers/gts/` — klient, sessiya menejeri, ACL | Sessiya Redis'da, **qulf ostida**; 401 da bitta avtomatik takror ([ARCHITECTURE.md](ARCHITECTURE.md) §7). Bu yerda `POST /admin/integrations/gts/test/` ham ulanadi (§2.13) |
 | 2 | Xato va status xaritalari | GTS xatoda ham HTTP 200 qaytaradi; asl matn `message` da, asl kod `meta.upstream` da (`API.md` §3) |
 | 3 | `catalog` + beat sinxronizatsiyasi | Uzoq Redis TTL, ikkala yuzaga faqat o'qish |
 | 4 | `ProductAdapter` porti + `flight` adapteri | Port **hozir** loyihalanadi, lekin faqat `flight` amalga oshiriladi ([ARCHITECTURE.md](ARCHITECTURE.md) §13.8) |
 | 5 | `products` — holatsiz qidiruv oqimi | **Hech narsa saqlanmaydi** (D2); regressiya testi bilan qo'riqlanadi |
 | 6 | `orders` — lokal yozuv, status xaritasi, `available_actions` | `available_actions` **server tomonda** hisoblanadi |
-| 7 | `payments` + Payme va Click adapterlari | Redirect + webhook; karta raqami serverdan o'tmaydi (D7) |
+| 7 | `payments` + Payme va Click adapterlari | Redirect + webhook; karta raqami serverdan o'tmaydi (D7). Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13) |
 | 8 | `promo` minimal (§2.3) | To'lov summasiga ta'sir qiladi, shuning uchun shu yerda |
 | 9 | **`booking` sagasi** | Transactional outbox + Celery; eng yuqori xavfli modul |
 | 10 | `jobs` + `GET /admin/jobs/{id}/` | Async ish reyestri (`API.md` §9) |
