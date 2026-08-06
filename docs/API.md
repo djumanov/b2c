@@ -292,6 +292,11 @@ PATCH /api/v1/admin/content/blogs/{id}/
 etilgan MIME va o'lcham shunga qarab tekshiriladi. Bog'lanmagan fayllar 24 soatdan keyin
 tozalanadi.
 
+> **Bu naqsh — admin yuzasiniki.** Public yuzada `uploads/` resursi yo'q va mijoz tokeni
+> `/admin/*` ga kira olmaydi (§4). Shu sababli mijoz yuklaydigan yagona fayl — avatar —
+> **to'g'ridan-to'g'ri** `POST /public/profile/avatar/` ga boradi va `purpose` so'ramaydi
+> (§19). Saqlash, tekshiruv va supurish qoidalari o'sha-o'sha.
+
 ---
 
 ## 12. GTS bilan aloqa
@@ -591,11 +596,125 @@ hech narsani oshkor qilmaydi.
 | `POST` | `/public/profile/notifications/{id}/read/` | ✓ | Bittasini o'qilgan deb belgilash |
 | `DELETE` | `/public/profile/notifications/{id}/` | ✓ | O'chirish |
 
-**Saqlangan yo'lovchilar** — bron qilishda qayta terishni oldini oladi. Bron so'rovida
-`"save_passenger": true` berilsa yangi yozuv qo'shiladi.
+### Shaxsiy ma'lumot
 
-**Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi, buyurtma va to'lov yozuvlari esa
-moliyaviy hujjat sifatida anonimlashtirilib saqlanadi ([PROJECT.md](PROJECT.md) §13).
+```json
+GET /public/profile/
+→ { "status": "success",
+    "data": { "id": "9f2c…", "email": "user@mail.uz",
+              "first_name": "Aziz", "last_name": "Karimov",
+              "phone": "+998901234567", "birth_date": "1995-04-17",
+              "avatar_id": "1a7b…", "avatar_url": "/uploads/avatar/ab/…png",
+              "created_at": "…" } }
+```
+
+```json
+PATCH /public/profile/
+{ "first_name": "Aziz", "last_name": "Karimov",
+  "phone": "+998901234567", "birth_date": "1995-04-17" }
+```
+
+`PATCH` **faqat shu to'rtta maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
+jimgina e'tiborsiz qoldirilmaydi, aks holda panel o'zgarmagan qiymatni o'zgargandek
+ko'rsatardi.
+
+**`email` bu yerda o'zgarmaydi.** U — kirish identifikatori: OTP aynan shu manzilni
+tasdiqlagan va parol tiklash aynan shunga ishonadi. Manzilni almashtirish yangisini
+tasdiqlaydigan alohida oqimni talab qiladi; u oqim belgilangunga qadar `email` yuborilsa
+`422 validation` qaytadi.
+
+### Avatar
+
+```
+POST /public/profile/avatar/     (multipart/form-data: file)
+→ 200 — yangilangan profil
+
+DELETE /public/profile/avatar/
+→ 204
+```
+
+Bu **§11 dagi ikki qadamli naqshdan chetlanish** va sababi kontraktda: §11 ning yagona
+yuklash yo'li `/admin/uploads/`, unga esa mijoz tokeni bilan kirilmaydi — §4 bo'yicha u
+`403` oladi. Public yuzada `uploads/` resursi yo'q, shuning uchun fayl **to'g'ridan-to'g'ri
+shu yo'lga** yuklanadi. `purpose` yuborilmaydi: bu endpointda u faqat `avatar` bo'lishi
+mumkin.
+
+Faqat **raster** rasm (`png`, `jpeg`, `webp`) va **1 MB** gacha. SVG qabul qilinmaydi:
+u XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi. Almashtirilgan
+avatar darhol o'chmaydi — bog'lanishi uziladi va 24 soatdan keyin supuriladi (§11).
+
+### Parolni o'zgartirish va akkauntni o'chirish
+
+```json
+POST /public/profile/password/
+{ "current_password": "…", "new_password": "…" }
+→ 204
+
+DELETE /public/profile/
+{ "password": "…" }
+→ 204
+```
+
+Parol o'zgargach **barcha sessiyalar** o'chadi, jumladan so'rov yuborgani ham.
+
+`DELETE` parol so'raydi, garchi chaqiruvchi allaqachon tokenga ega bo'lsa ham: bu mijoz
+tokeni bajara oladigan **yagona qaytarib bo'lmaydigan** amal, va o'g'irlangan access token
+uni bajarishga yetarli bo'lmasligi kerak.
+
+> ⚠ Demak `DELETE` **tanaga ega**. Ba'zi HTTP klientlari `delete()` qisqartmasida tana
+> yubora olmaydi (masalan `httpx`) — u holda umumiy `request("DELETE", …)` shakli
+> ishlatiladi.
+
+**Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi — ism, telefon, tug'ilgan sana va
+manzil qatordan olib tashlanadi, saqlangan yo'lovchilar ham. Buyurtma va to'lov yozuvlari
+esa moliyaviy hujjat sifatida anonimlashtirilib saqlanadi
+([PROJECT.md](PROJECT.md) §13). Manzil bo'shaydi, ya'ni o'sha email bilan qaytadan
+ro'yxatdan o'tish mumkin.
+
+### Saqlangan yo'lovchilar
+
+Bron qilishda qayta terishni oldini oladi. Bron so'rovida `"save_passenger": true`
+berilsa yangi yozuv qo'shiladi. Resurs §8 dagi standart CRUD naqshida ishlaydi.
+
+```json
+GET /public/profile/passengers/
+→ { "status": "success",
+    "data": [
+      { "id": "3c1d…", "first_name": "Aziz", "last_name": "Karimov",
+        "birth_date": "1995-04-17",
+        "document_type": "passport", "document_number": "AA1234567",
+        "created_at": "…", "updated_at": "…" }
+    ],
+    "errors": [], "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
+```
+
+- Maydonlar to'plami [PROJECT.md](PROJECT.md) §13 dagi saqlanadigan shaxsiy ma'lumot
+  ro'yxatidan olingan va undan oshmaydi. Jins, fuqarolik va hujjat amal muddati **yo'q** —
+  ular o'sha ro'yxatda yo'q, ya'ni qo'shilishi kerak bo'lsa avval `PROJECT.md` §13
+  tahrirlanadi.
+- **Bitta yo'lovchida bitta hujjat.** Ichma-ich ro'yxat emas: saqlangan yo'lovchi bron
+  uchun bitta hujjat bilan ishlatiladi.
+- `document_type` — **cheklanmagan satr**. Hujjat turlari katalogi GTS tomonda
+  ([GTS.md](GTS.md) §9) va §26 da uni beradigan endpoint hozircha yo'q; lokal enum keyin
+  keladigan katalogga zid bo'lib chiqishi mumkin.
+- Takrorlanish taqiqlanmaydi — bitta odam eski va yangi pasporti bilan ikki marta
+  saqlanishi mumkin.
+- `search` — ism va familiya bo'yicha; `ordering` default `-created_at`.
+
+### Xatolar
+
+| Holat | `code` | HTTP |
+|---|---|---|
+| Token yo'q yoki muddati tugagan | `unauthorized` | 401 |
+| Tasdiqlanmagan yoki bloklangan akkaunt | `forbidden` | 403 |
+| `PATCH` da noma'lum maydon (jumladan `email`) | `validation` | 422 |
+| Noto'g'ri joriy parol | `validation` (`field: "current_password"`) | 422 |
+| `DELETE /public/profile/` da noto'g'ri parol | `validation` (`field: "password"`) | 422 |
+| Fayl turi yoki hajmi mos emas | `validation` (`field: "file"`) | 422 |
+| Boshqa mijozning yo'lovchisi | `not_found` | 404 |
+
+Oxirgi qator ataylab `404`, `403` emas: yo'lovchi faqat o'z egasi orqali ko'rinadi, ya'ni
+"bunday yozuv yo'q" va "bu sizniki emas" — tashqaridan bir xil javob bo'lishi kerak.
 
 ---
 

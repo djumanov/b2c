@@ -58,7 +58,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 |---|---|---|---|---|
 | 17 | Sayt konfiguratsiyasi | **1** | ◐ | Yo'l va kesh bor; `payment_methods` `integrations` bilan to'ladi |
 | 18 | Autentifikatsiya | **1** | ◐ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a-bo'lakda qurildi. Chetlanishlar: `social/{provider}/` → 1-fazaning **5b**-bo'lagi (§2.11), `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
-| 19 | Profil | **1** | — | `profile/`, `avatar/`, `password/`, `passengers/`. Chetlanishlar: `cards/` → **2** (§2.7), `notifications/` → **4** (§2.8) |
+| 19 | Profil | **1** | ◐ | `profile/`, `avatar/`, `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7), `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
 | 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
@@ -175,6 +175,18 @@ modulida qoladi. Shunda kontrakt bir joyda, bir marta kengayadi.
 Shu paytgacha endpoint **ulanmaydi va `404` qaytaradi**. Bu §41 dagi `404` emas
 — qamrovdan chiqmagan, faqat hali qurilmagan ([API.md](API.md) §18).
 
+**2.12 · §19 — `email` ni almashtirish qamrovda yo'q.** Bu qamrovni
+qisqartirish emas: `PATCH /public/profile/` "shaxsiy ma'lumot" deydi va qaysi
+maydonlar ekanini aytmaydi, ya'ni `email` u yerda hech qachon nomlanmagan.
+Manzil — kirish identifikatori: OTP aynan shuni tasdiqlagan va parol tiklash
+shunga ishonadi. Uni almashtirish yangi manzilga kod yuborib tasdiqlaydigan
+oqimni talab qiladi, bunday oqim esa kontraktda **yo'q**.
+
+Shuning uchun `PATCH` to'rtta maydonni oladi va `email` yuborilsa `422`
+qaytaradi ([API.md](API.md) §19). Kerak bo'lsa avval §19 ga oqim yoziladi,
+keyin kod — [PROJECT.md](PROJECT.md) §17 dagi "spekulyativ" xavfning aynan
+o'zi shu tartibni talab qiladi.
+
 ---
 
 ## 3. Faza 1 — Yadro
@@ -267,9 +279,17 @@ ikkinchisi birinchisining jadvali ustiga quriladi.
   `current_staff` kabi ([STATUS.md](STATUS.md) §4.3).
 - `social/{provider}/` bu yerda emas — §2.11.
 
-**6b — profil (§19).** `passengers` jadvali; `profile/`, `password/`, akkauntni
-o'chirish; `avatar/` uchun mavjud `uploads.service.link` ishlatiladi.
-`cards/` → 2-faza (§2.7), `notifications/` → 4-faza (§2.8).
+**6b — profil (§19).** `passengers` jadvali va `customers.avatar_id`; `profile/`,
+`password/`, akkauntni o'chirish; `avatar/` uchun mavjud `uploads.service`
+ishlatiladi — yangi `avatar` purpose, `public`, chunki private yo'lni
+`current_staff` qo'riqlaydi.
+
+- Yo'lovchi maydonlari [PROJECT.md](PROJECT.md) §13 dagi ro'yxatdan olinadi va
+  undan oshmaydi; `document_type` cheklanmagan satr bo'lib qoladi, chunki
+  hujjat turlari katalogi GTS'da va §26 da uni beradigan endpoint yo'q.
+- `email` `PATCH` orqali o'zgarmaydi — yangi manzilni tasdiqlaydigan oqim
+  kontraktda yo'q (§2.12).
+- `cards/` → 2-faza (§2.7), `notifications/` → 4-faza (§2.8).
 
 **Qabul mezoni** ([PROJECT.md](PROJECT.md) §15):
 
