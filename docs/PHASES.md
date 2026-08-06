@@ -196,7 +196,8 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | 3 | `audit` va `uploads` | ✅ |
 | 4 | `settings` + `site-config` | ✅ |
 | 5 | **`integrations`** — GTS credential'lari (§29) | ✅ |
-| 5a | **`integrations`** — to'lov, SMTP, `test/` (§29) | ⬜ |
+| 5a | **`integrations`** — SMTP (§29) | ✅ |
+| 5b | **`integrations`** — to'lov provayderlari va uchala `test/` (§29) | ⬜ |
 | 6 | **`customers`** (§18–19) | ⬜ |
 | 7 | e2e qabul testi | ⬜ |
 
@@ -214,18 +215,35 @@ credential'lari**; u shu bo'lakda bajariladi, qolgani 5a ga suriladi.
   `providers/gts/client.py` va `session.py` ni qo'shadi, `integrations` ga
   tegmaydi.
 
-**5a-bo'lak — qolgan integratsiyalar.** 2-fazani **to'smaydi**, shuning uchun
-GTS credential'laridan keyinga suriladi.
+**5a-bo'lak — SMTP.** Qolgan integratsiyalardan **faqat shu** oldinga
+olindi, chunki **6-bo'lakni to'sib turgan yagona narsa shu**: email OTP
+SMTP'siz ishlamaydi (D6). To'lov provayderlari hech narsani to'smaydi.
 
-- To'lov provayderlari va SMTP sozlamasi/credential'lari, uchala `test/`.
+- Jadval: `smtp_settings` — **singleton**, parol shifrlangan
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §10). Qator birinchi o'qishda yaratiladi.
+- `providers/notifications/smtp.py` — `Notifier` portining SMTP adapteri,
+  stdlib `smtplib` `asyncio.to_thread` ichida.
+- Seam yo'nalishi tuzatildi: qaysi notifier ishlatilishini **modul** hal
+  qiladi (`integrations.service.notifier(session)`), provayder emas —
+  argumentsiz modul-global ko'p worker'da noto'g'ri va u sozlamani qayta
+  o'qiy olmasdi. `set_notifier` override'i o'z nomi bilan qoladi.
+- `test/` haqiqiy xabar yuboradi; relay rad etsa bu `502` emas, `200` +
+  `ok: false` va sabab.
+
+**5b-bo'lak — to'lov provayderlari.** 2-fazani to'smaydi; `providers/payments/`
+adapterlari bilan birga qilingani mantiqiyroq.
+
+- `payme`/`click` sozlamasi va credential'lari, `payments/{code}/test/` va
+  `gts/test/`.
 - Ergashuvchi ikkita ish: `system/health/` dagi qattiq `NOT_CONFIGURED`
   haqiqiy holatga almashadi (`app/modules/system/service.py`), `site-config`
   ning bo'sh `payment_methods` to'ladi (`settings/service.py::_assemble`).
-- `providers/notifications/smtp.py` — mavjud `get_notifier()` seam'i orqali
-  `log.py` o'rniga. 6-bo'lakdagi email OTP shusiz ishlamaydi (D6).
 
-**6-bo'lak — `customers`.** `integrations` dan keyin: `social/google/`
-credential'i va SMTP o'sha yerda.
+**6-bo'lak — `customers`.** SMTP tayyor, ya'ni email OTP yo'li ochiq.
+
+> ⚠ **Kontraktda teshik.** Quyida "`social/google/` credential'i
+> `integrations` da" deyilgan, lekin [API.md](API.md) §29 jadvalida bunday
+> satr **yo'q**. Bu bo'lakni boshlashdan oldin §29 ga qo'shilishi kerak.
 
 - Jadvallar: `customers`, `customer_refresh_tokens`, `passengers`, `email_otps`.
 - Auth `staff` naqshini takrorlaydi, `Audience.PUBLIC` bilan — jumladan

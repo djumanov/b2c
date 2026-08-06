@@ -802,6 +802,40 @@ GET /admin/integrations/payments/payme/
 
 Maskadagi ko'rinadigan belgilar soni kontraktning bir qismi emas.
 
+### Bildirishnomalar: SMTP
+
+O'rnatma pochtasini bitta relay orqali yuboradi, shuning uchun bu resurs —
+**singleton**, `{id}` yo'q. Yangi o'rnatmada qator birinchi `GET` da default'lar bilan
+yaratiladi, `404` qaytmaydi.
+
+```json
+GET /admin/integrations/notifications/
+→ { "status": "success",
+    "data": { "enabled": true,
+              "host": "smtp.brand.uz", "port": 587, "tls": "starttls",
+              "username": "no-reply@brand.uz", "password": "••••••••",
+              "from_address": "no-reply@brand.uz", "from_name": "Brand Travel",
+              "last_tested_at": "2026-08-06T09:00:00Z",
+              "last_test_ok": true, "last_test_error": null } }
+```
+
+- `tls` — `starttls` (587), `ssl` (465) yoki `none`.
+- `password` — `null` bo'lsa **hech narsa saqlanmagan**; maska bo'lsa saqlangan-u
+  ko'rsatilmayapti. Panel ikkalasini boshqacha ko'rsatadi.
+- `username` bo'sh satr yuborilsa tozalanadi — auth so'ramaydigan ichki relay ham
+  haqiqiy sozlama.
+- **`enabled: true`** qilish uchun kamida `host` va `from_address` bo'lishi shart,
+  aks holda `422 validation`. Aks holda panel "pochta yoqilgan" deydi-yu, hech narsa
+  yetib bormaydi.
+- `test/` **haqiqiy xabar yuboradi**: `{"to": "..."}` ixtiyoriy, berilmasa tugmani
+  bosgan xodimning o'z manziliga ketadi. Pochta sozlanmagan yoki o'chiq bo'lsa —
+  `409 conflict`.
+- Relay qabul qilmasa bu **`test/` ning xatosi emas**: `200` va
+  `{"ok": false, "detail": "<sabab>", "tested_at": …}`. Natija saqlanadi va oddiy
+  `GET` da ko'rinadi — ya'ni holatni bilish uchun yana xabar yuborish shart emas.
+
+SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41).
+
 `{code}` — birinchi relizda `payme` va `click` ([PROJECT.md](PROJECT.md) D7).
 
 ---

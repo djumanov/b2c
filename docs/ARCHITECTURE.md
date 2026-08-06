@@ -131,7 +131,7 @@ yupqa yig'uvchi.
 | Modul | Nimaga egalik qiladi | Izoh |
 |---|---|---|
 | `settings` | Brending, sayt, tillar, valyutalar, menyu, `features`, mahsulot ro'yxati, `site-config` yig'ilishi | Redis read-through kesh; **har qanday yozuv `site-config` keshini tozalaydi** — "logoni almashtir, deploy shart emas" shu bilan haqiqatga aylanadi |
-| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi. GTS credential'lari **ro'yxat**, ulardan bittasi aktiv (§10); tashqariga yagona eshik — `service.active_credential()` |
+| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi. GTS credential'lari **ro'yxat**, ulardan bittasi aktiv; SMTP — **singleton** (§10). Tashqariga ikkita eshik: `service.active_credential()` va `service.notifier()` |
 | `cms` | 7 ta kontent resursi + publish/unpublish/reorder | Tarjimali maydonlar JSONB; public o'qish alohida "yassilovchi" serializer orqali |
 | `feedback` | Sharhlar va moderatsiya holati | `pending → accepted \| rejected` |
 | `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar | GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish |
@@ -295,6 +295,10 @@ ko'tarilganda ishga tushadi.
   Bu jadvalda **soft delete yo'q** — [API.md](API.md) §8 default'idan ataylab qilingan istisno:
   o'chirilgan credential keraksiz saqlanib qolgan client paroli, unga hech qanday FK ishora
   qilmaydi, kim qachon o'chirgani esa audit jurnalida qoladi.
+- **SMTP — `smtp_settings`, singleton** (`UNIQUE(singleton) + CHECK`): o'rnatma pochtasini
+  bitta relay orqali yuboradi, ya'ni "qaysi qator haqiqiy?" degan savol umuman tug'ilmasligi
+  kerak. U ham `Entity` emas — soft delete qilingan singleton yagona o'rinni abadiy band
+  qiladi (§8.3 dagi ziddiyat). Qator birinchi o'qishda yaratiladi, migratsiyada emas.
 - **Buyurtma va to'lov keshlanmaydi** ([API.md](API.md) §12). **Takliflar esa umuman hech qayerda
   saqlanmaydi** — na Postgres'da, na Redis'da (D2, §9).
 - Audit jurnali — faqat qo'shiladigan, `(actor, resource, created_at)` bo'yicha indeksli.
@@ -361,7 +365,7 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 | Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash va katalog yangilash uchun beat kerak |
 | Kesh / broker | Redis | `site-config`, statik kataloglar, idempotency, GTS sessiyasi, rate limit, Celery brokeri. **Qidiruv uchun emas** (D2, §9) |
 | To'lov | `PaymentProvider` porti + Payme, Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Keyinchalik Paygine = bitta adapter va karta/OTP yo'llarini ulash |
-| Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi |
+| Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi. **Qaysi adapter ishlatilishini `integrations.service.notifier(session)` hal qiladi** — sozlama DB'da, ya'ni javob modulniki, provayderniki emas (§4). `providers/notifications` da faqat `set_notifier` override'i qoladi |
 | Fayl saqlash | `Storage` porti + lokal disk adapteri | Bitta serverli o'rnatma; Docker volume — zaxira birligi. Client xohlasa S3 shunchaki adapter almashtirish |
 | **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa ikkita va [API.md](API.md) §5 da qat'iy belgilangan |
 
