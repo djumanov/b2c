@@ -10,7 +10,7 @@ and a route that does not exist answers `404` on its own.
 
 from fastapi import Depends, Response
 
-from app.api.deps import current_staff
+from app.api.deps import current_staff, require_owner
 from app.api.envelope import enveloped_router
 from app.db.session import SessionDep
 from app.modules.audit.deps import Audited
@@ -81,7 +81,14 @@ async def get_features(session: SessionDep) -> FeaturesOut:
     return await service.get_features(session)
 
 
-@router.patch("/features/", summary="Switch a section on or off")
+@router.patch(
+    "/features/",
+    # Stricter than the group (API.md §5): switching a section off removes it
+    # from the client's own site and panel, which is administration of the
+    # installation rather than the daily work `admin` does.
+    dependencies=[Depends(require_owner)],
+    summary="Switch a section on or off — owner only",
+)
 async def update_features(data: FeaturesIn, session: SessionDep) -> FeaturesOut:
     return await service.update_features(session, data)
 

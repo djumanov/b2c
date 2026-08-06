@@ -254,6 +254,23 @@ async def test_switching_a_feature_off_reaches_the_gate_immediately(
     assert await service.feature_enabled("faq") is True
 
 
+async def test_an_admin_may_read_the_features_but_not_change_them(
+    api: AsyncClient, admin: Staff
+) -> None:
+    """API.md §5: the second action stricter than its group."""
+    assert (
+        await api.get(f"{SETTINGS}features/", headers=headers_for(admin))
+    ).status_code == 200
+
+    refused = await api.patch(
+        f"{SETTINGS}features/",
+        headers=headers_for(admin),
+        json={"flags": {"blog": False}},
+    )
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["errors"][0]["code"] == "forbidden"
+
+
 async def test_an_unknown_feature_is_refused(api: AsyncClient, owner: Staff) -> None:
     response = await api.patch(
         f"{SETTINGS}features/",
