@@ -26,7 +26,9 @@ start of every run.
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -44,9 +46,13 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import settings
 from app.core.roles import Role
 from app.core.security import Audience, hash_password
+from app.db.mixins import utcnow
 from app.db.session import get_session, set_engine
 from app.main import app
+from app.modules.customers.models import Customer
 from app.modules.staff.models import Staff
+from app.providers.notifications import set_notifier
+from app.providers.notifications.base import Channel
 from app.providers.storage import set_storage
 from app.providers.storage.local import LocalStorage
 from tests.conftest import bearer, issue_token
@@ -227,3 +233,94 @@ async def owner(session: AsyncSession) -> Staff:
 @pytest.fixture
 async def admin(session: AsyncSession) -> Staff:
     return await make_staff(session, email="admin@example.uz", role=Role.ADMIN)
+
+
+# --- customer fixtures ---------------------------------------------------------------
+
+
+async def make_customer(
+    session: AsyncSession,
+    *,
+    email: str = "buyer@example.uz",
+    first_name: str = "Test Buyer",
+    password: str = PASSWORD,
+    is_verified: bool = True,
+    is_blocked: bool = False,
+) -> Customer:
+    """Verified by default — most tests are about what a real account can do.
+
+    The unverified case is the interesting one and every test that wants it
+    says so, rather than the other way round.
+    """
+    customer = Customer(
+        email=email,
+        first_name=first_name,
+        password_hash=hash_password(password),
+        email_verified_at=utcnow() if is_verified else None,
+        is_blocked=is_blocked,
+    )
+    session.add(customer)
+    await session.commit()
+    await session.refresh(customer)
+    return customer
+
+
+def customer_headers_for(customer: Customer) -> dict[str, str]:
+    """An access token for a customer who really exists. No ``role`` claim —
+    API.md §4 gives that to staff tokens only."""
+    return bearer(issue_token(Audience.PUBLIC, subject_id=customer.id))
+
+
+@pytest.fixture
+async def customer(session: AsyncSession) -> Customer:
+    return await make_customer(session)
+
+
+# --- mail ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecordingNotifier:
+    """Stands in for SMTP and keeps what it was asked to send.
+
+    Structural, not a subclass: the port is what ``send``/``verify`` look like,
+    and a test double that has to inherit is a test double that breaks when the
+    base class grows a helper.
+    """
+
+    channel: Channel = Channel.EMAIL
+    sent: list[dict[str, Any]] = field(default_factory=list)
+
+    async def send(
+        self,
+        *,
+        recipient: str,
+        subject: str | None,
+        body: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        self.sent.append(
+            {
+                "recipient": recipient,
+                "subject": subject,
+                "body": body,
+                "context": context or {},
+            }
+        )
+
+    async def verify(self) -> bool:
+        return True
+
+    @property
+    def last_code(self) -> str:
+        # Read out of ``context`` rather than scraped from the body: a real
+        # adapter renders a template, so the body text is not the contract.
+        return str(self.sent[-1]["context"]["code"])
+
+
+@pytest.fixture
+def notifier() -> Iterator[RecordingNotifier]:
+    recorder = RecordingNotifier()
+    set_notifier(recorder)
+    yield recorder
+    set_notifier(None)

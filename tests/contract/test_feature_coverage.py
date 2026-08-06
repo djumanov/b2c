@@ -40,6 +40,10 @@ CORE_PREFIXES: tuple[str, ...] = (
     f"{API_PREFIX}/admin/uploads/",
     # the document every front end starts from
     f"{API_PREFIX}/public/site-config/",
+    # signing in is not a section. A client who switched this off would have a
+    # site nobody can buy from — PROJECT.md D4 makes an account mandatory to
+    # order — so there is no flag it could hang from (PHASES.md §6, 4-faza).
+    f"{API_PREFIX}/public/auth/",
 )
 
 

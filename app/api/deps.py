@@ -14,10 +14,10 @@ Authorisation is one bit wide: the roles are ``owner`` and ``admin`` and the
 first contains the second (API.md §5). So a route either takes any staff token
 or carries ``require_owner`` — there is no permission string to look up.
 
-While the ``staff`` and ``customers`` tables do not exist yet, the principals
-below are built from the token's own claims. Loading the row — to honour a
-block, a deleted account or a role changed since the token was issued — lands
-with the auth module; the call sites do not change when it does.
+Both principals are resolved from the **row**, not from the token's claims, so
+a block, a deletion or a role changed since the token was issued takes effect on
+the next request rather than when the token happens to expire. Each surface asks
+its own module who the subject is.
 """
 
 import uuid
@@ -107,9 +107,18 @@ async def _claims_for(request: Request, expected: Audience) -> TokenClaims:
     return claims
 
 
-async def current_customer(request: Request) -> Customer:
+async def current_customer(request: Request, session: SessionDep) -> Customer:
     claims = await _claims_for(request, Audience.PUBLIC)
-    return Customer(id=claims.subject_id)
+
+    # Imported here for the same reason as the staff import below: this module
+    # is imported while the router tree is still being assembled.
+    from app.modules.customers import service as customers_service
+
+    # The row, not the claim. An account blocked or deleted since the token was
+    # issued loses access now rather than in half an hour, and an account whose
+    # address was never confirmed never had access to begin with.
+    row = await customers_service.get_active(session, claims.subject_id)
+    return Customer(id=row.id)
 
 
 async def current_staff(request: Request, session: SessionDep) -> Staff:

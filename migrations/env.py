@@ -25,6 +25,7 @@ from app.db.base import Base
 # Import every model module here so its table registers on Base.metadata and
 # autogenerate can see it. One line per module, added as modules are built.
 from app.modules.audit import models as audit_models  # noqa: E402, F401
+from app.modules.customers import models as customers_models  # noqa: E402, F401
 from app.modules.integrations import models as integrations_models  # noqa: E402, F401
 from app.modules.settings import models as settings_models  # noqa: E402, F401
 from app.modules.staff import models as staff_models  # noqa: E402, F401
