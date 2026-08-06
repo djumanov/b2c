@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `feat/customer-profile`
+**Oxirgi yangilanish:** 2026-08-06 · `feat/payment-integrations`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 42 ta yo'l / 60 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 16 ta + `alembic_version` |
-| Migratsiyalar | 9 ta, bitta head (`96f1b68a3874`) |
-| Testlar | 467 ta — unit 15 fayl · contract 7 · integration 16 |
+| Endpointlar | 47 ta yo'l / 66 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 18 ta + `alembic_version` |
+| Migratsiyalar | 11 ta, bitta head (`179a9459a8fa`) |
+| Testlar | 504 ta — unit 15 fayl · contract 7 · integration 18 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -32,11 +32,12 @@ takrorlamaydi.
 | Brend rangi o'zgarsa `site-config` da **deploysiz** aks etadi | ✅ `tests/integration/test_site_config.py` |
 | `admin` tokeni `owner` talab qiladigan endpointda `403` oladi | ✅ `tests/integration/test_staff_crud.py` |
 
-> Uchala mezon ham texnik jihatdan bajarildi. 1-bosqich qamrovidan endi
-> **`integrations` ning to'lov qismi** va e2e qabul testi qolgan (§3).
-> `customers` to'liq: `aud: public` tokeni haqiqiy egaga ega, profil va
-> saqlangan yo'lovchilar bor — 2-fazaning `orders` moduli shuni kutayotgan edi
-> (PROJECT.md D4: akkauntsiz xarid yo'q).
+> Uchala mezon ham texnik jihatdan bajarildi. 1-bosqich qamrovidan **faqat
+> e2e qabul testi** qoldi (§3). `customers` to'liq — email+parol va Google;
+> `integrations` da GTS, SMTP, to'lov va social sozlamalari bor. Ikkala
+> `test/` probe'i 2-fazada, adapterlari bilan birga ([PHASES.md](PHASES.md)
+> §2.13) — bu qamrovdan chiqarish emas, adapteri yo'q tugma "sozlangan" deb
+> aytardi, "yetib boradi" deb emas.
 
 ---
 
@@ -61,22 +62,26 @@ kontrakt testlari.
 | `settings` (public) | `GET /public/site-config/` — kesh + ETag + i18n | 1 |
 | `integrations` | GTS credential'lari: ro'yxat, bittasi aktiv, shifrlangan parol | 3 |
 | `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari | 2 |
+| `integrations` (to'lov) | Har bir provayder uchun qator, shifrlangan credential obyekti, `site-config` va `health` ga ulanish | 2 |
+| `integrations` (social) | Google OAuth client'i; `client_id` ochiq, `client_secret` shifrlangan | 1 |
 | `system` | health, version (setup'dan) | 2 |
 | `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
 | `customers` (profil) | Profil o'qish/tahrir, avatar, parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 5 |
+| `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — ikkala yuza uchun bitta joyda | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+9+5 = 42). Operatsiyalar
-> ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi
-> `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/` faqat
-> `POST`); `integrations` ning GTS qismida 6 ta. `customers` ning auth qismida
-> 9 yo'l = 9 operatsiya (hammasi `POST`), profil qismida esa 5 yo'lda 11 ta.
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+5+1 = 47).
+> Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
+> beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
+> faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
+> auth qismida 10 yo'l = 10 operatsiya (hammasi `POST`), profil qismida esa
+> 5 yo'lda 11 ta.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
-`email_otps`, `passengers`.
+`email_otps`, `passengers`, `payment_providers`, `social_credentials`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -84,31 +89,38 @@ kontrakt testlari.
 
 ## 3. Keyingi ish
 
-To'liq reja — [PHASES.md](PHASES.md). Bu yerda faqat **navbatdagi uchtasi**:
+To'liq reja — [PHASES.md](PHASES.md).
 
-1-bosqichdan **ikkitasi** qoldi:
+1-bosqichdan **bitta bo'lak** qoldi:
 
-| # | Bo'lak | Nega shu tartibda |
+| # | Bo'lak | Nima |
 |---|---|---|
-| 5b | **`integrations`** — to'lov provayderlari, uchala `test/` va social credential'i | 2-fazani to'smaydi; `providers/payments/` adapterlari bilan birga qilingani mantiqiyroq. `social/{provider}/` shu yerda ochiladi (PHASES.md §2.11) |
-| 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala mezon toza baza ustida, uchidan-uchiga |
+| 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala qabul mezoni toza baza ustida, uchidan-uchiga |
 
-Shu bo'laklar kutayotgan **koddagi aniq nuqtalar**:
+**2-fazaga qoldirilgan, ya'ni bugun `404` qaytaradigan yo'llar:**
 
-- `app/modules/system/service.py:47` — `gts` va `payments` qattiq
-  `NOT_CONFIGURED`. `gts` uchun javob endi bor
-  (`integrations.service.active_credential`), lekin `health/` **tarmoqqa
-  chiqmasligi kerak** — har pollda GTS'ga kirish mashina akkauntini
-  rate-limit'ga olib boradi. SMTP komponenti kerak emas: API.md §39 to'rttasini
-  sanaydi va SMTP ular orasida yo'q.
-- `app/modules/settings/service.py::_assemble` — `payment_methods` bo'sh
-  ro'yxat; 5b bilan to'ladi.
-- `app/modules/integrations/` — `POST /admin/integrations/gts/test/`
-  (API.md §29) hali **yozilmagan**. Probe `providers/gts/` ga tushadi va
-  2FA holatini alohida ko'rsatishi kerak (D1).
-- `app/modules/customers/` — `social/{provider}/` va `devices/` **mount
-  qilinmagan**, ya'ni `404`. Ikkalasining sababi boshqa: birinchisi §29 dagi
-  credential satrini kutadi, ikkinchisi API.md §41 da.
+- `POST /admin/integrations/gts/test/` — probe `providers/gts/` ga tushadi
+  (2-fazaning 1-bo'lagi) va 2FA holatini alohida ko'rsatishi kerak (D1).
+- `POST /admin/integrations/payments/{code}/test/` — Payme va Click
+  adapterlari bilan birga (2-fazaning 7-bo'lagi). Bugungi `PaymentProvider`
+  portida sinash uchun chaqiriladigan metod yo'q: har biri haqiqiy to'lovni
+  boshlaydi. Adapter kelganda portga `verify()` qo'shilishi kerak — `Notifier`
+  da shunday.
+- `POST /public/auth/devices/` — API.md §41, push bilan birga.
+
+**Seam'lar 2-faza uchun tayyor**, va qabul mezoni 5-bo'lakdagi bilan bir xil:
+2-faza `providers/gts/client.py` va `providers/payments/{payme,click}.py`
+qo'shadi, `integrations` ga **tegmaydi**.
+
+| Seam | Nima qaytaradi |
+|---|---|
+| `integrations.service.active_credential(session)` | Shifri ochilgan GTS akkaunti yoki `None` |
+| `integrations.service.payment_providers(session)` | Yoqilgan va credential'i bor provayderlar |
+| `integrations.service.notifier(session)` | SMTP yoki log adapteri |
+| `integrations.service.social_verifier(session, provider)` | Google verifier yoki `None` |
+
+Boshqa **koddagi aniq nuqtalar**:
+
 - **2-faza uchun ochiq savol:** `passengers.document_type` cheklanmagan satr.
   Hujjat turlari katalogi GTS'da ([GTS.md](GTS.md) §9), API.md §26 da esa uni
   beradigan endpoint yo'q. Bron oqimi qat'iy qiymat talab qilsa — avval §26 ga
@@ -179,6 +191,19 @@ tug'ilmasligi uchun.
 | 45 | `DELETE /public/profile/` **parol so'raydi** | Mijoz tokeni bajara oladigan yagona qaytarib bo'lmaydigan amal. Narxi — `DELETE` da tana, va ba'zi klientlar (`httpx`) uni qisqartmada yubora olmaydi; kontraktda ogohlantirish bor |
 | 46 | Yo'lovchi so'rovlari **har doim** egasi bo'yicha cheklangan, boshqa mijozniki `404` | `403` "bunday id bor" deb aytardi. Egasiz chaqirilishi mumkin bo'lgan yordamchi — bu oxir-oqibat egasiz chaqiriladigan yordamchi, shuning uchun `owned_passengers(customer_id)` dan boshqa kirish nuqtasi yo'q |
 | 47 | Tanani chegara bilan o'qish `app/api/multipart.py` ga ko'chirildi | Ikkinchi yuza paydo bo'ldi. Muqobili — bir modul routerining boshqa modul routeridan yordamchi import qilishi, ya'ni ARCHITECTURE.md §4 to'sib turgan bog'liqlikning aynan o'zi |
+| 48 | To'lov credential'lari — **bitta shifrlangan JSON obyekt**, kalit boshiga ustun emas | Payme va Click turli kalitlar so'raydi va ro'yxat har birining o'z hujjatidan keladi. Ustunlar bilan bo'lsa, kontraktda adapterlar keyin rad etadigan sxema paydo bo'lardi. Shu sababli `enabled: true` uchun ham faqat "bo'sh emas" tekshiriladi — aniq kalitlarni adapter biladi |
+| 49 | `PATCH` credential'larni **birlashtiradi**, almashtirmaydi | Panel qiymatlarni faqat maskalangan holda oldi, ya'ni bitta kalitni tahrirlab qolganini qayta yubora olmaydi. Almashtirish rejimida bitta maydonni o'zgartirish qolganini o'chirardi |
+| 50 | Maska ichida **bittagina** nuqta bo'lsa ham qiymat e'tiborsiz qoldiriladi | Birinchi versiya "hammasi nuqta" deb tekshirardi va haqiqiy maskani o'tkazib yuborardi: `mask_secret` oxirgi belgilarni ataylab ko'rsatadi. Provayder beradigan hech bir qiymatda `•` yo'q |
+| 51 | Provayder qatorlari **birinchi o'qishda** yaratiladi, migratsiyada emas | Migratsiya faqat yozilgan paytdagi provayderlarni qamrardi. Bu yo'l bilan keyingi reliz qo'shgan provayder yangilangan o'rnatmada o'zi paydo bo'ladi — o'chirilgan holda |
+| 52 | Standart `sort_order` — enum e'lon tartibi (o'nlab qadam bilan) | Aks holda tartib `code` bo'yicha alifbo bo'lardi, ya'ni hech kim so'ramagan savolga tasodifiy javob. O'nlab qadam keyingi provayderni ikkitasining orasiga qo'yish imkonini beradi |
+| 53 | `health/` **tarmoqqa chiqmaydi**: `ok` "sinab ko'rishga narsa bor" degani | Bu endpoint pollanadi; har pollda GTS'ga kirish client'ning mashina akkauntini hech kim so'ramagan savolga sarflaydi. Da'vo `database`/`redis` nikidan torroq va buni docstring aytadi. Tiriklik — `test/` ning ishi, uni odam bosadi |
+| 54 | `payment_logo` — alohida purpose, `logo` qayta ishlatilmadi | Ikkalasini boshqa-boshqa resurs biriktiradi, va `uploads.service.link` aynan shuni ajratish uchun `purpose` oladi. SVG bu yerda ruxsat: to'lov brendlari SVG chiqaradi va faylni xodim yuklaydi, avatardan farqli |
+| 55 | Social credential'da `client_id` **ochiq**, faqat `client_secret` shifrlanadi | `client_id` tugmani chizadigan har bir brauzerga baribir beriladi. Uni panelda yashirish operatorni Google konsolidagi qiymat bilan solishtira oladigan yagona qiymatdan mahrum qilardi |
+| 56 | Google tasdiqlagan manzil **bu yerda ham tasdiqlangan** | Email OTP manzilni kimdir boshqarishini isbotlash uchun bor; `email_verified` aynan shuni isbotlaydi. Ustiga kod so'rash bir xil isbotni ikki marta so'rash bo'lardi. `email_verified: false` esa rad etiladi — bu istalgan odam boshqasining pochtasi haqida qila oladigan da'vo |
+| 57 | Social oqim akkauntni **topadi yoki yaratadi**, tasdiqlanmaganini esa tasdiqlaydi | Bitta manzilda ikkita akkaunt — bitta odamning ikkita buyurtma tarixi. Yaratilgan qatorda parol xeshi bo'sh: uni taxmin qilib bo'lmaydi, kerak bo'lsa parol tiklash orqali qo'yiladi |
+| 58 | `social/{provider}/` yo'l parametri **enum emas, satr** | Enum bo'lsa noma'lum provayder `422` bo'lardi va anonim chaqiruvchiga bizning ro'yxatimizni tasvirlardi. Tashqaridan "biz buni qo'llamaymiz" va "client buni o'chirgan" farq qilmasligi kerak — ikkalasi ham `404` |
+| 59 | ID token **lokal tekshiriladi**, Google'dan so'ralmaydi | `tokeninfo` chaqiruvi uchinchi tomonni har bir kirishning kritik yo'liga qo'yardi va ularning uzilishi bizniki bo'lardi. Google kalitlarni o'zi chop etadi va shu yo'lni tavsiya qiladi; kalitlar Redis'da keshlanadi |
+| 60 | Verifier override'i **faqat o'z provayderiga** javob beradi | Aks holda pinlangan Google verifier'i qo'llanmaydigan provayderni ishlata boshlardi va testlar hech kim yeta olmaydigan route haqida o'zlari bilan kelishib qolardi |
 
 ---
 

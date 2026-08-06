@@ -82,6 +82,14 @@ def test_an_avatar_may_not_be_an_svg() -> None:
     assert rules.PNG in rules.rule_for(UploadPurpose.AVATAR).types
 
 
+def test_a_payment_logo_may_be_an_svg_where_an_avatar_may_not() -> None:
+    """Not an inconsistency. A payment mark is chosen by a staff member the
+    installation already trusts, and the brands publish SVG; an avatar arrives
+    from whoever signed up this morning."""
+    assert rules.SVG in rules.rule_for(UploadPurpose.PAYMENT_LOGO).types
+    assert rules.SVG not in rules.rule_for(UploadPurpose.AVATAR).types
+
+
 def test_an_avatar_is_the_smallest_thing_anyone_uploads() -> None:
     """A profile picture has no business being as large as a promo banner."""
     avatar = rules.rule_for(UploadPurpose.AVATAR).max_bytes
