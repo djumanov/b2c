@@ -57,7 +57,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | § | Bo'lim | Faza | Holat | Izoh va manba |
 |---|---|---|---|---|
 | 17 | Sayt konfiguratsiyasi | **1** | ◐ | Yo'l va kesh bor; `payment_methods` `integrations` bilan to'ladi |
-| 18 | Autentifikatsiya | **1** | — | `PROJECT.md` §15: "auth (customer + staff)". Chetlanishlar: `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
+| 18 | Autentifikatsiya | **1** | ◐ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a-bo'lakda qurildi. Chetlanishlar: `social/{provider}/` → 1-fazaning **5b**-bo'lagi (§2.11), `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
 | 19 | Profil | **1** | — | `profile/`, `avatar/`, `password/`, `passengers/`. Chetlanishlar: `cards/` → **2** (§2.7), `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
@@ -73,7 +73,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 |---|---|---|---|---|
 | 27 | Autentifikatsiya | **1** | ✅ | 7/7 |
 | 28 | Sayt sozlamalari | **1** | ✅ | 7/7. `settings/menu/` → **5** (§41) |
-| 29 | Integratsiyalar | **1** | — | `PROJECT.md` §15 1-faza: "sozlamalar + shifrlangan credential'lar" (§2.1). SMS/push qismi → §41 |
+| 29 | Integratsiyalar | **1** | ◐ | `PROJECT.md` §15 1-faza: "sozlamalar + shifrlangan credential'lar" (§2.1). GTS va SMTP qurildi; to'lov provayderlari, `test/` lar va **social credential'i** → 5b (§2.11). SMS/push qismi → §41 |
 | 30 | Kontent | **4** | — | `PROJECT.md` §15 4-faza. `content/pages/` → **5** (§41) |
 | 31 | Buyurtmalar | **2** | — | `orders/{id}/push/` → **6** (§41) |
 | 32 | To'lovlar | **2** | — | `refund/` — `PROJECT.md` §16 3-savoli 2-faza oxirida kerak |
@@ -163,6 +163,18 @@ eksporti, ommaviy yuborish". Ya'ni shablon CRUD, `broadcasts/` tarixi,
 2-fazada. **§39 ni yaxlit iqtibos qilish xato** — har doim yo'l darajasida
 ayting.
 
+**2.11 · §18 `social/{provider}/` → 1-fazaning 5b-bo'lagi.** Faza o'zgarmaydi,
+bo'lak o'zgaradi. Endpoint 1-faza qamrovida, lekin uni **sozlaydigan joy yo'q**:
+§29 da Google `client_id`/`client_secret` ini saqlaydigan resurs yo'q edi
+(pastdagi 6-bo'lakdagi ogohlantirish shu haqda edi). Ikki yo'l bor edi —
+`customers` bo'lagining ichiga integratsiya shaklidagi resurs qo'shish, yoki
+endpointni qolgan integratsiyalar bilan birga qurish. Ikkinchisi tanlandi:
+credential 5b da §29 ning o'z jadvaliga qo'shiladi, oqim esa `customers`
+modulida qoladi. Shunda kontrakt bir joyda, bir marta kengayadi.
+
+Shu paytgacha endpoint **ulanmaydi va `404` qaytaradi**. Bu §41 dagi `404` emas
+— qamrovdan chiqmagan, faqat hali qurilmagan ([API.md](API.md) §18).
+
 ---
 
 ## 3. Faza 1 — Yadro
@@ -187,7 +199,7 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 
 **Bog'liqliklar.** Yo'q — bu birinchi faza.
 
-**Bo'laklar** — 1–4 qurilgan ([STATUS.md](STATUS.md) §2), 5–7 qoldi:
+**Bo'laklar** — qurilgani [STATUS.md](STATUS.md) §2 da, qolgani quyida ⬜ bilan:
 
 | # | Bo'lak | Holat |
 |---|---|---|
@@ -197,9 +209,10 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | 4 | `settings` + `site-config` | ✅ |
 | 5 | **`integrations`** — GTS credential'lari (§29) | ✅ |
 | 5a | **`integrations`** — SMTP (§29) | ✅ |
-| 5b | **`integrations`** — to'lov provayderlari va uchala `test/` (§29) | ⬜ |
+| 5b | **`integrations`** — to'lov provayderlari, uchala `test/` va social credential'i (§29) | ⬜ |
 | 5c | **Bo'lim bayroqlari** — `RequireFeature`, o'n bitta bayroq, sweep testi (§28) | ✅ |
-| 6 | **`customers`** (§18–19) | ⬜ |
+| 6a | **`customers`** — auth (§18) | ⬜ |
+| 6b | **`customers`** — profil (§19) | ⬜ |
 | 7 | e2e qabul testi | ⬜ |
 
 **5-bo'lak — `integrations`.** 2-fazani to'sib turgan qismi — **GTS
@@ -240,19 +253,23 @@ adapterlari bilan birga qilingani mantiqiyroq.
   haqiqiy holatga almashadi (`app/modules/system/service.py`), `site-config`
   ning bo'sh `payment_methods` to'ladi (`settings/service.py::_assemble`).
 
-**6-bo'lak — `customers`.** SMTP tayyor, ya'ni email OTP yo'li ochiq.
+**6-bo'lak — `customers`.** SMTP tayyor, ya'ni email OTP yo'li ochiq. Bo'lak
+ikkiga bo'lindi: kontraktdagi ikki bo'lim (§18 va §19) mustaqil o'qiladi va
+ikkinchisi birinchisining jadvali ustiga quriladi.
 
-> ⚠ **Kontraktda teshik.** Quyida "`social/google/` credential'i
-> `integrations` da" deyilgan, lekin [API.md](API.md) §29 jadvalida bunday
-> satr **yo'q**. Bu bo'lakni boshlashdan oldin §29 ga qo'shilishi kerak.
+**6a — auth (§18).**
 
-- Jadvallar: `customers`, `customer_refresh_tokens`, `passengers`, `email_otps`.
+- Jadvallar: `customers`, `customer_refresh_tokens`, `email_otps`.
 - Auth `staff` naqshini takrorlaydi, `Audience.PUBLIC` bilan — jumladan
   rotatsiya, qayta ishlatishni aniqlash va `revoked_before` belgisi
   ([STATUS.md](STATUS.md) §4.17).
 - `api/deps.py::current_customer` **qatorni yuklaydigan** bo'ladi —
   `current_staff` kabi ([STATUS.md](STATUS.md) §4.3).
-- `avatar/` uchun mavjud `uploads.service.link` ishlatiladi.
+- `social/{provider}/` bu yerda emas — §2.11.
+
+**6b — profil (§19).** `passengers` jadvali; `profile/`, `password/`, akkauntni
+o'chirish; `avatar/` uchun mavjud `uploads.service.link` ishlatiladi.
+`cards/` → 2-faza (§2.7), `notifications/` → 4-faza (§2.8).
 
 **Qabul mezoni** ([PROJECT.md](PROJECT.md) §15):
 

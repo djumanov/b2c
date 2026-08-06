@@ -440,6 +440,46 @@ mumkin.
 | `POST` | `/public/auth/devices/` | ✓ | Push uchun qurilmani ro'yxatga olish |
 | `DELETE` | `/public/auth/devices/{id}/` | ✓ | Qurilmani o'chirish |
 
+### Ro'yxatdan o'tish
+
+```json
+POST /public/auth/register/
+{ "email": "user@mail.uz", "password": "…",
+  "first_name": "Aziz", "last_name": "Karimov", "phone": "+998901234567" }
+
+→ 204
+```
+
+`first_name` majburiy, `last_name` va `phone` ixtiyoriy. Parol uzunligi — kamida
+**8** belgi, aks holda `422 validation`.
+
+Javob **har doim `204`**, hatto manzil allaqachon band bo'lsa ham. Aks holda bu
+endpoint kimning bizda akkaunti borligini tekshiradigan vositaga aylanardi. Band
+manzil o'rniga **o'sha akkauntga** "sizda allaqachon akkaunt bor, parolni tiklang"
+degan xabar ketadi — ya'ni ma'lumot manzil egasiga boradi, so'rov yuborganga emas.
+
+Akkaunt qatori **darhol**, tasdiqlanmagan holda yaratiladi. Tasdiqlanmagan
+akkaunt **hech narsa bermaydi**: `login/` unga `403` qaytaradi va tokeni bo'lmaydi.
+Shu manzil bilan qayta ro'yxatdan o'tilsa kutayotgan kod almashtiriladi va qaytadan
+yuboriladi — ya'ni noto'g'ri terilgan manzil abadiy band bo'lib qolmaydi.
+
+```json
+POST /public/auth/register/confirm/
+{ "email": "user@mail.uz", "code": "482913" }
+
+→ { "status": "success",
+    "data": { "access_token": "…", "refresh_token": "…", "expires_in": 1800 } }
+```
+
+```json
+POST /public/auth/register/resend/
+{ "email": "user@mail.uz" }
+
+→ 204
+```
+
+### Kirish va sessiya
+
 ```json
 POST /public/auth/login/
 { "login": "user@mail.uz", "password": "…" }
@@ -448,10 +488,91 @@ POST /public/auth/login/
     "data": { "access_token": "…", "refresh_token": "…", "expires_in": 1800 } }
 ```
 
+`refresh/` va `logout/` — `{ "refresh_token": "…" }`. Birinchisi o'sha juftlikni
+qaytaradi va **eskisini bekor qiladi**, ikkinchisi `204`.
+
+Bekor qilingan refresh token qayta kelsa — bu o'g'irlik signali va **o'sha
+foydalanuvchining barcha sessiyalari** o'chadi (§4).
+
+### Parolni tiklash
+
+Uch qadam: kod so'raladi, kod tekshiriladi, yangi parol o'rnatiladi.
+
+```json
+POST /public/auth/password/reset/request/
+{ "email": "user@mail.uz" }
+
+→ 204
+
+POST /public/auth/password/reset/verify/
+{ "email": "user@mail.uz", "code": "482913" }
+
+→ { "status": "success",
+    "data": { "reset_token": "…", "expires_in": 900 } }
+
+POST /public/auth/password/reset/confirm/
+{ "reset_token": "…", "new_password": "…" }
+
+→ 204
+```
+
+`request/` **har doim `204`** — noma'lum yoki bloklangan manzil ham xuddi shunday
+javob oladi (§18 dagi ro'yxatdan o'tish bilan bir sabab). `verify/` kodni
+**ishlatib yuboradi** va o'rniga bir martalik `reset_token` beradi; parol aynan shu
+token bilan almashtiriladi. Parol o'zgargach **barcha sessiyalar** o'chadi.
+
+### OTP kodlari
+
+Ro'yxatdan o'tish va parol tiklash bitta mexanizmni ishlatadi:
+
+- kod — **olti raqam**, amal muddati **10 daqiqa**;
+- **beshta** noto'g'ri urinishdan keyin kod kuyadi va yangisini so'rash kerak —
+  aks holda olti raqamni terib chiqish mumkin bo'lardi;
+- yangi kod berilganda oldingisi **darhol kuyadi** — bitta manzilda bir vaqtda
+  ikkita ishlaydigan kod bo'lmaydi;
+- qayta yuborish orasida **60 soniya**. Bu chegara **jim** ishlaydi: javob
+  baribir `204`, shunchaki xat ketmaydi. Ko'rinadigan bo'lsa `register/resend/`
+  "bu manzilda kutayotgan kod bormi?" degan savolga javob beradigan vositaga
+  aylanardi va yuqoridagi `204` qoidasidan ma'no qolmasdi.
+
+Ko'rinadigan chegara — §14 niki: bu bo'limning **barcha** yo'llari auth guruhida,
+ya'ni **5/daqiqa/IP**. U manzilni emas, chaqiruvchini sanaydi, shuning uchun hech
+narsani oshkor qilmaydi.
+
+### Xatolar
+
+§3 katalogi yopiq — bu bo'limning har bir nosozligi o'sha o'n bitta koddan biriga
+tushadi:
+
+| Holat | `code` | HTTP |
+|---|---|---|
+| Noto'g'ri email yoki parol | `unauthorized` | 401 |
+| Tasdiqlanmagan akkaunt — parol to'g'ri bo'lgach | `forbidden` | 403 |
+| Bloklangan akkaunt — parol to'g'ri bo'lgach | `forbidden` | 403 |
+| Noto'g'ri, muddati o'tgan yoki ishlatilgan kod | `validation` (`field: "code"`) | 422 |
+| Yaroqsiz yoki ishlatilgan `reset_token` | `validation` (`field: "reset_token"`) | 422 |
+| Noma'lum, muddati o'tgan yoki bekor qilingan refresh token | `unauthorized` | 401 |
+| So'rov chegarasi oshib ketdi (§14 — 5/daq/IP) | `rate_limited` | 429 |
+
+**Noto'g'ri parol va yo'q akkaunt bir xil javob beradi** — matni ham, kodi ham.
+Ikkalasini farqlash mumkin bo'lsa, bu endpoint manzillarni tekshirish vositasi
+bo'lardi. Shu sababdan akkaunt topilmaganda ham parol xeshi baribir tekshiriladi:
+javob vaqti ham farq qilmasligi kerak.
+
+Tasdiqlanmagan va bloklangan holat esa **parol tekshirilgandan keyin** aytiladi —
+to'g'ri parolni bilgan kishiga o'z akkaunti nima uchun ishlamayotganini aytish
+hech narsani oshkor qilmaydi.
+
 > **Birinchi reliz chegarasi.** `login` maydoni **email** qabul qiladi; telefon + SMS OTP
 > keyingi bosqichda ([PROJECT.md](PROJECT.md) D6), shuning uchun OTP va parol tiklash kodlari
 > **email orqali** yuboriladi. `{provider}` — hozircha faqat **`google`**; `apple` mobil ilova
 > bosqichida qo'shiladi (D5). Qurilma ro'yxati (`devices/`) push bilan birga keladi (§41).
+
+> ⚠ **`social/{provider}/` hali ulanmagan va `404` qaytaradi.** Sabab kontraktning
+> o'zida: §29 da Google `client_id`/`client_secret` ini saqlaydigan resurs **yo'q**,
+> ya'ni endpoint bor-u, uni sozlaydigan joy yo'q. §29 ga o'sha satr qo'shilganda
+> ulanadi ([PHASES.md](PHASES.md) §3, 5b-bo'lak). Bu §41 dagi "relizga kirmaydi"
+> emas — reliz qamrovida qoladi.
 
 ---
 
