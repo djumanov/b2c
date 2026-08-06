@@ -740,15 +740,54 @@ O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/integrations/gts/` | `admin` | GTS ulanishi: URL, maskalangan credential'lar |
-| `PATCH` | `/admin/integrations/gts/` | `owner` | GTS ulanishi va credential'larini o'zgartirish |
-| `POST` | `/admin/integrations/gts/test/` | `owner` | Ulanishni tekshirish |
+| `GET` | `/admin/integrations/gts/credentials/` | `admin` | Saqlangan GTS credential'lari; parol maskalangan |
+| `POST` | `/admin/integrations/gts/credentials/` | `owner` | Yangi credential qo'shish |
+| `GET` | `/admin/integrations/gts/credentials/{id}/` | `admin` | Bittasi |
+| `PATCH` | `/admin/integrations/gts/credentials/{id}/` | `owner` | O'zgartirish |
+| `DELETE` | `/admin/integrations/gts/credentials/{id}/` | `owner` | O'chirish |
+| `POST` | `/admin/integrations/gts/credentials/{id}/activate/` | `owner` | **Shu credential'ni tanlash** |
+| `POST` | `/admin/integrations/gts/test/` | `owner` | Tanlangan credential bilan ulanishni tekshirish |
 | `GET` | `/admin/integrations/payments/` | `admin` | To'lov provayderlari ro'yxati va holati |
 | `PATCH` | `/admin/integrations/payments/{code}/` | `owner` | Yoqish/o'chirish, kalitlar, tartib |
 | `POST` | `/admin/integrations/payments/{code}/test/` | `owner` | Provayderni tekshirish |
 | `GET` | `/admin/integrations/notifications/` | `admin` | Email (SMTP) sozlamasi; SMS/push — **§41** |
 | `PATCH` | `/admin/integrations/notifications/` | `owner` | Sozlamani o'zgartirish — **§41** |
 | `POST` | `/admin/integrations/notifications/test/` | `owner` | Sinov xabari yuborish |
+
+### GTS: bir nechta credential, bittasi tanlangan
+
+O'rnatma GTS'ga o'z agent akkaunti bilan ulanadi ([PROJECT.md](PROJECT.md) D1). Akkaunt
+bittadan ko'p bo'lishi mumkin — prod va sinov muhiti, almashtiriladigan eski va yangi
+akkaunt — shuning uchun credential **ro'yxat** sifatida saqlanadi va ulardan **aynan
+bittasi** `is_active` bo'ladi. **GTS'ga ketadigan har qanday so'rov o'sha tanlangani
+bo'yicha ulanadi.**
+
+```json
+GET /admin/integrations/gts/credentials/
+→ { "status": "success",
+    "data": [
+      { "id": "9f2c…", "label": "Prod agent", "is_active": true,
+        "base_url": "https://api2.globaltravel.space",
+        "email": "agent@brand.uz", "password": "••••••••",
+        "agent_uid": "17c4…5695",
+        "created_at": "…", "updated_at": "…" },
+      { "id": "1a7b…", "label": "Zaxira", "is_active": false, … }
+    ],
+    "errors": [], "meta": null }
+```
+
+- `label` — owner beradigan nom, ro'yxat ichida takrorlanmaydi.
+- `base_url` — har bir credential o'ziniki bilan turadi, shunda prod va sinov muhiti
+  yonma-yon saqlanadi va bitta amal bilan almashadi.
+- `agent_uid` — GTS ba'zi endpointlarda `agent-uid` sarlavhasi sifatida so'raydi;
+  majburiy emas.
+- **Birinchi qo'shilgan credential o'zi tanlangan bo'ladi** — nol yozuvda "qaysi biri
+  ishlatiladi?" degan savol umuman tug'ilmasligi uchun.
+- `activate/` **sinovdan o'tgani shart emas**: `test/` yiqilishi GTS tomondagi sababdan
+  ham bo'lishi mumkin va o'rnatmani o'z panelida qulflab qo'ymasligi kerak.
+- Tanlangan credential'ni **o'chirish** — boshqasi bo'lsa `409 conflict` (avval boshqasi
+  tanlansin); yagonasi bo'lsa ruxsat, shundan keyin o'rnatma GTS'ga ulana olmaydi.
+- Takroriy `label` — `422 validation`.
 
 **Sirlar qaytarilmaydi.** Javobda kalit maskalangan holda keladi, faqat oxirgi belgilar
 ko'rinadi; yangi qiymat yuborilsa almashtiriladi:
@@ -760,6 +799,8 @@ GET /admin/integrations/payments/payme/
               "credentials": { "merchant_id": "…3f2a", "secret_key": "••••••7c" },
               "last_tested_at": "2026-08-05T09:00:00Z", "last_test_ok": true } }
 ```
+
+Maskadagi ko'rinadigan belgilar soni kontraktning bir qismi emas.
 
 `{code}` — birinchi relizda `payme` va `click` ([PROJECT.md](PROJECT.md) D7).
 
