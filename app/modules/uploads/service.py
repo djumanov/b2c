@@ -171,6 +171,8 @@ async def unlink(session: AsyncSession, upload_id: uuid.UUID) -> None:
 
     It becomes an orphan again rather than being deleted now: a client who
     swaps a logo and changes their mind an hour later still has the old one.
+    The grace period starts here — ``sweep_orphans`` measures it from
+    ``updated_at``, which this write is what moves.
     """
     upload = await session.get(Upload, upload_id)
     if upload is not None:
@@ -181,18 +183,28 @@ async def unlink(session: AsyncSession, upload_id: uuid.UUID) -> None:
 
 
 async def sweep_orphans(session: AsyncSession) -> int:
-    """Remove files nothing ever referenced. Returns how many went.
+    """Remove files nothing references. Returns how many went.
 
     The row is soft-deleted like everything else (API.md §8) but the **bytes
     are gone for good** — keeping them would defeat the point of a sweep, and
     the row is what the journal and any support question need.
+
+    The clock runs from ``updated_at``, not from ``created_at``, because the
+    grace period is measured from the moment a file *became* an orphan and a
+    file can become one twice. A logo that has been live for six months and is
+    then replaced has an ancient ``created_at`` and no reference, so a sweep
+    reading ``created_at`` deletes its bytes on the next hourly pass — possibly
+    within a minute of the swap, which is exactly the hour ``unlink`` promises
+    to a client who changes their mind. Unlinking touches the row, so
+    ``updated_at`` is when it lost its last reference; for a file nobody ever
+    attached the two are the same instant and nothing changes.
     """
     cutoff = utcnow() - ORPHAN_GRACE
     orphans = (
         await session.scalars(
             live(Upload)
             .where(Upload.linked_at.is_(None))
-            .where(Upload.created_at < cutoff)
+            .where(Upload.updated_at < cutoff)
         )
     ).all()
 

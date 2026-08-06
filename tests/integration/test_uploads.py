@@ -275,6 +275,18 @@ async def _row(session: AsyncSession, upload_id: str) -> Upload:
     return row
 
 
+def _age(upload: Upload) -> None:
+    """Push the row past the 24-hour grace period.
+
+    Both timestamps, because the sweep measures the grace from ``updated_at``
+    — when the file last lost a reference — and a row that has never been
+    touched since it was created carries the same instant in both.
+    """
+    old = utcnow() - service.ORPHAN_GRACE - timedelta(minutes=1)
+    upload.created_at = old
+    upload.updated_at = old
+
+
 async def test_a_file_nobody_attached_is_swept(
     api: AsyncClient, session: AsyncSession, owner: Staff, storage: LocalStorage
 ) -> None:
@@ -283,8 +295,7 @@ async def test_a_file_nobody_attached_is_swept(
     key = upload.storage_key
     assert await storage.exists(key)
 
-    # Older than the 24-hour grace period.
-    upload.created_at = utcnow() - service.ORPHAN_GRACE - timedelta(minutes=1)
+    _age(upload)
     await session.commit()
 
     assert await service.sweep_orphans(session) == 1
@@ -301,7 +312,7 @@ async def test_a_file_something_uses_is_left_alone(
     upload = await _row(session, str(body["data"]["id"]))
 
     await service.link(session, upload.id, purpose=UploadPurpose.LOGO)
-    upload.created_at = utcnow() - service.ORPHAN_GRACE - timedelta(minutes=1)
+    _age(upload)
     await session.commit()
 
     assert await service.sweep_orphans(session) == 0
@@ -350,7 +361,31 @@ async def test_unlinking_makes_a_file_sweepable_again(
     await session.commit()
 
     await service.unlink(session, upload.id)
-    upload.created_at = utcnow() - service.ORPHAN_GRACE - timedelta(minutes=1)
+    upload.updated_at = utcnow() - service.ORPHAN_GRACE - timedelta(minutes=1)
     await session.commit()
 
     assert await service.sweep_orphans(session) == 1
+
+
+async def test_a_replaced_file_keeps_its_grace_period(
+    api: AsyncClient, session: AsyncSession, owner: Staff, storage: LocalStorage
+) -> None:
+    """The case `unlink` was written for, and the one it used to get wrong.
+
+    A logo that has been live for months carries an ancient `created_at`. Swap
+    it, and a sweep measuring the grace from that date deletes the bytes on the
+    next hourly pass — sometimes within a minute — so the client who changes
+    their mind an hour later has nothing to change back to.
+    """
+    _, body = await _upload(api, owner)
+    upload = await _row(session, str(body["data"]["id"]))
+    await service.link(session, upload.id, purpose=UploadPurpose.LOGO)
+    # Live since long before any grace period could apply.
+    upload.created_at = utcnow() - timedelta(days=180)
+    await session.commit()
+
+    await service.unlink(session, upload.id)
+    await session.commit()
+
+    assert await service.sweep_orphans(session) == 0
+    assert await storage.exists(upload.storage_key)
