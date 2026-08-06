@@ -178,7 +178,7 @@ ko'rinmaydi. Quyidagi jadval — shu ajratmaning yakuniy ro'yxati:
 | Tillar va valyutalar | — | ✓ | |
 | Yoqilgan mahsulotlar | — | ✓ | GTS shartnomasidan keladi, faqat o'qish |
 | Yoqilgan to'lov usullari | — | ✓ | |
-| Bo'limlarni yoqish/o'chirish (`features`) | — | ✓ | |
+| Bo'limlarni yoqish/o'chirish (`features`) | — | ✓ | Bitta image, ko'p o'rnatma: o'chirilgan bo'lim **ikkala yuzada `404`** qaytaradi va panelda ko'rinmaydi ([API.md](API.md) §28). Ma'lumot o'chirilmaydi. Vertikallar bunga kirmaydi — ular GTS shartnomasidan (§5) |
 | **Ilova ikonkasi** | ✓ | — | Store'ga qayta chiqarishni talab qiladi |
 | **Ilova nomi** | ✓ | — | ⟪shu kabi⟫ |
 | **Bundle / package id** | ✓ | — | ⟪shu kabi⟫ |

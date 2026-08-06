@@ -198,6 +198,7 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | 5 | **`integrations`** — GTS credential'lari (§29) | ✅ |
 | 5a | **`integrations`** — SMTP (§29) | ✅ |
 | 5b | **`integrations`** — to'lov provayderlari va uchala `test/` (§29) | ⬜ |
+| 5c | **Bo'lim bayroqlari** — `RequireFeature`, o'n bitta bayroq, sweep testi (§28) | ✅ |
 | 6 | **`customers`** (§18–19) | ⬜ |
 | 7 | e2e qabul testi | ⬜ |
 
@@ -371,6 +372,13 @@ tashqari), §36 (CRUD va tarix), §37 (`export/` dan tashqari), §19
 `profile/notifications/`.
 Modullar: `cms`, `feedback`, `promo` (to'liq), `leads`, `notifications`,
 `reports`, `customers` ning admin tomoni.
+
+> **Bu fazadagi har bir router o'z bayrog'i bilan mount qilinadi** —
+> `dependencies=[Depends(RequireFeature("blog"))]` va hokazo
+> ([API.md](API.md) §28, bayroqlar ro'yxati o'sha yerda). Unutish yo'li yo'q:
+> `tests/contract/test_feature_coverage.py` har bir route yo yadro
+> ro'yxatida, yo bayroq ostida ekanini talab qiladi. `customers` ning admin
+> tomoni — **yadro**, bayroq olmaydi.
 
 **KIRMAYDI**
 

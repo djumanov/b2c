@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `feat/smtp-settings`
+**Oxirgi yangilanish:** 2026-08-06 · `feat/feature-gate`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -21,7 +21,7 @@ takrorlamaydi.
 | Endpointlar | 28 ta yo'l / 40 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 12 ta + `alembic_version` |
 | Migratsiyalar | 7 ta, bitta head (`d89da85832da`) |
-| Testlar | 390 ta — unit 14 fayl · contract 6 · integration 12 |
+| Testlar | 402 ta — unit 15 fayl · contract 7 · integration 12 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -61,6 +61,7 @@ kontrakt testlari.
 | `integrations` | GTS credential'lari: ro'yxat, bittasi aktiv, shifrlangan parol | 3 |
 | `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari | 2 |
 | `system` | health, version (setup'dan) | 2 |
+| `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq | — |
 
 > Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2 = 28). Operatsiyalar
 > ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi
@@ -141,6 +142,10 @@ tug'ilmasligi uchun.
 | 25 | Qaysi notifier ishlatilishini **modul** hal qiladi, provayder emas | Argumentsiz modul-global ikki jihatdan noto'g'ri edi: bitta worker o'rnatgan qiymatni qolganlari ko'rmaydi, va u paneldan hozirgina o'zgartirilgan sozlamani qayta o'qiy olmaydi. Chuqurrog'i — bu sozlama savoli, javob berish uchun provayder `modules` ni import qilishi kerak bo'lardi (ARCHITECTURE.md §4 ruxsat bermaydi) |
 | 26 | `enabled: true` faqat `host` va `from_address` bo'lganda | Aks holda panel "pochta yoqilgan" deydi-yu, hech narsa yetib bormaydi — bu hech kim xabar bermaydigan nosozlik, chunki tashqaridan hammasi joyida ko'rinadi |
 | 27 | Relay rad etsa `test/` **`200`** qaytaradi, `502` emas | `502` owner'ga "nimadir buzildi" deydi, lekin nimasi buzilganini aytmaydi — bu tugma esa aynan shuning uchun bor. Sabab `detail` da va qatorda saqlanadi |
+| 28 | Bo'lim bayrog'i sweep testi **teskari** yozilgan: "har bir route yo yadro, yo bayroq ostida" | To'g'ridan-to'g'ri "bayroqli route'da gate bormi" bugun **vakuum** bo'lardi — to'siladigan modul hali yo'q. Teskarisi esa hozirdan tishlaydi: 40 ta route aniq tasniflandi va 4-fazadagi birinchi kontent routeri ham majburan tasniflanadi |
+| 29 | `CORE_PREFIXES` **testda**, ilova kodida emas | Bu sozlama emas — qabul qilingan qarorning yozuvi. Unga e'tiroz bildiriladigan joy — diff |
+| 30 | `RequireFeature` — class, `RateLimit`/`Audited` esa funksiya-fabrika | Sweep uni dependency daraxtidan `isinstance` bilan topishi kerak; closure'ga atribut osish ishlardi-yu, birinchi o'quvchidan omon qolmasdi |
+| 31 | Noma'lum bayroq **import vaqtida** yiqiladi | `RATE_LIMITS[kind]` bilan bir xil: xato yozilgan bayroq jarayonni boot'da to'xtatadi, aks holda hech kim o'chira olmaydigan bo'lim jimgina xizmat qilaverardi |
 
 ---
 

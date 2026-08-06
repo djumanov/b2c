@@ -329,7 +329,7 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 - **Barcha yo'llarda trailing slash** ([API.md](API.md) §1).
 - **Kesishuvchi vazifalarni dependency'lar bajaradi**: `CurrentCustomer` / `CurrentStaff`
   (`aud` tekshiriladi — shuning uchun customer tokeni `/admin/*` da `401` emas, **`403`** oladi),
-  `require_owner`, `Pagination`, `IdempotencyKey`, `AuditContext`.
+  `require_owner`, `Pagination`, `IdempotencyKey`, `AuditContext`, `RequireFeature`.
 - **RBAC — ikki pog'onali rol tekshiruvi.** Rollar ikkita va kodda qat'iy belgilangan:
   `owner ⊃ admin` ([API.md](API.md) §5). Shuning uchun ruxsat satrlari katalogi yo'q va
   endpoint ikki holatdan birida bo'ladi: `CurrentStaff` yetarli (ikkala rol ham o'tadi), yoki
@@ -395,7 +395,11 @@ valyuta kurslarini yangilash.
    narx mexanizmini yozmaymiz, provayderlarga o'zimiz ulanmaymiz. Har bir takrorlash — sinxrondan
    chiqadigan yana bitta joy.
 4. **Kesishuvchi vazifalar — dependency, handler kodi emas**: envelope, xatolar, auth, RBAC,
-   sahifalash, idempotentlik, audit. Aks holda ikki yuza bo'ylab bir xillikka erishib bo'lmaydi.
+   sahifalash, idempotentlik, audit, **bo'lim bayroqlari**. Aks holda ikki yuza bo'ylab bir
+   xillikka erishib bo'lmaydi. Bayroqlar uchun bu ayniqsa muhim: `RequireFeature` unutilgan
+   bitta router butun va'dani buzadi va bu jimgina sodir bo'ladi — shuning uchun
+   `tests/contract/test_feature_coverage.py` **har bir route yo yadro ro'yxatida, yo bayroq
+   ostida** ekanini supurib tekshiradi, uchinchi variant yo'q.
 5. **Modullar `service` orqali gaplashadi.** Modullararo model yoki repository import qilinmaydi.
 6. **Pul yo'llari — aniq holat mashinalari**, chidamli qayta urinishlar va `needs_attention`
    terminal holati bilan. Jimgina yo'qotish yo'q.
