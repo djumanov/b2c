@@ -1,4 +1,4 @@
-"""Customer authentication — API.md §18.
+"""Customer authentication and profile — API.md §18 and §19.
 
 This is the module's whole public surface: the router calls it, and so does
 ``api/deps.current_customer`` when it turns a token's subject into a live row.
@@ -28,6 +28,10 @@ back the row is a reservation and not an account.
 **A code is spent by being wrong, too.** Six digits is a small space; the
 attempt ceiling is what makes it enough, so a wrong guess is recorded even
 though the request is about to fail.
+
+**Deleting an account empties the row, not just hides it.** PROJECT.md §13
+says personal data is cleared; a soft delete alone conceals a row without
+emptying it, so the two happen together.
 """
 
 import hashlib
@@ -38,7 +42,17 @@ from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import Forbidden, Unauthorized, ValidationFailed
+from app.api.deps import Pagination
+from app.api.envelope import Page
+from app.api.errors import Forbidden, NotFound, Unauthorized, ValidationFailed
+from app.api.listing import (
+    ListQuery,
+    apply_created_range,
+    apply_ordering,
+    apply_search,
+    page,
+    paginate,
+)
 from app.core.logging import get_logger
 from app.core.security import (
     TOKEN_TTL,
@@ -66,16 +80,26 @@ from app.modules.customers.models import (
     CustomerRefreshToken,
     EmailOtp,
     OtpPurpose,
+    Passenger,
 )
 from app.modules.customers.schemas import (
+    AccountDeleteIn,
     LoginIn,
+    PassengerCreateIn,
+    PassengerOut,
+    PassengerUpdateIn,
+    PasswordChangeIn,
     PasswordResetVerifyIn,
+    ProfileOut,
+    ProfileUpdateIn,
     RegisterConfirmIn,
     RegisterIn,
     ResetTokenOut,
     TokenPairOut,
 )
 from app.modules.integrations import service as integrations_service
+from app.modules.uploads import service as uploads_service
+from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
 
@@ -97,6 +121,23 @@ _RESET_PREFIX: Final = "auth:customer-password-reset"
 #: out of attempts. Telling them apart would say how far a guesser had got.
 _CODE_REJECTED: Final = "This code is invalid or has expired"
 _RESET_TOKEN_REJECTED: Final = "This reset link is invalid or has expired"
+
+#: How large an avatar may be, asked of the module that owns the answer. The
+#: router needs it to size its body read; this module does not second-guess it.
+AVATAR_MAX_BYTES: Final = uploads_service.max_bytes(UploadPurpose.AVATAR)
+
+#: What a scrubbed row's required name column holds. Not an empty string — a
+#: reader of the table should be able to tell "erased" from "never filled in".
+_REDACTED: Final = "[deleted]"
+
+#: What ``?ordering=`` may name on the passenger list (API.md §6). Not the
+#: column list — the columns this endpoint chose to expose.
+_PASSENGER_ORDERING: Final = {
+    "first_name": Passenger.first_name,
+    "last_name": Passenger.last_name,
+    "birth_date": Passenger.birth_date,
+    "created_at": Passenger.created_at,
+}
 
 
 def _normalize_email(email: str) -> str:
@@ -548,19 +589,247 @@ async def confirm_password_reset(
     logger.info("customer_password_reset", customer_id=str(customer.id))
 
 
+# --- the profile (API.md §19) --------------------------------------------------------
+
+
+async def to_profile(session: AsyncSession, customer: Customer) -> ProfileOut:
+    """Built field by field rather than from attributes, because ``avatar_url``
+    is not a column — it is asked of the module that owns the file, and that
+    lookup is tolerant: a file swept out from under the row renders as "no
+    avatar" rather than as a 500. ``settings/service.py::_branding_out`` does
+    the same for the logo."""
+    return ProfileOut(
+        id=customer.id,
+        email=customer.email,
+        first_name=customer.first_name,
+        last_name=customer.last_name,
+        phone=customer.phone,
+        birth_date=customer.birth_date,
+        avatar_id=customer.avatar_id,
+        avatar_url=await uploads_service.url_for(session, customer.avatar_id),
+        created_at=customer.created_at,
+    )
+
+
+async def update_profile(
+    session: AsyncSession, customer: Customer, data: ProfileUpdateIn
+) -> ProfileOut:
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(customer, field, value)
+    await session.commit()
+    return await to_profile(session, customer)
+
+
+async def change_password(
+    session: AsyncSession, customer: Customer, data: PasswordChangeIn
+) -> None:
+    if not verify_password(data.current_password, customer.password_hash):
+        # 422 rather than 401: the caller is authenticated, it is the field
+        # that is wrong.
+        raise ValidationFailed(
+            "Current password is incorrect", field="current_password"
+        )
+    customer.password_hash = hash_password(data.new_password)
+    # Every session dies, including this one's. A password change is how
+    # somebody reacts to a suspected leak; leaving the old ones alive would
+    # make it pointless.
+    await _revoke_all_sessions(session, customer.id)
+    await session.commit()
+    logger.info("customer_password_changed", customer_id=str(customer.id))
+
+
+# --- avatar (API.md §19) -------------------------------------------------------------
+
+
+async def set_avatar(
+    session: AsyncSession,
+    customer: Customer,
+    *,
+    content: bytes,
+    filename: str,
+    content_type: str,
+) -> ProfileOut:
+    """Store the bytes, point the row at them, release whatever it held.
+
+    The upload goes straight here rather than through ``/admin/uploads/``:
+    the public surface has no uploads resource and a customer token cannot
+    reach the admin one (API.md §4, §11).
+    """
+    uploaded = await uploads_service.create(
+        session,
+        content=content,
+        filename=filename,
+        content_type=content_type,
+        purpose=UploadPurpose.AVATAR,
+        uploaded_by=customer.id,
+    )
+    previous = customer.avatar_id
+    if previous == uploaded.id:  # pragma: no cover - a fresh id never collides
+        return await to_profile(session, customer)
+
+    # Link first: it is the step that can still refuse, and nothing has been
+    # mutated yet (settings/service.py::_attach_image does the same).
+    await uploads_service.link(session, uploaded.id, purpose=UploadPurpose.AVATAR)
+    if previous is not None:
+        # Released, not deleted — the sweep collects it after the 24h grace, so
+        # a customer who changes their mind has not lost the old one yet.
+        await uploads_service.unlink(session, previous)
+    customer.avatar_id = uploaded.id
+    await session.commit()
+    return await to_profile(session, customer)
+
+
+async def clear_avatar(session: AsyncSession, customer: Customer) -> None:
+    if customer.avatar_id is None:
+        return
+    await uploads_service.unlink(session, customer.avatar_id)
+    customer.avatar_id = None
+    await session.commit()
+
+
+# --- account deletion (API.md §19, PROJECT.md §13) -----------------------------------
+
+
+async def delete_account(
+    session: AsyncSession, customer: Customer, data: AccountDeleteIn
+) -> None:
+    """Scrub the personal data and end the account.
+
+    PROJECT.md §13 says personal data is *cleared*, not merely hidden — so a
+    soft delete on its own would not do: ``deleted_at`` conceals a row, it does
+    not empty it. Order and payment records would stay, anonymised, as
+    financial documents; there are none yet in this phase.
+
+    The address is emptied too, which is also what frees it: the unique index
+    covers live rows only, so the same person can register again afterwards.
+    """
+    if not verify_password(data.password, customer.password_hash):
+        raise ValidationFailed("Password is incorrect", field="password")
+
+    if customer.avatar_id is not None:
+        await uploads_service.unlink(session, customer.avatar_id)
+        customer.avatar_id = None
+    for passenger in await repository.live_passengers_for(session, customer.id):
+        passenger.soft_delete()
+
+    customer.email = f"deleted-{customer.id}@invalid"
+    customer.first_name = _REDACTED
+    customer.last_name = None
+    customer.phone = None
+    customer.birth_date = None
+    # Not a hash of anything: argon2 will never verify against it, so no
+    # password can reopen the account.
+    customer.password_hash = ""
+    customer.soft_delete()
+
+    await _revoke_all_sessions(session, customer.id)
+    await session.commit()
+    logger.info("customer_deleted", customer_id=str(customer.id))
+
+
+# --- saved passengers (API.md §19) ---------------------------------------------------
+
+
+async def list_passengers(
+    session: AsyncSession,
+    customer: Customer,
+    pagination: Pagination,
+    query: ListQuery,
+) -> Page[PassengerOut]:
+    stmt = repository.owned_passengers(customer.id)
+    stmt = apply_search(stmt, query, Passenger.first_name, Passenger.last_name)
+    stmt = apply_created_range(stmt, query, Passenger.created_at)
+    stmt = apply_ordering(
+        stmt,
+        query,
+        allowed=_PASSENGER_ORDERING,
+        default="-created_at",
+        tiebreak=Passenger.id,
+    )
+    rows, total = await paginate(session, stmt, pagination)
+    return page([PassengerOut.model_validate(row) for row in rows], pagination, total)
+
+
+async def _require_passenger(
+    session: AsyncSession, customer: Customer, passenger_id: uuid.UUID
+) -> Passenger:
+    """404 for a passenger that does not exist **and** for somebody else's.
+
+    Two different situations, one answer on purpose: telling them apart would
+    let a caller enumerate which ids exist across the whole installation
+    (API.md §19).
+    """
+    passenger = await repository.passenger_by_id(session, customer.id, passenger_id)
+    if passenger is None:
+        raise NotFound("Passenger not found")
+    return passenger
+
+
+async def get_passenger(
+    session: AsyncSession, customer: Customer, passenger_id: uuid.UUID
+) -> PassengerOut:
+    return PassengerOut.model_validate(
+        await _require_passenger(session, customer, passenger_id)
+    )
+
+
+async def create_passenger(
+    session: AsyncSession, customer: Customer, data: PassengerCreateIn
+) -> PassengerOut:
+    passenger = Passenger(customer_id=customer.id, **data.model_dump())
+    session.add(passenger)
+    await session.commit()
+    await session.refresh(passenger)
+    return PassengerOut.model_validate(passenger)
+
+
+async def update_passenger(
+    session: AsyncSession,
+    customer: Customer,
+    passenger_id: uuid.UUID,
+    data: PassengerUpdateIn,
+) -> PassengerOut:
+    passenger = await _require_passenger(session, customer, passenger_id)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(passenger, field, value)
+    await session.commit()
+    await session.refresh(passenger)
+    return PassengerOut.model_validate(passenger)
+
+
+async def delete_passenger(
+    session: AsyncSession, customer: Customer, passenger_id: uuid.UUID
+) -> None:
+    passenger = await _require_passenger(session, customer, passenger_id)
+    passenger.soft_delete()
+    await session.commit()
+
+
 __all__ = [
+    "AVATAR_MAX_BYTES",
     "OTP_MAX_ATTEMPTS",
     "OTP_RESEND_COOLDOWN",
     "OTP_TTL",
     "RESET_TOKEN_TTL_SECONDS",
     "authenticate",
+    "change_password",
+    "clear_avatar",
     "confirm_password_reset",
     "confirm_registration",
+    "create_passenger",
+    "delete_account",
+    "delete_passenger",
     "get_active",
+    "get_passenger",
+    "list_passengers",
     "logout",
     "refresh_session",
     "register",
     "request_password_reset",
     "resend_registration_code",
+    "set_avatar",
+    "to_profile",
+    "update_passenger",
+    "update_profile",
     "verify_password_reset",
 ]

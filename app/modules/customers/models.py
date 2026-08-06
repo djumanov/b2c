@@ -5,11 +5,16 @@ same soft-delete and rotation rules. Two audiences that behave differently under
 the same threat would be two sets of rules to remember, and API.md §4 describes
 one mechanism with two sets of lifetimes.
 
-Three tables:
+Four tables:
 
 ``customers`` is the entity, soft-deleted like everything else (API.md §8), with
 its email unique **among live rows only** — an account that was deleted must not
 lock its address away forever.
+
+``passengers`` is the saved-traveller list (API.md §19), also an entity. Note it
+is **not** the order's passenger list: ARCHITECTURE.md §10 puts those under
+*commerce* as a separate table, because one is a template the customer keeps and
+the other is what was actually flown on.
 
 ``customer_refresh_tokens`` is a session log, not an entity: a session ends by
 being revoked, and ``revoked_at`` says exactly when. Redis carries the ``jti``
@@ -83,6 +88,13 @@ class Customer(Entity):
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: The uploaded avatar, by id and **not** by foreign key. ``uploads`` is a
+    #: module, reached through its service; a foreign key into its table is the
+    #: database's version of importing its ``models.py`` (ARCHITECTURE.md §4).
+    #: ``settings.branding`` holds ``logo_id`` the same way.
+    avatar_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
     #: NULL until the register code is confirmed. Until then the row exists but
     #: grants nothing — see ``service.get_active``.
     email_verified_at: Mapped[datetime | None] = mapped_column(
@@ -108,6 +120,40 @@ class Customer(Entity):
         because a password was typed next to it.
         """
         return self.is_verified and not self.is_blocked and not self.is_deleted
+
+
+class Passenger(Entity):
+    """Somebody this customer books for — themselves included (API.md §19).
+
+    The field set comes from PROJECT.md §13's inventory of stored personal
+    data and stops there: name, birth date, document type and number. Gender,
+    citizenship and document expiry are **not** in that list, so they are not
+    here either — a declared PII inventory is not something a module extends
+    on its way past. Booking may well want them in phase 2; that starts with
+    an edit to §13.
+
+    An ``Entity``, so ``DELETE`` is the soft delete API.md §8 promises. Nothing
+    unique about it: the same person legitimately appears twice, once with an
+    expired passport and once with the new one.
+    """
+
+    __tablename__ = "passengers"
+
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    first_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Free text, not an enum. The catalogue of document types lives on the GTS
+    #: side (GTS.md §9) and API.md §26 has no endpoint that serves it, so a
+    #: local enum would be a guess — and a CHECK constraint is the expensive
+    #: kind of guess to be wrong about.
+    document_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    document_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CustomerRefreshToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -177,4 +223,5 @@ __all__ = [
     "CustomerRefreshToken",
     "EmailOtp",
     "OtpPurpose",
+    "Passenger",
 ]

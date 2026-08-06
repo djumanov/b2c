@@ -24,6 +24,10 @@ class UploadPurpose(StrEnum):
     BANNER = "banner"
     DOCUMENT = "document"
     EXPORT = "export"
+    #: The one purpose a customer uploads (API.md §19). Appended rather than
+    #: sorted into place: the migration's CHECK lists these values in
+    #: declaration order, so moving a member rewrites a constraint for nothing.
+    AVATAR = "avatar"
 
 
 class Storage(Protocol):

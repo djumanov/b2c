@@ -44,6 +44,9 @@ CORE_PREFIXES: tuple[str, ...] = (
     # site nobody can buy from — PROJECT.md D4 makes an account mandatory to
     # order — so there is no flag it could hang from (PHASES.md §6, 4-faza).
     f"{API_PREFIX}/public/auth/",
+    # Nor is having an account. A customer's own details and saved travellers
+    # are not a section of the product that a client chooses to sell.
+    f"{API_PREFIX}/public/profile/",
 )
 
 

@@ -51,6 +51,13 @@ RULES: Final[dict[UploadPurpose, PurposeRule]] = {
     UploadPurpose.BLOG_COVER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
     UploadPurpose.PROMO_BANNER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
     UploadPurpose.BANNER: PurposeRule(_IMAGES, 5 * MEGABYTE, public=True),
+    # Raster only, and small. An avatar is drawn inside the site's own pages
+    # next to other people's, so an SVG here would be XML from an anonymous
+    # uploader — and the signature check cannot see inside one. `public`
+    # because the private file route is guarded by a staff token
+    # (`router_files.py`), which would leave an avatar unreadable by the one
+    # person entitled to it.
+    UploadPurpose.AVATAR: PurposeRule(_RASTER, 1 * MEGABYTE, public=True),
     UploadPurpose.DOCUMENT: PurposeRule(_IMAGES | {PDF}, 10 * MEGABYTE, public=False),
     UploadPurpose.EXPORT: PurposeRule(
         frozenset(), 25 * MEGABYTE, public=False, uploadable=False

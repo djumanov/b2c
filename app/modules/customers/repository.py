@@ -9,7 +9,7 @@ for one address is two accounts for one person.
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.mixins import utcnow
@@ -19,6 +19,7 @@ from app.modules.customers.models import (
     CustomerRefreshToken,
     EmailOtp,
     OtpPurpose,
+    Passenger,
 )
 
 
@@ -99,11 +100,45 @@ async def consume_open_otps(
         row.consumed_at = now
 
 
+# --- saved passengers ---------------------------------------------------------------
+
+
+def owned_passengers(customer_id: uuid.UUID) -> Select[tuple[Passenger]]:
+    """Every live passenger of one customer — the base of every query here.
+
+    There is no lookup that is not scoped by owner. A passenger is reachable
+    only through the account that saved it, so "no such row" and "not yours"
+    have to be the same answer; a helper that could be called without the owner
+    is the one somebody eventually calls without it.
+    """
+    return live(Passenger).where(Passenger.customer_id == customer_id)
+
+
+async def passenger_by_id(
+    session: AsyncSession, customer_id: uuid.UUID, passenger_id: uuid.UUID
+) -> Passenger | None:
+    row: Passenger | None = await session.scalar(
+        owned_passengers(customer_id).where(Passenger.id == passenger_id)
+    )
+    return row
+
+
+async def live_passengers_for(
+    session: AsyncSession, customer_id: uuid.UUID
+) -> Sequence[Passenger]:
+    """Used when an account is deleted and its saved people go with it."""
+    rows = await session.scalars(owned_passengers(customer_id))
+    return rows.all()
+
+
 __all__ = [
     "by_email",
     "by_id",
     "consume_open_otps",
     "latest_otp",
+    "live_passengers_for",
     "live_tokens_for",
+    "owned_passengers",
+    "passenger_by_id",
     "token_by_jti",
 ]

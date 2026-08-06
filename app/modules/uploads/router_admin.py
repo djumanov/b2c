@@ -14,6 +14,7 @@ from fastapi import File, Form, UploadFile
 
 from app.api.deps import CurrentStaff
 from app.api.envelope import enveloped_router
+from app.api.multipart import read_limited
 from app.db.session import SessionDep
 from app.modules.uploads import rules, service
 from app.modules.uploads.schemas import UploadOut
@@ -22,26 +23,9 @@ from app.providers.storage.base import UploadPurpose
 router = enveloped_router(prefix="/uploads", tags=["uploads"])
 
 #: One byte over the largest rule, so "too large" is caught here with a 422
-#: naming the field rather than by the reverse proxy with a bare 413.
+#: naming the field rather than by the reverse proxy with a bare 413. This
+#: endpoint takes any purpose, so it cannot be stricter than the largest one.
 _READ_LIMIT = rules.MAX_UPLOAD_BYTES + 1
-_CHUNK = 64 * 1024
-
-
-async def _read_limited(file: UploadFile) -> bytes:
-    """Read the body, but stop just past the limit.
-
-    ``await file.read()`` with no argument would pull an arbitrarily large body
-    into memory before anything got the chance to reject it.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while total <= _READ_LIMIT:
-        chunk = await file.read(_CHUNK)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        total += len(chunk)
-    return b"".join(chunks)
 
 
 @router.post("/", status_code=201, summary="Upload a file and get its id")
@@ -53,7 +37,7 @@ async def create_upload(
 ) -> UploadOut:
     return await service.create(
         session,
-        content=await _read_limited(file),
+        content=await read_limited(file, limit=_READ_LIMIT),
         filename=file.filename or "file",
         content_type=(file.content_type or "").split(";")[0].strip().lower(),
         purpose=purpose,

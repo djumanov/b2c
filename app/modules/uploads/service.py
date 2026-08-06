@@ -69,6 +69,16 @@ def _validate(purpose: UploadPurpose, content_type: str, content: bytes) -> None
         )
 
 
+def max_bytes(purpose: UploadPurpose) -> int:
+    """How large a file of this purpose may be.
+
+    Part of the public surface because a router has to decide how much of a
+    request body is worth reading before this module gets to refuse it, and
+    the rules themselves are this module's business (ARCHITECTURE.md §4).
+    """
+    return rules.rule_for(purpose).max_bytes
+
+
 async def create(
     session: AsyncSession,
     *,
@@ -234,6 +244,7 @@ __all__ = [
     "count_orphans",
     "create",
     "get",
+    "max_bytes",
     "link",
     "sweep_orphans",
     "unlink",
