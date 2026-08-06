@@ -5,10 +5,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_exception_handlers
-from app.api.middleware import RequestIdMiddleware, allowed_origins
+from app.api.middleware import DynamicCORSMiddleware, RequestIdMiddleware
 from app.api.openapi import build_openapi
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -57,8 +56,11 @@ def create_app() -> FastAPI:
     application.add_middleware(RequestIdMiddleware)
     application.add_middleware(AuditMiddleware)
     application.add_middleware(
-        CORSMiddleware,
-        allow_origins=allowed_origins(),
+        DynamicCORSMiddleware,
+        # Left empty on purpose: the list is a setting, and it is resolved per
+        # request so a domain changed in the panel takes effect without a
+        # restart. `is_allowed_origin` is what actually decides.
+        allow_origins=[],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

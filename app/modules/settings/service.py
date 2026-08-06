@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import ValidationFailed
 from app.core import i18n
 from app.core.logging import get_logger
+from app.db.session import get_sessionmaker
 from app.modules.audit import context as audit_context
 from app.modules.settings import cache, defaults, repository
 from app.modules.settings.models import Branding, Site
@@ -349,6 +350,49 @@ async def site_config(
     return _flatten(document, requested=requested)
 
 
+# --- who may call this installation from a browser (API.md §15) ---------------------
+
+
+def _origins_for(domain: str | None) -> list[str]:
+    """The browser origins a site domain implies.
+
+    A client types their domain, not a list of origins — ``brand-a.uz``, or
+    with a scheme in front if that is how they think of it. Both spellings mean
+    the same installation, and so does the ``www`` in front of it, so all of
+    them are accepted. HTTPS only: PROJECT.md §13 requires it everywhere, and an
+    ``http`` origin here would be a way to opt back out of that from the panel.
+    """
+    if not domain:
+        return []
+    # Scheme first, then path: stripping slashes off "https://" the other way
+    # round leaves "https:" behind and calls it a host.
+    host = domain.strip().split("://", 1)[-1].split("/", 1)[0].strip().lower()
+    if not host:
+        return []
+    origins = [f"https://{host}"]
+    if not host.startswith("www."):
+        origins.append(f"https://www.{host}")
+    return origins
+
+
+async def cors_origins() -> list[str]:
+    """Which origins the browser surfaces may be called from.
+
+    A **database setting**, not an environment variable: the client owns their
+    domain and changes it from the panel, with no deploy (PROJECT.md §7). It is
+    read through the ``site-config`` cache, which every settings write purges —
+    so a domain change takes effect on the next request rather than on the next
+    restart, which is the whole point.
+    """
+    document = await cache.read()
+    if document is None:
+        async with get_sessionmaker()() as session:
+            document = await _assemble(session)
+        await cache.write(document)
+    domain: str | None = document["site"]["domain"]
+    return _origins_for(domain)
+
+
 async def purge_cache() -> None:
     """``POST /admin/settings/cache/purge/`` (API.md §28).
 
@@ -359,6 +403,7 @@ async def purge_cache() -> None:
 
 
 __all__ = [
+    "cors_origins",
     "etag_for",
     "get_branding",
     "get_currencies",
