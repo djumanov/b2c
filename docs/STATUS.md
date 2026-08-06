@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `feat/customer-auth`
+**Oxirgi yangilanish:** 2026-08-06 · `feat/customer-profile`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 37 ta yo'l / 49 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 15 ta + `alembic_version` |
-| Migratsiyalar | 8 ta, bitta head (`8c64b732eb50`) |
-| Testlar | 437 ta — unit 15 fayl · contract 7 · integration 14 |
+| Endpointlar | 42 ta yo'l / 60 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 16 ta + `alembic_version` |
+| Migratsiyalar | 9 ta, bitta head (`96f1b68a3874`) |
+| Testlar | 467 ta — unit 15 fayl · contract 7 · integration 16 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -32,11 +32,11 @@ takrorlamaydi.
 | Brend rangi o'zgarsa `site-config` da **deploysiz** aks etadi | ✅ `tests/integration/test_site_config.py` |
 | `admin` tokeni `owner` talab qiladigan endpointda `403` oladi | ✅ `tests/integration/test_staff_crud.py` |
 
-> Uchala mezon ham texnik jihatdan bajarildi, lekin 1-bosqichning **qamrovi**
-> hali to'liq emas: `integrations` ning to'lov qismi va `customers` ning
-> **profil** yarmi qolgan (§3). Auth yarmi endi bor, ya'ni `aud: public`
-> tokeni birinchi marta haqiqiy egaga ega — 2-fazaning `orders` moduli
-> shuni kutayotgan edi (PROJECT.md D4: akkauntsiz xarid yo'q).
+> Uchala mezon ham texnik jihatdan bajarildi. 1-bosqich qamrovidan endi
+> **`integrations` ning to'lov qismi** va e2e qabul testi qolgan (§3).
+> `customers` to'liq: `aud: public` tokeni haqiqiy egaga ega, profil va
+> saqlangan yo'lovchilar bor — 2-fazaning `orders` moduli shuni kutayotgan edi
+> (PROJECT.md D4: akkauntsiz xarid yo'q).
 
 ---
 
@@ -63,18 +63,20 @@ kontrakt testlari.
 | `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari | 2 |
 | `system` | health, version (setup'dan) | 2 |
 | `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
+| `customers` (profil) | Profil o'qish/tahrir, avatar, parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 5 |
+| `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — ikkala yuza uchun bitta joyda | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+9 = 37). Operatsiyalar
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+9+5 = 42). Operatsiyalar
 > ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi
 > `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/` faqat
-> `POST`); `integrations` ning GTS qismida 6 ta. `customers` da 9 yo'l = 9
-> operatsiya, hammasi `POST`.
+> `POST`); `integrations` ning GTS qismida 6 ta. `customers` ning auth qismida
+> 9 yo'l = 9 operatsiya (hammasi `POST`), profil qismida esa 5 yo'lda 11 ta.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
-`email_otps`.
+`email_otps`, `passengers`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -84,9 +86,10 @@ kontrakt testlari.
 
 To'liq reja — [PHASES.md](PHASES.md). Bu yerda faqat **navbatdagi uchtasi**:
 
+1-bosqichdan **ikkitasi** qoldi:
+
 | # | Bo'lak | Nega shu tartibda |
 |---|---|---|
-| 6b | **`customers`** — profil (API.md §19) | Jadval va auth tayyor; qolgani shu jadval ustiga quriladi. `avatar/` uchun `uploads` ga **yangi `purpose`** kerak (pastda) |
 | 5b | **`integrations`** — to'lov provayderlari, uchala `test/` va social credential'i | 2-fazani to'smaydi; `providers/payments/` adapterlari bilan birga qilingani mantiqiyroq. `social/{provider}/` shu yerda ochiladi (PHASES.md §2.11) |
 | 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala mezon toza baza ustida, uchidan-uchiga |
 
@@ -103,12 +106,18 @@ Shu bo'laklar kutayotgan **koddagi aniq nuqtalar**:
 - `app/modules/integrations/` — `POST /admin/integrations/gts/test/`
   (API.md §29) hali **yozilmagan**. Probe `providers/gts/` ga tushadi va
   2FA holatini alohida ko'rsatishi kerak (D1).
-- `app/providers/storage/base.py::UploadPurpose` — `avatar` a'zosi yo'q, ya'ni
-  6b da qo'shiladi: yangi a'zo + `uploads/rules.py` da qoida (raster, kichik
-  limit, `public`) + `upload_purpose` CHECK'ini qayta yozadigan migratsiya.
 - `app/modules/customers/` — `social/{provider}/` va `devices/` **mount
   qilinmagan**, ya'ni `404`. Ikkalasining sababi boshqa: birinchisi §29 dagi
   credential satrini kutadi, ikkinchisi API.md §41 da.
+- **2-faza uchun ochiq savol:** `passengers.document_type` cheklanmagan satr.
+  Hujjat turlari katalogi GTS'da ([GTS.md](GTS.md) §9), API.md §26 da esa uni
+  beradigan endpoint yo'q. Bron oqimi qat'iy qiymat talab qilsa — avval §26 ga
+  `document-types/` qo'shiladi, keyin bu ustun cheklanadi.
+- **Bron GTS'ga yo'lovchi yuborganda** §13 dagi maydonlar yetmasligi mumkin
+  (jins, fuqarolik, hujjat amal muddati — GTS'ning DOCS/DOCO/DOCA oilasi).
+  Ular qo'shilishi kerak bo'lsa **avval `PROJECT.md` §13** tahrirlanadi:
+  saqlanadigan shaxsiy ma'lumot ro'yxati e'lon qilingan va modul uni o'zi
+  kengaytirmaydi.
 
 **Qolgan beat vazifalari** (`app/tasks/celery_app.py` dagi izohda): GTS'dan
 buyurtma statuslarini sync · idempotency kalitlarini tozalash · kataloglarni
@@ -160,6 +169,16 @@ tug'ilmasligi uchun.
 | 35 | Qayta yuborish oynasi **jim** ishlaydi: `204`, lekin xat ketmaydi | Ko'rinadigan `429` "bu manzilda kutayotgan kod bormi?" deb aytardi — ya'ni §4.33 dagi `204` ning ma'nosini yo'q qilardi. Ko'rinadigan chegara API.md §14 niki bo'lib qoladi, u manzilni emas, IP'ni sanaydi |
 | 36 | Mijoz auth hodisalari `audit_log` ga **yozilmaydi** | PROJECT.md §13 jurnalni **paneldagi** mutatsiyalar bilan chegaralaydi va `tests/contract/test_audit_coverage.py` faqat `/admin/*` ni supuradi. Mijoz login'lari `/admin/system/audit/` ni ko'mib tashlardi — u aynan xodimlar faoliyatini ko'rsatish uchun bor |
 | 37 | Parol pastki chegarasi `customers` da **qayta yozilgan**, `staff` dan import qilinmagan | Bugun ikkalasi 8, lekin ular boshqa-boshqa narsa: biri client o'z xodimlariga qo'ygan siyosat, ikkinchisi ommaga qo'yilgani. Umumiy konstanta bo'lsa bittasini o'zgartirish ikkalasini o'zgartirgandek ko'rinardi |
+| 38 | Yo'lovchi maydonlari **`PROJECT.md` §13 ro'yxatidan** olingan va undan oshmaydi | Saqlanadigan shaxsiy ma'lumot ro'yxati e'lon qilingan hujjat. Modul o'z ehtiyoji uchun unga maydon qo'shsa, ro'yxat hujjatda emas, kodda bo'lib qoladi — va PII inventarini kod bo'ylab yig'ib chiqish kerak bo'lardi |
+| 39 | `document_type` — **cheklanmagan satr**, enum ham, CHECK ham emas | Katalog GTS tomonda va §26 da uni beradigan endpoint yo'q. Lokal enum keyin keladigan katalogga zid bo'lib chiqishi mumkin, CHECK esa bu xatoni tuzatishni migratsiyaga aylantiradi |
+| 40 | Yo'lovchida **bitta hujjat**, ichma-ich ro'yxat emas | "Yo'lovchilar va hujjatlari" ikki xil o'qiladi. Saqlangan yo'lovchi bron uchun bitta hujjat bilan ishlatiladi; ko'plik kerak bo'lsa bu jadval qatorlar bilan kengayadi, sxema bilan emas |
+| 41 | `avatar` purpose'i **`public`** | Private fayl route'ini `current_staff` qo'riqlaydi (`uploads/router_files.py`), ya'ni private avatar — egasi ocholmaydigan avatar. Uni yechish uchun kalitga egalik tekshiruvi kerak bo'lardi, bu esa route'ning butun dizaynini o'zgartiradi |
+| 42 | `avatar` — faqat **raster**, SVG yo'q | Logotipni client o'zi tanlaydi, avatarni esa notanish odam yuklaydi. SVG — XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi (§4.13 bilan bir sabab, lekin bu yerda yuklovchi ishonchsiz) |
+| 43 | Avatar **to'g'ridan-to'g'ri** `POST /public/profile/avatar/` ga yuklanadi, `uploads/` orqali emas | API.md §11 ning ikki qadamli naqshi `/admin/uploads/` ga tayanadi, unga mijoz tokeni kira olmaydi (§4). Public yuzada `uploads/` resursi ochish — bir endpoint uchun butun bir resurs, ustiga anonim yuklash yuzasi |
+| 44 | Akkaunt o'chirilganda qator **bo'shatiladi**, faqat soft delete emas | `PROJECT.md` §13 "tozalanadi" deydi; `deleted_at` qatorni yashiradi, bo'shatmaydi. Manzilni ham bo'shatish — o'sha odam qaytadan ro'yxatdan o'ta olishining sharti, chunki unique indeks faqat tirik qatorlarni qamraydi |
+| 45 | `DELETE /public/profile/` **parol so'raydi** | Mijoz tokeni bajara oladigan yagona qaytarib bo'lmaydigan amal. Narxi — `DELETE` da tana, va ba'zi klientlar (`httpx`) uni qisqartmada yubora olmaydi; kontraktda ogohlantirish bor |
+| 46 | Yo'lovchi so'rovlari **har doim** egasi bo'yicha cheklangan, boshqa mijozniki `404` | `403` "bunday id bor" deb aytardi. Egasiz chaqirilishi mumkin bo'lgan yordamchi — bu oxir-oqibat egasiz chaqiriladigan yordamchi, shuning uchun `owned_passengers(customer_id)` dan boshqa kirish nuqtasi yo'q |
+| 47 | Tanani chegara bilan o'qish `app/api/multipart.py` ga ko'chirildi | Ikkinchi yuza paydo bo'ldi. Muqobili — bir modul routerining boshqa modul routeridan yordamchi import qilishi, ya'ni ARCHITECTURE.md §4 to'sib turgan bog'liqlikning aynan o'zi |
 
 ---
 
@@ -225,6 +244,28 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
     tirik turgan logo almashtirilsa keyingi soatlik supurish baytlarni
     o'chirardi. Va'da qilingan 24 soat aynan o'zi uchun yozilgan holatda
     ishlamasdi. §4.18.
+
+### 2026-08-06 — enum CHECK'ini birinchi marta qayta yozishda
+
+`UploadPurpose` ga `avatar` qo'shish uchun `ck_uploads_upload_purpose` qo'lda
+qayta yozildi (§4 dagi 41–43). Zanjirdagi **birinchi shunday migratsiya**, va
+ikkita tuzoq ketma-ket chiqdi — keyingisi shu yerdan nusxa olsin:
+
+11. **Nomi ikki marta prefikslanadi.** `op.drop_constraint('ck_uploads_upload_purpose', …)`
+    ga metadata nomlash konvensiyasi (`ck_%(table_name)s_%(constraint_name)s`)
+    **ustidan** qo'llanadi va natija `ck_uploads_ck_uploads_upload_purpose`
+    bo'ladi — `UndefinedObjectError`. Nom `op.f(...)` bilan "tayyor" deb
+    belgilanishi kerak; mavjud migratsiyalar `op.f('ck_..._singleton')` ni
+    aynan shuning uchun ishlatadi.
+12. **`op.f(...)` modul darajasida chaqirilmaydi.** `op` — migratsiya
+    ishlayotgandagina mavjud proxy, shuning uchun konstanta sifatida yozilsa
+    skriptni **shunchaki yuklaydigan** har bir buyruq yiqiladi: `alembic heads`
+    ham. Nom oddiy satr bo'lib qoladi, `op.f(...)` esa har bir ishlatish
+    joyida chaqiriladi.
+
+    Uchinchisi tuzoq emas, lekin yodda tutilsin: `downgrade` torroq CHECK'ni
+    qaytarishdan **oldin** `avatar` qatorlarini o'chiradi, aks holda mavjud
+    qator yangi constraint'ni buzadi.
 
 ---
 
