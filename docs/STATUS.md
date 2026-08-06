@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-05 · `main` = `5707216`
+**Oxirgi yangilanish:** 2026-08-06 · `main` = `491f6fa`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -13,11 +13,11 @@ nima qolgan** va yo'lda topilgan, koddan ko'rinmaydigan qarorlar yozilgan.
 
 | | |
 |---|---|
-| Bosqich | **1 — Yadro**, 3 qabul mezonidan **2 tasi** bajarilgan |
-| Endpointlar | 23 ta yo'l (API.md dagi ~150 dan) |
+| Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
+| Endpointlar | 23 ta yo'l / 31 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 10 ta + `alembic_version` |
 | Migratsiyalar | 5 ta, bitta head (`c4adf0023f38`) |
-| Testlar | 278 ta — unit 10 fayl · contract 6 · integration 9 |
+| Testlar | 331 ta — unit 12 fayl · contract 6 · integration 10 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -50,9 +50,13 @@ kontrakt testlari.
 | `staff` | Admin auth, rotatsiyali refresh, jamoa resursi, birinchi owner bootstrap | 11 |
 | `audit` | Har bir admin mutatsiyasi + auth hodisalari jurnali | 1 |
 | `uploads` | Local disk storage, purpose bo'yicha limitlar, orphan sweep | 1 + `/uploads/*` |
-| `settings` | Brending, sayt, tillar, valyutalar, features, mahsulotlar, kesh | 9 |
+| `settings` | Brending, sayt, tillar, valyutalar, features, mahsulotlar, kesh, CORS origin'lari | 7 |
 | `settings` (public) | `GET /public/site-config/` — kesh + ETag + i18n | 1 |
 | `system` | health, version (setup'dan) | 2 |
+
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+2 = 23). Operatsiyalar ko'proq:
+> `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi `GET`+`PATCH`
+> juftligi (`products/` faqat `GET`, `cache/purge/` faqat `POST`).
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`.
@@ -141,6 +145,13 @@ tug'ilmasligi uchun.
 | 9 | Settings qatorlari **birinchi o'qishda** yaratiladi, migratsiyada emas | Default'lar tegishli maydon yonida turadi; migratsiya chiqqach muzlaydi |
 | 10 | `settings/menu/` va `features.loyalty` — **yozilmagan / yoqib bo'lmaydi** | API.md §41, PROJECT.md §3 |
 | 11 | `document`/`export` fayllari `/uploads/private/` ortida, staff token bilan | Eksport uchun keyinchalik imzolangan URL kerak (7-bosqich) |
+| 12 | Saqlash kaliti kengaytmasi **tasdiqlangan MIME'dan** olinadi, client fayl nomidan emas; fayl route'i `media_type` ni o'sha jadvaldan beradi | Kengaytma javobning `Content-Type` ini belgilaydi — ya'ni client tanlagan kengaytma client tanlagan content type demakdir (§6.5) |
+| 13 | Har bir fayl javobida `nosniff` + `Content-Security-Policy: default-src 'none'; sandbox` | SVG — XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi. Sandbox uni alohida origin'ga tushiradi; `<img>` ga ta'sir qilmaydi |
+| 14 | `Idempotency-Key` da in-flight belgisi **60 s**, saqlangan natija **24 soat** | Xato bergan handler kalitni bir kunga qulflab qo'ymasligi kerak — aks holda caller to'lovni umuman qila olmaydi |
+| 15 | `.env.sample` dagi placeholder qiymatlar bilan **ko'tarilmaydi** (`DEBUG=true` dan tashqari) | `ENCRYPTION_KEYS` allaqachon shunday qilardi (base64 emas). Qolganlari uchun ham ataylab: `JWT_SECRET_KEY` — bu owner tokenini yasash imkoni |
+| 16 | CORS ro'yxati **har so'rovda** `site.domain` dan olinadi, faqat `https` | Starlette uni bir marta, start'da o'qiydi — bu paneldan tahrirlanadigan qiymat uchun noto'g'ri umr. `http://` domenni qabul qilish PROJECT.md §13 dan paneldan chiqib ketish yo'li bo'lardi |
+| 17 | `revoked_before` belgisi: sub'ekt bo'yicha "shu vaqtdan oldingi hamma narsa yaroqsiz". Xuddi **shu soniyada** berilgan token omon qoladi | Access token saqlanmaydi, demak `jti` bilan nomlab bo'lmaydi. Soniya oynasi ataylab: `iat` soniya aniqligida, aks holda odam o'z parolini o'zgartirgach darhol qilgan login'idan chiqib ketardi |
+| 18 | Orphan grace `updated_at` dan hisoblanadi | Fayl ikki marta orphan bo'lishi mumkin; `created_at` almashtirilgan logoni darhol o'chirardi (§6.6) |
 
 ---
 
@@ -169,6 +180,44 @@ Bular yana takrorlanishi mumkin — shuning uchun yozib qo'yilgan.
    `405 not_found` bo'lardi, API.md §3 da esa `405` yo'q. Endi katalog statusi
    qaytadi.
 
+### 2026-08-06 — 1-bosqich kodini qayta ko'rib chiqishda topilganlar
+
+Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
+1-bo'limdagi "2 mezon" va 2-bo'limdagi `settings` = 9) — muammo kodda edi.
+
+5. 🔴 **Yuklangan fayl o'z origin'imizdan `text/html` bo'lib qaytardi.**
+   Kalit client bergan kengaytmani saqlardi
+   (`storage/local.py::build_key`), fayl route'i esa `FileResponse` ga
+   `media_type` bermasdi — Starlette uni `guess_type(path)` bilan topardi.
+   PNG imzosi + `filename="x.html"` → `logo/ab/<hex>.html` → autentifikatsiyasiz
+   **stored XSS**, panel bilan bitta origin'da. Imzo tekshiruvi buni ko'ra
+   olmasdi, chunki u faqat baytlarning boshiga qaraydi. Tuzatish — §5.12–13.
+
+6. 🔴 **`Idempotency-Key` da'vosi atomik emas edi.** `SET … NX` chaqirilardi,
+   lekin **javobi tashlab yuborilardi** — qaror hamon undan oldingi `GET` da
+   qolardi, ya'ni ikkita bir xil so'rov ikkalasi ham "yozuv yo'q" deb o'tib,
+   **ikki marta yechardi**. Modul aynan shu holat uchun bor. Endi `NX` ning
+   javobi hal qiladi.
+
+7. 🟠 **`JWT_SECRET_KEY` ning ishlaydigan default'i bor edi** va aynan o'sha
+   satr `.env.sample` da chop etilgan. O'zgaruvchini unutgan o'rnatma
+   ko'tarilardi va o'sha kalit bilan imzolardi — istalgan kishi `aud: admin`,
+   `role: owner` token yasay olardi. §5.15.
+
+8. 🟠 **Prod'da CORS `[]` edi** ("settings moduli paydo bo'lguncha" izohi bilan),
+   ya'ni panel o'z API'siga murojaat qila olmasdi; `debug` da esa `["*"]` +
+   `allow_credentials=True` — brauzer rad etadigan juftlik. §5.16.
+
+9. 🟠 **Parol o'zgartirilganda access token tirik qolardi.** Denylist'ga faqat
+   **refresh** jti yozilardi, `change_password` esa "har bir sessiya o'ladi"
+   deb yozilgan — sizib chiqqan access token yana 15 daqiqa ishlardi. §5.17.
+
+10. 🟠 **Faylni uzish uni darhol supurilishga ochardi.** `sweep_orphans` cutoff'ni
+    `created_at` bo'yicha hisoblardi, `unlink` esa uni o'zgartirmasdi — olti oy
+    tirik turgan logo almashtirilsa keyingi soatlik supurish baytlarni
+    o'chirardi. Va'da qilingan 24 soat aynan o'zi uchun yozilgan holatda
+    ishlamasdi. §5.18.
+
 ---
 
 ## 7. Lokal muhit
@@ -179,6 +228,17 @@ Bular yana takrorlanishi mumkin — shuning uchun yozib qo'yilgan.
   env POSTGRES_USER=djumanov POSTGRES_PASSWORD= uv run pytest
   ```
   Yo `.env` tuzatilsin, yo `postgres` roli yaratilsin.
+- **Lokal `.env` da `DEBUG=true` bo'lishi kerak.** U hozircha `.env.sample`
+  nusxasi, ya'ni `DEBUG=false` va placeholder parollar bilan — endi bu
+  kombinatsiya ataylab ko'tarilmaydi (§5.15):
+  ```
+  Value error, FIRST_OWNER_PASSWORD, POSTGRES_PASSWORD still holds the value
+  from .env.sample …
+  ```
+  Yo `DEBUG=true` qo'yilsin, yo uchala qiymat almashtirilsin.
+- Test to'plami buni **o'zi hal qiladi**: `tests/conftest.py` `app` import
+  qilinishidan oldin `DEBUG=true` ni `setdefault` qiladi, shuning uchun run
+  mashinadagi `.env` ga bog'liq emas.
 - Integratsiya testlari `b2c_test` bazasini o'zi yaratadi va har run'da
   sxemasini migratsiya zanjiri bilan qayta quradi. Boshqa joyga yo'naltirish:
   `TEST_DATABASE_URL`.
@@ -198,3 +258,45 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 | Saqlash muddatlari | 7-bosqich |
 | Kutilayotgan yuk | server o'lchami; D2 sababli har `offers/` GTS'ga boradi |
 | **GTS 2FA (D1)** | **2-bosqichni to'sadi** |
+
+---
+
+## 9. Ma'lum kamchiliklar
+
+2026-08-06 ko'rigida topilgan, lekin **hali tuzatilmagan**. Hech biri to'smaydi;
+yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
+
+1. **Qo'lda yig'ilgan envelope'ni ushlaydigan test yo'q.**
+   `api/envelope.py:123-125` "buni kontrakt testi flag qiladi" deydi, lekin
+   bunday test mavjud emas — `tests/contract/test_routes.py` faqat
+   `route_class` ni tekshiradi. Va `settings/router_public.py` allaqachon shu
+   yo'ldan ketgan (`json_response(success_envelope(...))`, ETag uchun; `_wrap`
+   endpoint sarlavhalarini saqlagani uchun kerak ham emas). Ya'ni himoya emas,
+   ochiq eshik.
+2. **500 javobida `X-Request-Id` yo'q.** `api/middleware.py:51-62` xatoni
+   qayta ko'taradi, javobni esa `ServerErrorMiddleware` yasaydi — bu
+   middleware'dan tashqarida, ya'ni sarlavha qo'yilmaydi. Support suhbati aynan
+   shu javobdan boshlanadi (API.md §13). Shu sababdan 500 da CORS sarlavhalari
+   ham yo'q.
+3. **Singleton o'qishi `deleted_at` ni ko'rmaydi.**
+   `settings/repository.py:36` — `select(model).limit(1)`, `UNIQUE(singleton)`
+   esa soft-delete qilingan qatorni o'rnini abadiy band qiladi. Hozir hech narsa
+   ularni o'chirmaydi, shuning uchun latent — lekin `SingletonMixin` va
+   `SoftDeleteMixin` juftligi ziddiyatli.
+4. `settings/service.py` da noto'g'ri `logo_id` → **`404`**; maydon qiymati
+   xato bo'lgani uchun `422` to'g'riroq (noto'g'ri `purpose` shoxi aynan shunday
+   qiladi).
+5. `staff/service.py::confirm_password_reset` da `uuid.UUID(str(raw))` — buzuq
+   Redis qiymatida `500`.
+6. `staff/service.py::send_reset_password_link` (owner boshlaydigan) da
+   `is_blocked` tekshiruvi yo'q; `request_password_reset` da bor.
+7. `uploads/service.py::count_orphans` barcha id'ni yuklab `len()` qiladi —
+   `select(func.count())` bo'lishi kerak.
+8. `audit/middleware.py` jurnal yozuvini so'rov yo'lida `await` qiladi.
+9. `api/envelope.py` sarlavhalarni **almashtiradi**, qo'shmaydi — bugun cookie
+   yo'q, `Set-Cookie` paydo bo'lsa muhim bo'ladi.
+10. `api/deps.py::_rate_limit_subject` refresh tokenni ham autentifikatsiyalangan
+    sub'ekt deb sanaydi.
+11. `core/crypto.py` AAD ishlatmaydi — shifrmatnni bir ustundan boshqasiga
+    ko'chirishni aniqlab bo'lmaydi. `integrations` yozilayotganda ko'rib
+    chiqilsin.
