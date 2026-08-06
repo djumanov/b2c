@@ -12,6 +12,7 @@ from fastapi import Depends
 
 from app.api.deps import current_staff
 from app.api.envelope import enveloped_router
+from app.db.session import SessionDep
 from app.modules.system import service
 from app.modules.system.schemas import HealthOut, VersionOut
 
@@ -23,8 +24,8 @@ router = enveloped_router(prefix="/system", tags=["system"])
     dependencies=[Depends(current_staff)],
     summary="Database, Redis, GTS and payment provider status",
 )
-async def get_health() -> HealthOut:
-    return await service.health()
+async def get_health(session: SessionDep) -> HealthOut:
+    return await service.health(session)
 
 
 @router.get(

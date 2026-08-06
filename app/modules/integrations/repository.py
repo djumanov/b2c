@@ -1,8 +1,8 @@
-"""Reading GTS credentials. No soft delete here, so no ``deleted_at`` filter.
+"""Reading the integration rows. No soft delete here, so no ``deleted_at``.
 
-Ordering is deliberate and not a detail: the active account leads, then the
-rest by label. A panel list that reorders itself between two reads is a list
-nobody trusts.
+Ordering is deliberate and not a detail: the active GTS account leads, then the
+rest by label, and payment providers come in the order the site will show them.
+A panel list that reorders itself between two reads is a list nobody trusts.
 """
 
 import uuid
@@ -11,7 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.integrations.models import GtsCredential, SmtpSettings
+from app.modules.integrations.models import (
+    GtsCredential,
+    PaymentProvider,
+    SmtpSettings,
+)
+from app.providers.payments.base import PaymentProviderCode
 
 _ORDERED = select(GtsCredential).order_by(
     GtsCredential.is_active.desc(), GtsCredential.label
@@ -82,6 +87,66 @@ async def smtp(session: AsyncSession) -> SmtpSettings:
     return created
 
 
+#: Panel order, and the same order the site gets (API.md §17). ``code`` breaks
+#: the tie so a list with two providers on the same rank does not shuffle
+#: itself between two reads.
+_PROVIDERS_ORDERED = select(PaymentProvider).order_by(
+    PaymentProvider.sort_order, PaymentProvider.code
+)
+
+
+async def payment_providers(session: AsyncSession) -> list[PaymentProvider]:
+    """Every provider the release supports, creating any that are missing.
+
+    The set comes from ``PaymentProviderCode``, so a release that adds an
+    adapter gets its row on the next read rather than in a data migration —
+    and an installation that upgrades finds the new provider already listed,
+    switched off.
+
+    ``ON CONFLICT DO NOTHING`` for the same reason as ``smtp()``: two workers
+    can answer the very first request at once, and a rollback here would take
+    the caller's own work with it.
+    """
+    missing = set(PaymentProviderCode) - {
+        row.code for row in (await session.scalars(_PROVIDERS_ORDERED)).all()
+    }
+    if missing:
+        order = list(PaymentProviderCode)
+        await session.execute(
+            pg_insert(PaymentProvider)
+            .values(
+                [
+                    {
+                        "id": uuid.uuid4(),
+                        "code": code.value,
+                        # A starting name the client can rewrite. Capitalised
+                        # rather than left empty: an unnamed button is worse
+                        # than a wrongly-named one.
+                        "title": code.value.capitalize(),
+                        # Declaration order, in tens so a later provider can be
+                        # slotted between two without renumbering. The default
+                        # order is then the release's own rather than
+                        # alphabetical, which would be an arbitrary answer to a
+                        # question the client had not yet been asked.
+                        "sort_order": order.index(code) * 10,
+                    }
+                    for code in sorted(missing, key=order.index)
+                ]
+            )
+            .on_conflict_do_nothing()
+        )
+    return list((await session.scalars(_PROVIDERS_ORDERED)).all())
+
+
+async def payment_provider(
+    session: AsyncSession, code: PaymentProviderCode
+) -> PaymentProvider | None:
+    row: PaymentProvider | None = await session.scalar(
+        select(PaymentProvider).where(PaymentProvider.code == code)
+    )
+    return row
+
+
 __all__ = [
     "active",
     "all_credentials",
@@ -89,5 +154,7 @@ __all__ = [
     "count",
     "deactivate_all",
     "label_taken",
+    "payment_provider",
+    "payment_providers",
     "smtp",
 ]

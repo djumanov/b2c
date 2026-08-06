@@ -25,11 +25,14 @@ from app.modules.integrations.schemas import (
     CredentialCreateIn,
     CredentialOut,
     CredentialUpdateIn,
+    PaymentProviderIn,
+    PaymentProviderOut,
     SmtpIn,
     SmtpOut,
     SmtpTestIn,
     SmtpTestOut,
 )
+from app.providers.payments.base import PaymentProviderCode
 
 router = enveloped_router(
     prefix="/integrations/gts",
@@ -143,4 +146,45 @@ async def test_smtp(
     )
 
 
-__all__ = ["notifications_router", "router"]
+# --- payment providers (API.md §29) --------------------------------------------------
+#
+# A registry: addressed by ``code``, and every code the release supports has a
+# row whether the client uses it or not. There is no POST and no DELETE —
+# adding a provider means shipping an adapter, not filling in a form.
+
+payments_router = enveloped_router(
+    prefix="/integrations/payments",
+    tags=["integrations"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@payments_router.get("/", summary="Payment providers — credentials masked")
+async def list_payment_providers(session: SessionDep) -> list[PaymentProviderOut]:
+    return await service.list_payment_providers(session)
+
+
+@payments_router.get("/{code}/", summary="One provider")
+async def get_payment_provider(
+    code: PaymentProviderCode, session: SessionDep
+) -> PaymentProviderOut:
+    return await service.get_payment_provider(session, code)
+
+
+@payments_router.patch(
+    "/{code}/",
+    dependencies=[Depends(require_owner)],
+    summary="Switch on or off, set credentials, title, logo and order",
+)
+async def update_payment_provider(
+    code: PaymentProviderCode, data: PaymentProviderIn, session: SessionDep
+) -> PaymentProviderOut:
+    return await service.update_payment_provider(session, code, data)
+
+
+# ``POST /{code}/test/`` is deliberately absent and therefore 404s. A test is a
+# real connection and the adapter is what knows how to make one; both arrive in
+# phase 2 (API.md §29, PHASES.md §2.13).
+
+
+__all__ = ["notifications_router", "payments_router", "router"]

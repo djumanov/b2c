@@ -58,6 +58,10 @@ RULES: Final[dict[UploadPurpose, PurposeRule]] = {
     # (`router_files.py`), which would leave an avatar unreadable by the one
     # person entitled to it.
     UploadPurpose.AVATAR: PurposeRule(_RASTER, 1 * MEGABYTE, public=True),
+    # SVG is allowed here where it is not for an avatar: payment brands publish
+    # their marks as SVG, and this file comes from the panel — a staff member
+    # the installation already trusts — rather than from a stranger.
+    UploadPurpose.PAYMENT_LOGO: PurposeRule(_IMAGES, 1 * MEGABYTE, public=True),
     UploadPurpose.DOCUMENT: PurposeRule(_IMAGES | {PDF}, 10 * MEGABYTE, public=False),
     UploadPurpose.EXPORT: PurposeRule(
         frozenset(), 25 * MEGABYTE, public=False, uploadable=False

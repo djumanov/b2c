@@ -1,9 +1,11 @@
 """What this installation connects to the outside world with — API.md §29.
 
-Two things so far. The GTS agent accounts, which are a **list** because one is
-not always enough, and the SMTP server, which is a **singleton** because an
-installation sends its mail through one relay. The contract already draws that
-distinction: GTS is addressed by id, notifications is not.
+Three shapes, and each one is the contract's. The GTS agent accounts are a
+**list** because one is not always enough, and are addressed by id. The SMTP
+server is a **singleton** because an installation sends its mail through one
+relay, and has no ``{id}`` at all. The payment providers are a **registry**:
+addressed by ``code``, one row per provider the release supports, and the set
+is closed because adding a provider means writing an adapter.
 
 An installation reaches GTS with its own agent account (PROJECT.md D1). One
 account is not always enough — production and a test environment, or an old
@@ -21,10 +23,12 @@ references it — no foreign key can dangle. Who deleted which id and when stays
 in the audit journal, which is the part worth keeping.
 """
 
+import uuid
 from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -34,6 +38,7 @@ from app.db.mixins import (
     UUIDPrimaryKeyMixin,
     singleton_check,
 )
+from app.providers.payments.base import PaymentProviderCode
 
 #: Where GTS lives unless the client says otherwise (GTS.md §3). Held per row
 #: rather than once for the installation, so production and a test environment
@@ -152,10 +157,78 @@ class SmtpSettings(Base, UUIDPrimaryKeyMixin, TimestampMixin, SingletonMixin):
     last_test_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+#: Same idiom as ``TLS_MODE_COLUMN``: VARCHAR + CHECK rather than a native
+#: enum, because rewriting a CHECK is ordinary DDL and clients upgrade
+#: unattended (PROJECT.md D10). The members come from the payments port, which
+#: is where a provider is really defined.
+PROVIDER_CODE_COLUMN = Enum(
+    PaymentProviderCode,
+    name="payment_provider_code",
+    native_enum=False,
+    create_constraint=True,
+    length=16,
+    values_callable=lambda enum: [member.value for member in enum],
+)
+
+
+class PaymentProvider(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One payment provider's settings — API.md §29.
+
+    Keyed by ``code``, and the row exists for every code the release knows
+    whether the client uses it or not: ``repository.payment_providers`` creates
+    the missing ones on first read. An empty list would be the wrong empty
+    state, because there would be nothing for the panel to switch on.
+
+    Not an ``Entity``. Deleting a provider is not an operation — the set is
+    fixed by which adapters exist — so there is nothing to soft-delete.
+    """
+
+    __tablename__ = "payment_providers"
+
+    code: Mapped[PaymentProviderCode] = mapped_column(
+        PROVIDER_CODE_COLUMN, nullable=False, unique=True
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    #: How the site presents the method (API.md §17). Held here rather than in
+    #: code because it is a client's wording and their chosen artwork.
+    title: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The uploaded logo, by id and not by foreign key — ``uploads`` is reached
+    #: through its service, never by joining its table (ARCHITECTURE.md §4).
+    logo_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    #: The contract's *tartib*: what order the buttons appear in on the site.
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    #: AES-GCM ciphertext of a **JSON object**, not of one secret. Payme and
+    #: Click ask for different keys and the list comes from each provider's own
+    #: documentation, so the shape is the adapter's business (phase 2) and this
+    #: column stays opaque to everything but ``service``.
+    credentials: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: What the last ``test/`` found. Null until the probe lands with the
+    #: adapter in phase 2 (PHASES.md §2.13); the columns exist now because the
+    #: contract's GET returns them and three nullable columns are not worth a
+    #: migration of their own later.
+    last_tested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 __all__ = [
     "DEFAULT_BASE_URL",
+    "PROVIDER_CODE_COLUMN",
     "TLS_MODE_COLUMN",
     "GtsCredential",
+    "PaymentProvider",
     "SmtpSettings",
     "TlsMode",
 ]

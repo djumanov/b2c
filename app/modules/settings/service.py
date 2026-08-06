@@ -21,6 +21,7 @@ from app.core import i18n
 from app.core.logging import get_logger
 from app.db.session import get_sessionmaker
 from app.modules.audit import context as audit_context
+from app.modules.integrations import service as integrations_service
 from app.modules.settings import cache, defaults, repository
 from app.modules.settings.models import Branding, Site
 from app.modules.settings.schemas import (
@@ -297,9 +298,11 @@ async def _assemble(session: AsyncSession) -> dict[str, Any]:
             "available": currencies.available,
         },
         "products": [{"code": row.code, "enabled": row.enabled} for row in products],
-        # Filled by the integrations module (API.md §29); an installation with
-        # no provider configured yet genuinely has none to offer.
-        "payment_methods": [],
+        # Asked of the module that owns the answer (API.md §29). Only the
+        # enabled ones and no ``enabled`` field, unlike ``products`` above:
+        # the site turns this into buttons, and a switched-off provider would
+        # be a button that does nothing.
+        "payment_methods": await integrations_service.enabled_payment_methods(session),
         # The menu builder is not in the first release (API.md §41).
         "menu": [],
         "features": _all_flags(features.flags),

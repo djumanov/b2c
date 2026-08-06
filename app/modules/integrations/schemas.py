@@ -1,8 +1,8 @@
-"""Request and response shapes for ``/admin/integrations/gts/*`` (API.md §29).
+"""Request and response shapes for ``/admin/integrations/*`` (API.md §29).
 
-The password goes **in** in full and comes **out** masked, so the two
-directions cannot share a model. ``CredentialOut`` has no field that could
-carry the real value — that is the point of it being a separate class.
+Secrets go **in** in full and come **out** masked, so the two directions never
+share a model. ``CredentialOut`` has no field that could carry the real value —
+that is the point of it being a separate class.
 """
 
 import uuid
@@ -12,6 +12,7 @@ from typing import Annotated
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 
 from app.modules.integrations.models import DEFAULT_BASE_URL, TlsMode
+from app.providers.payments.base import PaymentProviderCode
 
 Label = Annotated[str, Field(min_length=1, max_length=64)]
 GtsPassword = Annotated[str, Field(min_length=1, max_length=128)]
@@ -137,10 +138,55 @@ class SmtpTestOut(BaseModel):
     tested_at: datetime
 
 
+# --- payment providers (API.md §29) ------------------------------------------------
+
+ProviderTitle = Annotated[str, Field(min_length=1, max_length=64)]
+
+#: Deliberately loose. Which keys a provider wants comes from that provider's
+#: documentation and arrives with its adapter (PHASES.md §2.13); a schema here
+#: would be a guess the adapters then contradict. The bound is on size, so a
+#: caller cannot use this as free storage.
+Credentials = Annotated[dict[str, str | None], Field(max_length=20)]
+
+
+class PaymentProviderOut(BaseModel):
+    """One provider as the panel sees it. ``credentials`` values are masked."""
+
+    code: PaymentProviderCode
+    enabled: bool
+    title: str
+    logo_id: uuid.UUID | None
+    logo_url: str | None
+    sort_order: int
+    credentials: dict[str, str]
+    last_tested_at: datetime | None
+    last_test_ok: bool | None
+    last_test_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaymentProviderIn(BaseModel):
+    """``PATCH`` is partial, and ``credentials`` **merges** into what is stored.
+
+    Replacing the whole object would mean a panel that edits one key has to
+    resend the others — which it cannot do, because it only ever received them
+    masked.
+    """
+
+    enabled: bool | None = None
+    title: ProviderTitle | None = None
+    logo_id: uuid.UUID | None = None
+    sort_order: Annotated[int, Field(ge=0, le=9999)] | None = None
+    credentials: Credentials | None = None
+
+
 __all__ = [
     "CredentialCreateIn",
     "CredentialOut",
     "CredentialUpdateIn",
+    "PaymentProviderIn",
+    "PaymentProviderOut",
     "SmtpIn",
     "SmtpOut",
     "SmtpTestIn",

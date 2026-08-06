@@ -89,8 +89,9 @@ async def test_it_has_the_shape_the_contract_specifies(api: AsyncClient) -> None
         "esim",
         "transfer",
     ]
-    # Both arrive with their modules: payment methods with `integrations`, the
-    # menu in phase 5 (API.md §41).
+    # Nothing is enabled on a fresh installation, and an empty list is the
+    # right answer for that — see test_customer_payment_methods for the
+    # switched-on case. The menu arrives in phase 5 (API.md §41).
     assert data["payment_methods"] == []
     assert data["menu"] == []
 

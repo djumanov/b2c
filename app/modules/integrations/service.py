@@ -10,6 +10,7 @@ through the model, which is what keeps ``providers/gts`` from importing this
 module's ``models.py`` (ARCHITECTURE.md §4).
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,19 +25,28 @@ from app.core.logging import get_logger
 from app.db.mixins import utcnow
 from app.modules.audit import context as audit_context
 from app.modules.integrations import repository
-from app.modules.integrations.models import GtsCredential, SmtpSettings
+from app.modules.integrations.models import (
+    GtsCredential,
+    PaymentProvider,
+    SmtpSettings,
+)
 from app.modules.integrations.schemas import (
     CredentialCreateIn,
     CredentialOut,
     CredentialUpdateIn,
+    PaymentProviderIn,
+    PaymentProviderOut,
     SmtpIn,
     SmtpOut,
     SmtpTestOut,
 )
+from app.modules.uploads import service as uploads_service
 from app.providers import notifications
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
+from app.providers.payments.base import PaymentProviderCode
+from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
 
@@ -437,17 +447,271 @@ async def test_smtp(
     return SmtpTestOut(ok=ok, detail=detail, tested_at=row.last_tested_at)
 
 
+# --- payment providers (API.md §29) ---------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ConfiguredPaymentProvider:
+    """What an adapter needs, and nothing the panel needs.
+
+    The seam phase 2 builds against: `providers/payments/{payme,click}.py`
+    reads its keys here and never imports this module's ``models``
+    (ARCHITECTURE.md §4). Same shape and the same hand-written ``__repr__`` as
+    ``ActiveGtsCredential``, for the same reason — a dataclass carrying secrets
+    ends up inside a traceback sooner or later.
+    """
+
+    code: PaymentProviderCode
+    title: str
+    sort_order: int
+    credentials: dict[str, str]
+
+    def __repr__(self) -> str:
+        return (
+            f"ConfiguredPaymentProvider(code={self.code.value!r}, "
+            f"keys={sorted(self.credentials)!r})"
+        )
+
+
+def _decode_credentials(row: PaymentProvider) -> dict[str, str]:
+    if not row.credentials:
+        return {}
+    decoded: dict[str, str] = json.loads(decrypt(row.credentials, row.key_version or 0))
+    return decoded
+
+
+def _payments_aud(row: PaymentProvider) -> dict[str, Any]:
+    """What the journal records. The credentials are **not** among them.
+
+    ``core.logging.redact`` would blank the key anyway; this is the belt to
+    that pair of braces. Which keys are set is worth knowing, so their names
+    are recorded — the names are not the secret.
+    """
+    return {
+        "enabled": row.enabled,
+        "title": row.title,
+        "logo_id": str(row.logo_id) if row.logo_id else None,
+        "sort_order": row.sort_order,
+        "credential_keys": sorted(_decode_credentials(row)),
+    }
+
+
+async def _payments_out(
+    session: AsyncSession, row: PaymentProvider
+) -> PaymentProviderOut:
+    return PaymentProviderOut(
+        code=row.code,
+        enabled=row.enabled,
+        title=row.title,
+        logo_id=row.logo_id,
+        logo_url=await uploads_service.url_for(session, row.logo_id),
+        sort_order=row.sort_order,
+        # Masked one value at a time rather than replaced wholesale: the panel
+        # has to show *which* keys are set, and an operator recognises their
+        # own merchant id by its last characters.
+        credentials={
+            key: mask_secret(value) for key, value in _decode_credentials(row).items()
+        },
+        last_tested_at=row.last_tested_at,
+        last_test_ok=row.last_test_ok,
+        last_test_error=row.last_test_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _is_masked(value: str) -> bool:
+    """A value the panel echoed back unchanged, rather than a new secret.
+
+    Without this a panel that renders its own ``GET`` and submits the form
+    untouched would overwrite every credential with bullet characters — and the
+    client would only find out when a payment failed.
+
+    The test is "contains a bullet", not "is all bullets": ``mask_secret``
+    leaves the last few characters visible so an operator can recognise their
+    own key, so a mask is mostly bullets with a real tail. Nothing a provider
+    issues contains one.
+    """
+    return "•" in value
+
+
+def _merge_credentials(
+    stored: dict[str, str], patch: dict[str, str | None]
+) -> dict[str, str]:
+    merged = dict(stored)
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        elif not _is_masked(value):
+            merged[key] = value
+    return merged
+
+
+async def list_payment_providers(session: AsyncSession) -> list[PaymentProviderOut]:
+    rows = await repository.payment_providers(session)
+    # The first read of a fresh installation creates the rows; without the
+    # commit they are rolled back and the next read makes them again.
+    if session.in_transaction():
+        await session.commit()
+    return [await _payments_out(session, row) for row in rows]
+
+
+async def _require_provider(
+    session: AsyncSession, code: PaymentProviderCode
+) -> PaymentProvider:
+    await repository.payment_providers(session)
+    row = await repository.payment_provider(session, code)
+    if row is None:  # pragma: no cover - the seeding read above just made it
+        raise NotFound("Payment provider not found")
+    return row
+
+
+async def get_payment_provider(
+    session: AsyncSession, code: PaymentProviderCode
+) -> PaymentProviderOut:
+    row = await _require_provider(session, code)
+    if session.in_transaction():
+        await session.commit()
+    return await _payments_out(session, row)
+
+
+async def update_payment_provider(
+    session: AsyncSession, code: PaymentProviderCode, data: PaymentProviderIn
+) -> PaymentProviderOut:
+    row = await _require_provider(session, code)
+    before = _payments_aud(row)
+    credentials = _decode_credentials(row)
+
+    if data.title is not None:
+        row.title = data.title
+    if data.sort_order is not None:
+        row.sort_order = data.sort_order
+    if data.logo_id is not None:
+        await _attach_logo(session, row, data.logo_id)
+    if data.credentials is not None:
+        credentials = _merge_credentials(credentials, data.credentials)
+        row.credentials, row.key_version = (
+            encrypt(json.dumps(credentials)) if credentials else (None, None)
+        )
+    elif row.credentials is not None and needs_reencryption(row.key_version or 0):
+        # Lazy rotation, free here because the row is being written anyway.
+        row.credentials, row.key_version = encrypt(
+            decrypt(row.credentials, row.key_version or 0)
+        )
+
+    if data.enabled is not None:
+        if data.enabled and not credentials:
+            raise ValidationFailed(
+                "Add the provider's credentials before switching it on",
+                field="enabled",
+            )
+        row.enabled = data.enabled
+
+    await session.commit()
+    await session.refresh(row)
+    await _purge_site_config()
+    audit_context.describe(changes=audit_context.diff(before, _payments_aud(row)))
+    logger.info("payment_provider_updated", code=row.code.value, enabled=row.enabled)
+    return await _payments_out(session, row)
+
+
+async def _attach_logo(
+    session: AsyncSession, row: PaymentProvider, new_id: uuid.UUID
+) -> None:
+    """Point the row at a file, releasing whatever it held before.
+
+    ``settings/service.py::_attach_image`` does this for branding and the order
+    matters the same way: link first, because that is the step that can still
+    refuse, and nothing has been mutated yet.
+    """
+    if row.logo_id == new_id:
+        return
+    await uploads_service.link(session, new_id, purpose=UploadPurpose.PAYMENT_LOGO)
+    if row.logo_id is not None:
+        await uploads_service.unlink(session, row.logo_id)
+    row.logo_id = new_id
+
+
+async def _purge_site_config() -> None:
+    """Drop the cached ``site-config`` after a change the site can see.
+
+    Imported here rather than at the top because ``settings`` reads this module
+    to fill ``payment_methods``, so a module-level import would close the loop —
+    the same deferral ``api/deps.py`` uses for ``current_staff``.
+    """
+    from app.modules.settings import service as settings_service
+
+    await settings_service.purge_cache()
+
+
+async def enabled_payment_methods(session: AsyncSession) -> list[dict[str, Any]]:
+    """What ``site-config`` shows (API.md §17).
+
+    Only the enabled ones, and no ``enabled`` field: the site turns this list
+    into buttons, and a disabled provider would be a button that does nothing.
+    """
+    return [
+        {
+            "code": row.code.value,
+            "title": row.title,
+            "logo_url": await uploads_service.url_for(session, row.logo_id),
+        }
+        for row in await repository.payment_providers(session)
+        if row.enabled
+    ]
+
+
+async def payment_providers(
+    session: AsyncSession,
+) -> list[ConfiguredPaymentProvider]:
+    """Every provider an adapter could actually charge through.
+
+    Like ``active_credential``, this is the only path that decrypts, and it
+    deliberately does **not** re-encrypt a row left on an older key: a read
+    that writes would take the caller's transaction with it.
+    """
+    return [
+        ConfiguredPaymentProvider(
+            code=row.code,
+            title=row.title,
+            sort_order=row.sort_order,
+            credentials=_decode_credentials(row),
+        )
+        for row in await repository.payment_providers(session)
+        if row.enabled and row.credentials
+    ]
+
+
+async def any_payment_provider_ready(session: AsyncSession) -> bool:
+    """Whether ``system/health/`` may call payments configured (API.md §39).
+
+    A database question on purpose — health must not reach the network, or
+    every poll would spend a provider's rate limit for nothing.
+    """
+    rows = await repository.payment_providers(session)
+    if session.in_transaction():
+        await session.commit()
+    return any(row.enabled and row.credentials for row in rows)
+
+
 __all__ = [
     "ActiveGtsCredential",
+    "ConfiguredPaymentProvider",
     "activate_credential",
     "active_credential",
     "create_credential",
     "delete_credential",
+    "any_payment_provider_ready",
+    "enabled_payment_methods",
     "get_credential",
+    "get_payment_provider",
     "get_smtp",
     "list_credentials",
+    "list_payment_providers",
     "notifier",
+    "payment_providers",
     "test_smtp",
     "update_credential",
+    "update_payment_provider",
     "update_smtp",
 ]

@@ -28,6 +28,11 @@ class UploadPurpose(StrEnum):
     #: sorted into place: the migration's CHECK lists these values in
     #: declaration order, so moving a member rewrites a constraint for nothing.
     AVATAR = "avatar"
+    #: A payment method's mark, shown on the site next to its button
+    #: (API.md §17, §29). Its own purpose rather than ``LOGO``: the two are
+    #: attached by different resources, and ``uploads.service.link`` takes a
+    #: purpose precisely so a brand logo cannot end up on a payment button.
+    PAYMENT_LOGO = "payment_logo"
 
 
 class Storage(Protocol):
