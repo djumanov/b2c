@@ -37,6 +37,8 @@ from app.core.security import (
     TokenType,
     decode_token,
     denylist_key,
+    is_revoked_before,
+    revoked_before_key,
 )
 from app.db.redis import get_redis
 from app.db.session import SessionDep
@@ -87,7 +89,15 @@ async def _claims_for(request: Request, expected: Audience) -> TokenClaims:
     if claims.audience is not expected:
         raise Forbidden("This token is not valid for this API surface")
 
-    if await get_redis().exists(denylist_key(claims.jti)):
+    # Two ways a token dies before its expiry, asked in one round trip: this
+    # exact token was revoked by name, or everything its subject held was ended
+    # at once (a password change, a detected refresh reuse). The second is the
+    # only one that can reach an access token, which is not stored anywhere and
+    # so cannot be named.
+    revoked_jti, revoked_before = await get_redis().mget(
+        [denylist_key(claims.jti), revoked_before_key(claims.subject_id)]
+    )
+    if revoked_jti is not None or is_revoked_before(claims, revoked_before):
         raise Unauthorized("This session has been revoked")
     return claims
 

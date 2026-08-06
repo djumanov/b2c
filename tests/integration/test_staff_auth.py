@@ -4,10 +4,13 @@ The first acceptance criterion of phase 1 is "an owner can sign in to the
 panel" (PROJECT.md §15), and this is where that claim is actually made.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.roles import Role
+from app.core.security import Audience, TokenType, create_token
 from app.modules.staff.models import Staff
 from tests.integration.conftest import PASSWORD, headers_for, make_staff
 
@@ -182,6 +185,78 @@ async def test_changing_the_password_ends_every_session(
         LOGIN, json={"login": owner.email, "password": "a-brand-new-secret"}
     )
     assert fresh.status_code == 200
+
+
+def _token_issued_a_minute_ago(staff: Staff) -> dict[str, str]:
+    """A token that is already in somebody else's hands.
+
+    Minted with an earlier `iat` on purpose: a token issued in the same second
+    as the revocation survives by design (`security.is_revoked_before`), and a
+    test that logged in and immediately changed the password would be asserting
+    against that one-second window rather than against the leak.
+    """
+    token, _ = create_token(
+        subject_id=staff.id,
+        audience=Audience.ADMIN,
+        token_type=TokenType.ACCESS,
+        role=staff.role.value,
+        now=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_changing_the_password_kills_the_access_token_too(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """Ending every session has to reach the one that is not stored anywhere.
+
+    A refresh token is a row and can be revoked by name. An access token is
+    not, so without this it would go on working for its full fifteen minutes —
+    in the hands of exactly the person the password change was a reaction to.
+    """
+    leaked = _token_issued_a_minute_ago(owner)
+    assert (await api.get(ME, headers=leaked)).status_code == 200
+
+    changed = await api.post(
+        CHANGE,
+        json={"current_password": PASSWORD, "new_password": "a-brand-new-secret"},
+        headers=headers_for(owner),
+    )
+    assert changed.status_code == 204
+
+    assert (await api.get(ME, headers=leaked)).status_code == 401
+
+
+async def test_replaying_a_revoked_refresh_kills_the_access_token_too(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """Reuse is the theft signal, so the thief's access token goes with it."""
+    leaked = _token_issued_a_minute_ago(owner)
+    first = await _login(api, owner)
+    await api.post(REFRESH, json={"refresh_token": first["refresh_token"]})
+
+    replay = await api.post(REFRESH, json={"refresh_token": first["refresh_token"]})
+    assert replay.status_code == 401
+
+    assert (await api.get(ME, headers=leaked)).status_code == 401
+
+
+async def test_a_session_opened_after_the_change_is_left_alone(
+    api: AsyncClient, owner: Staff
+) -> None:
+    """The mark ends what came before it, not what comes after."""
+    await api.post(
+        CHANGE,
+        json={"current_password": PASSWORD, "new_password": "a-brand-new-secret"},
+        headers=headers_for(owner),
+    )
+
+    tokens = await api.post(
+        LOGIN, json={"login": owner.email, "password": "a-brand-new-secret"}
+    )
+    auth = {"Authorization": f"Bearer {tokens.json()['data']['access_token']}"}
+
+    assert (await api.get(ME, headers=auth)).status_code == 200
 
 
 async def test_changing_the_password_needs_the_current_one(

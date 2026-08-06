@@ -64,6 +64,9 @@ from app.core.security import (
     denylist_ttl_for,
     hash_password,
     password_needs_rehash,
+    revoked_before_key,
+    revoked_before_ttl,
+    revoked_before_value,
     verify_password,
 )
 from app.db.mixins import utcnow
@@ -158,8 +161,22 @@ async def _revoke(token: StaffRefreshToken) -> None:
 
 
 async def _revoke_all_sessions(session: AsyncSession, staff_id: uuid.UUID) -> None:
+    """End every session this employee holds — including the access tokens.
+
+    Revoking the stored refresh tokens is only half of it. An access token is
+    never stored, so there is no row to mark and nothing to name it by; left
+    alone it keeps working for its full fifteen minutes. That is the wrong
+    answer for every caller of this function — a password change, a detected
+    refresh reuse, a blocked or deleted account — because each of them is
+    somebody deciding that whoever holds those tokens must stop now.
+    """
     for token in await repository.live_tokens_for(session, staff_id):
         await _revoke(token)
+    await get_redis().set(
+        revoked_before_key(staff_id),
+        revoked_before_value(),
+        ex=revoked_before_ttl(Audience.ADMIN),
+    )
 
 
 def _decode_refresh(token: str) -> TokenClaims:
