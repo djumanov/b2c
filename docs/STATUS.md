@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `main` = `491f6fa`
+**Oxirgi yangilanish:** 2026-08-06 · `feat/gts-credentials`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 23 ta yo'l / 31 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 10 ta + `alembic_version` |
-| Migratsiyalar | 5 ta, bitta head (`c4adf0023f38`) |
-| Testlar | 331 ta — unit 12 fayl · contract 6 · integration 10 |
+| Endpointlar | 26 ta yo'l / 37 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 11 ta + `alembic_version` |
+| Migratsiyalar | 6 ta, bitta head (`d83f397c172a`) |
+| Testlar | 355 ta — unit 13 fayl · contract 6 · integration 11 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -33,7 +33,9 @@ takrorlamaydi.
 | `admin` tokeni `owner` talab qiladigan endpointda `403` oladi | ✅ `tests/integration/test_staff_crud.py` |
 
 > Uchala mezon ham texnik jihatdan bajarildi, lekin 1-bosqichning **qamrovi**
-> hali to'liq emas: `integrations` va `customers` modullari yo'q (§3).
+> hali to'liq emas: `integrations` ning to'lov/SMTP qismi va `customers`
+> moduli yo'q (§3). **2-fazani to'sib turgan narsa endi yo'q** — GTS
+> credential'lari saqlanadi.
 
 ---
 
@@ -56,14 +58,17 @@ kontrakt testlari.
 | `uploads` | Local disk storage, purpose bo'yicha limitlar, orphan sweep | 1 + `/uploads/*` |
 | `settings` | Brending, sayt, tillar, valyutalar, features, mahsulotlar, kesh, CORS origin'lari | 7 |
 | `settings` (public) | `GET /public/site-config/` — kesh + ETag + i18n | 1 |
+| `integrations` | GTS credential'lari: ro'yxat, bittasi aktiv, shifrlangan parol | 3 |
 | `system` | health, version (setup'dan) | 2 |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+2 = 23). Operatsiyalar ko'proq:
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2 = 26). Operatsiyalar ko'proq:
 > `settings` ning yettita yo'lida 12 ta bor, chunki beshtasi `GET`+`PATCH`
-> juftligi (`products/` faqat `GET`, `cache/purge/` faqat `POST`).
+> juftligi (`products/` faqat `GET`, `cache/purge/` faqat `POST`);
+> `integrations` ning uchtasida 6 ta.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
-`branding`, `site`, `languages`, `currencies`, `features`, `product_settings`.
+`branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
+`gts_credentials`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -75,16 +80,22 @@ To'liq reja — [PHASES.md](PHASES.md). Bu yerda faqat **navbatdagi uchtasi**:
 
 | # | Bo'lak | Nega shu tartibda |
 |---|---|---|
-| 5 | **`integrations`** (PHASES.md §3) | **2-fazani to'sib turibdi** — GTS credential'lari shusiz saqlanmaydi. `app/core/crypto.py` shu yerda birinchi marta ishlatiladi; hozircha faqat testlari bor |
-| 6 | **`customers`** (PHASES.md §3) | `integrations` dan keyin: `social/google/` credential'i va SMTP o'sha yerda |
+| 5a | **`integrations`** — to'lov, SMTP, `test/` (PHASES.md §3) | 2-fazani **to'smaydi**: uni to'sib turgan GTS credential'lari qurildi |
+| 6 | **`customers`** (PHASES.md §3) | 5a dan keyin: `social/google/` credential'i va SMTP o'sha yerda |
 | 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala mezon toza baza ustida, uchidan-uchiga |
 
-Shu ikkita modul kutayotgan **koddagi aniq nuqtalar**:
+Shu bo'laklar kutayotgan **koddagi aniq nuqtalar**:
 
 - `app/modules/system/service.py:47` — `gts` va `payments` qattiq
-  `NOT_CONFIGURED`; `integrations` bilan haqiqiy bo'ladi.
+  `NOT_CONFIGURED`. `gts` uchun javob endi bor
+  (`integrations.service.active_credential`), lekin `health/` **tarmoqqa
+  chiqmasligi kerak** — har pollda GTS'ga kirish mashina akkauntini
+  rate-limit'ga olib boradi.
 - `app/modules/settings/service.py::_assemble` — `payment_methods` bo'sh
-  ro'yxat; `integrations` bilan to'ladi.
+  ro'yxat; 5a bilan to'ladi.
+- `app/modules/integrations/` — `POST /admin/integrations/gts/test/`
+  (API.md §29) hali **yozilmagan**. Probe `providers/gts/` ga tushadi va
+  2FA holatini alohida ko'rsatishi kerak (D1).
 - `app/providers/notifications/` — `smtp.py` yo'q; `log.py` o'rniga
   `__init__.py` dagi `get_notifier()` seam'i orqali qo'yiladi.
 - `app/api/deps.py::current_customer` — qatorni **yuklamaydi**;
@@ -121,6 +132,11 @@ tug'ilmasligi uchun.
 | 16 | CORS ro'yxati **har so'rovda** `site.domain` dan olinadi, faqat `https` | Starlette uni bir marta, start'da o'qiydi — bu paneldan tahrirlanadigan qiymat uchun noto'g'ri umr. `http://` domenni qabul qilish PROJECT.md §13 dan paneldan chiqib ketish yo'li bo'lardi |
 | 17 | `revoked_before` belgisi: sub'ekt bo'yicha "shu vaqtdan oldingi hamma narsa yaroqsiz". Xuddi **shu soniyada** berilgan token omon qoladi | Access token saqlanmaydi, demak `jti` bilan nomlab bo'lmaydi. Soniya oynasi ataylab: `iat` soniya aniqligida, aks holda odam o'z parolini o'zgartirgach darhol qilgan login'idan chiqib ketardi |
 | 18 | Orphan grace `updated_at` dan hisoblanadi | Fayl ikki marta orphan bo'lishi mumkin; `created_at` almashtirilgan logoni darhol o'chirardi (§5.6) |
+| 19 | `gts_credentials` da **soft delete yo'q** | O'chirilgan credential — keraksiz saqlanib qolgan client paroli. Unga hech qanday FK ishora qilmaydi, kim qachon o'chirgani audit jurnalida qoladi — ya'ni saqlashga arziydigan tarix allaqachon boshqa joyda |
+| 20 | Birinchi qo'shilgan credential **o'zi aktiv** bo'ladi | Nol qatorda "qaysi biri ishlatiladi?" degan savolning to'g'ri javobi yo'q; usiz panel saqlangan, lekin hech narsa ishlatmaydigan credential ko'rsatardi |
+| 21 | Aktiv credential'ni o'chirish — boshqasi bo'lsa `409`, yagonasi bo'lsa ruxsat | Taqiqlansa, bitta akkaunti bor client uni umuman o'chira olmaydi. Boshqasi turganda esa bu deyarli har doim noto'g'ri bosilgan tugma |
+| 22 | GTS sessiya kaliti `{credential_id}:{updated_at}` dan yasaladi | Shunda aktivni almashtirish Redis'da hech narsa qilmaydi — muqobil yechim worker'lar aro invalidatsiya masalasini tug'dirardi (ARCHITECTURE.md §7) |
+| 23 | Parol javobda **qat'iy uzunlikdagi** maska bilan qaytadi | API.md §29 API *kaliti*ning oxirgi belgilarini ko'rsatishga ruxsat beradi — ikkitasini farqlash uchun. Parolda bunday ehtiyoj yo'q, ko'rsatilgan har bir belgi esa taxmin qilinadiganidan bittaga kam |
 
 ---
 
@@ -226,7 +242,7 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 | Menyu va sahifalar modeli | 5-bosqich |
 | Saqlash muddatlari | 7-bosqich |
 | Kutilayotgan yuk | server o'lchami; D2 sababli har `offers/` GTS'ga boradi |
-| **GTS 2FA (D1)** | **2-bosqichni to'sadi** |
+| **GTS 2FA (D1)** | 2-bosqich. Kolleksiyadan aniqlandi: bu **akkaunt bayrog'i** (`two_factory`), ya'ni GTS tomonda o'chiriladi — kod masalasi emas ([GTS.md](GTS.md) §3). Yoniga ikkita band qo'shildi: `white_list` (client IP'si) va `is_single` |
 
 ---
 
@@ -267,5 +283,16 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
 10. `api/deps.py::_rate_limit_subject` refresh tokenni ham autentifikatsiyalangan
     sub'ekt deb sanaydi.
 11. `core/crypto.py` AAD ishlatmaydi — shifrmatnni bir ustundan boshqasiga
-    ko'chirishni aniqlab bo'lmaydi. `integrations` yozilayotganda ko'rib
-    chiqilsin.
+    ko'chirishni aniqlab bo'lmaydi. Ko'rib chiqildi va **ataylab qoldirildi**:
+    bugungi yagona chaqiruvchi bitta ustun (`gts_credentials.password`), ya'ni
+    ko'chiriladigan joy yo'q. To'lov va SMTP credential'lari qo'shilganda
+    (5a-bo'lak) yana ochiladi — o'shanda ham hech narsa shifrlangan bo'lmaydi,
+    demak migratsiyasiz qo'shsa bo'ladi.
+
+### 2026-08-06 — GTS credential'lari yozilayotganda topilgani
+
+12. 🟠 **`mask_secret(value, visible=0)` sirni to'liq qaytarardi.**
+    `value[-0:]` — bu `value[0:]`, ya'ni butun satr; umumiy ifoda uni o'z
+    maskasiga qo'shib qo'yardi. Hech kim hali bunday chaqirmagan edi, lekin
+    "hech narsa ko'rinmasin" degan so'rov sirni chop etishi jimgina kutib
+    turgan tuzoq. Endi alohida shox.

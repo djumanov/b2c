@@ -265,7 +265,7 @@ Batafsil asoslar — [ARCHITECTURE.md](ARCHITECTURE.md) §2.
 
 | # | Qaror |
 |---|---|
-| **D1** | GTS bilan aloqa — **o'rnatmaning o'z GTS agent akkaunti** orqali. Credential DB'da, shifrlangan. ⚠ Ochiq bog'liqlik: mashina akkaunti uchun GTS tomondagi ikki bosqichli tasdiq o'chirilishi kerak |
+| **D1** | GTS bilan aloqa — **o'rnatmaning o'z GTS agent akkaunti** orqali. Akkaunt bittadan ko'p saqlanadi, bittasi aktiv ([API.md](API.md) §29); credential DB'da, shifrlangan. ⚠ Mashina akkaunti uchun GTS tomondagi ikki bosqichli tasdiq o'chirilishi kerak — bu akkaunt bayrog'i (`two_factory`), ya'ni **GTS tomondagi sozlama** ([GTS.md](GTS.md) §3) |
 | **D2** | Qidiruv takliflari **keshlanmaydi**; qidiruv **to'liq holatsiz**. GTS `request_id` bo'yicha o'z keshini yuritadi, biz uni takrorlamaymiz — `offers/` GTS'ga passthrough qilinadi. Evaziga saralash va filtr GTS imkoniyati bilan chegaralanadi |
 | **D3** | **Bron → to'lov → avtomatik chipta.** Chipta chiqmasa — avtomatik qaytarish; qaytarish ham bajarilmasa buyurtma `needs_attention` holatiga tushadi va panelda ko'rinadi |
 | **D4** | Xarid uchun **akkaunt majburiy** — mehmon sifatida xarid yo'q |
@@ -415,8 +415,12 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 | 6 | **Kutilayotgan yuk** — bir vaqtdagi foydalanuvchilar va yiliga buyurtmalar soni | Server o'lchami va GTS'ga ketadigan so'rovlar soni (§12, D2) |
 
 **Ochiq tashqi bog'liqlik:** GTS mashina akkaunti uchun ikki bosqichli tasdiq o'chirilishi kerak
-(D1). Bu **2-bosqichni to'sib qo'yishi mumkin bo'lgan yagona narsa** va yechimi bizning
-qo'limizda emas — GTS jamoasi bilan oldindan hal qilinishi kerak.
+(D1). Yechimi bizning qo'limizda emas — GTS jamoasi bilan oldindan hal qilinishi kerak — lekin
+bu **kod emas, akkaunt sozlamasi**: `two_factory: false` ([GTS.md](GTS.md) §3). O'sha sozlamada
+yana ikkitasi o'rnatishga ta'sir qiladi: **`white_list`** — client serverining IP'si GTS tomonda
+oq ro'yxatga kiritilishi kerak, va **`is_single`** — yoqilgan bo'lsa bir vaqtda bitta sessiya,
+ya'ni o'sha akkaunt bilan GTS panelига brauzerdan kirilsa backend sessiyasi uziladi. Uchalasi
+ham o'rnatish hujjatiga tushadi (§14).
 
 ---
 

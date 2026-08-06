@@ -131,7 +131,7 @@ yupqa yig'uvchi.
 | Modul | Nimaga egalik qiladi | Izoh |
 |---|---|---|
 | `settings` | Brending, sayt, tillar, valyutalar, menyu, `features`, mahsulot ro'yxati, `site-config` yig'ilishi | Redis read-through kesh; **har qanday yozuv `site-config` keshini tozalaydi** — "logoni almashtir, deploy shart emas" shu bilan haqiqatga aylanadi |
-| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi |
+| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi. GTS credential'lari **ro'yxat**, ulardan bittasi aktiv (§10); tashqariga yagona eshik — `service.active_credential()` |
 | `cms` | 7 ta kontent resursi + publish/unpublish/reorder | Tarjimali maydonlar JSONB; public o'qish alohida "yassilovchi" serializer orqali |
 | `feedback` | Sharhlar va moderatsiya holati | `pending → accepted \| rejected` |
 | `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar | GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish |
@@ -183,12 +183,30 @@ GTS kontrakti bizning kontraktimizdan ataylab farq qiladi va **ichkariga o'tmasl
 | `{status, message, id, time, total, data}` | `{status, data, errors, meta}` | javob xaritasi |
 | **Xatoda ham HTTP 200**, manfiy kodlar bilan | To'g'ri HTTP status + xato katalogi | xato xaritasi: default `502 upstream_error`; alohida kodlar `offer_expired`, `payment_failed` ga; **asl matn `message` da, asl kod `meta.upstream` da** ([API.md](API.md) §3 talabi) |
 | `BO/PW/TI/TE/CB/VO/RF/PRF` | `booked/pending/ticketed/failed/cancelled/voided/refunded/partially_refunded` | status xaritasi, har vertikal uchun alohida |
-| Cookie sessiya, muddati tugaydi | — | sessiya menejeri: credential DB'dan deshifrlanadi, sessiya Redis'da, **qulf ostida — faqat bitta worker qayta kiradi**, 401 da bitta avtomatik takror |
+| Sessiya muddati tugaydi | — | sessiya menejeri: credential DB'dan deshifrlanadi, sessiya Redis'da, **qulf ostida — faqat bitta worker qayta kiradi**, 401 da bitta avtomatik takror |
 | Taklif va narx tuzilmasi | Bizning `offer` sxemamiz | maydon xaritasi + pul formati (`{amount, currency}`, string) |
 
 Timeout va retry [API.md](API.md) §12 bo'yicha: qidiruv 40 s, qolgani 15 s; retry **faqat `GET`**,
 2 marta, eksponensial kechikish bilan; **bron va to'lovda retry yo'q**. `X-Request-Id` tashqariga
 uzatiladi.
+
+**Qaysi credential bilan kiradi.** O'rnatmada bir nechta GTS akkaunti saqlanadi va ulardan
+bittasi aktiv ([API.md](API.md) §29); menejer uni `integrations.service.active_credential()`
+dan oladi — `models.py` ga emas, servisga murojaat qiladi (§4).
+
+Redis kaliti **credential'ning o'zidan** hisoblanadi:
+
+```
+gts:session:{credential_id}:{updated_at}      qulf: gts:session:lock:…
+```
+
+Shundan kelib chiqadigan foyda: **aktivni almashtirish Redis'da hech narsa qilmaydi.** Yangi
+kalit bo'sh bo'ladi va menejer odatdagidek, qulf ostida kiradi; eski kalit o'z TTL'i bilan
+o'ladi. Aynan shu credential paroli o'zgarsa `updated_at` ham o'zgaradi, ya'ni natija bir xil.
+Muqobil yechim — bitta `gts:session` kaliti va aktivlashtirishda uni tozalash — worker'lar aro
+invalidatsiya masalasini tug'dirardi: kim tozalaydi, commit'ga nisbatan qachon, va allaqachon
+yo'lda bo'lgan so'rov nima qiladi. Qulf ham credential bo'yicha, ya'ni ikki xil akkaunt bir-biri
+bilan raqobatlashmaydi.
 
 > `available_actions` **server tomonda** hisoblanadi — kanonik status va vertikal qoidalaridan.
 > Shunda panel ham, ilova ham biznes qoidasini UI ichida qattiq kodlamaydi.
@@ -266,9 +284,17 @@ ko'tarilganda ishga tushadi.
 - **Pul — `NUMERIC(18,2)` va alohida `currency CHAR(3)`**, hech qachon float; javobda string.
 - **Singleton sozlama jadvallari** (brending, sayt, tillar, valyutalar, `features`) — bittadan
   qator, `CHECK` bilan kafolatlanadi. Menyu — o'ziga havola qiluvchi daraxt.
-- **Sirlar** `integration_credentials` da: shifrlangan qiymat + `key_version` ustuni. Shunda
-  shifrlash kalitini **almashtirish** uchun barcha credential'larni qayta kiritish shart emas
-  ([PROJECT.md](PROJECT.md) §17 dagi risk).
+- **Sirlar** shifrlangan qiymat + `key_version` ustuni bilan saqlanadi. Shunda shifrlash
+  kalitini **almashtirish** uchun barcha credential'larni qayta kiritish shart emas
+  ([PROJECT.md](PROJECT.md) §17 dagi risk): eski kalit halqada qolgani uchun qatorlar
+  o'qiladi va keyingi yozuvda yangi kalitga o'tadi.
+- **GTS akkauntlari — `gts_credentials`**, bir nechta qator, ulardan bittasi `is_active`.
+  "Aynan bittasi" — **partial unique index** (`UNIQUE (is_active) WHERE is_active`), konvensiya
+  emas: ikki worker ikkita qatorni bir lahzada aktivlashtirishi mumkin va buni servis ko'ra
+  olmaydi. Predikat shart — usiz indeks bitta **nofaol** qatorga ham ruxsat berardi.
+  Bu jadvalda **soft delete yo'q** — [API.md](API.md) §8 default'idan ataylab qilingan istisno:
+  o'chirilgan credential keraksiz saqlanib qolgan client paroli, unga hech qanday FK ishora
+  qilmaydi, kim qachon o'chirgani esa audit jurnalida qoladi.
 - **Buyurtma va to'lov keshlanmaydi** ([API.md](API.md) §12). **Takliflar esa umuman hech qayerda
   saqlanmaydi** — na Postgres'da, na Redis'da (D2, §9).
 - Audit jurnali — faqat qo'shiladigan, `(actor, resource, created_at)` bo'yicha indeksli.

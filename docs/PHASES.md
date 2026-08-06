@@ -195,18 +195,29 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | 2 | `staff` — admin auth, rotatsiyali refresh, jamoa, birinchi owner | ✅ |
 | 3 | `audit` va `uploads` | ✅ |
 | 4 | `settings` + `site-config` | ✅ |
-| 5 | **`integrations`** (§29) | ⬜ |
+| 5 | **`integrations`** — GTS credential'lari (§29) | ✅ |
+| 5a | **`integrations`** — to'lov, SMTP, `test/` (§29) | ⬜ |
 | 6 | **`customers`** (§18–19) | ⬜ |
 | 7 | e2e qabul testi | ⬜ |
 
-**5-bo'lak — `integrations`.** 2-fazani to'sib turibdi.
+**5-bo'lak — `integrations`.** 2-fazani to'sib turgan qismi — **GTS
+credential'lari**; u shu bo'lakda bajariladi, qolgani 5a ga suriladi.
 
-- Jadvallar: `integration_configs` (`code`, `enabled`, `settings` JSONB,
-  `last_tested_at`, `last_test_ok`) va `integration_credentials` (shifrlangan
-  qiymat + **`key_version`** — [ARCHITECTURE.md](ARCHITECTURE.md) §10).
+- Jadval: `gts_credentials` — bir nechta qator, bittasi `is_active`, sir
+  shifrlangan qiymat + **`key_version`** ([ARCHITECTURE.md](ARCHITECTURE.md)
+  §10). "Aynan bittasi" partial unique index bilan kafolatlanadi.
 - `app/core/crypto.py` shu yerda **birinchi marta** ishlatiladi; hozircha faqat
-  testlari bor. Sirlar `mask_secret` bilan qaytadi, hech qachon to'liq emas.
-- Rollar: `GET` → `admin`, `PATCH` va `test/` → **`owner`** (`API.md` §29).
+  testlari bor. Sirlar maskalanib qaytadi, hech qachon to'liq emas.
+- Rollar: `GET` → `admin`, o'zgartiruvchi hamma narsa → **`owner`** (`API.md` §29).
+- 2-fazaga qoldiriladigan seam **ikkita**: `ActiveGtsCredential` dataclass va
+  `service.active_credential(session)`. Qabul mezoni — 2-faza
+  `providers/gts/client.py` va `session.py` ni qo'shadi, `integrations` ga
+  tegmaydi.
+
+**5a-bo'lak — qolgan integratsiyalar.** 2-fazani **to'smaydi**, shuning uchun
+GTS credential'laridan keyinga suriladi.
+
+- To'lov provayderlari va SMTP sozlamasi/credential'lari, uchala `test/`.
 - Ergashuvchi ikkita ish: `system/health/` dagi qattiq `NOT_CONFIGURED`
   haqiqiy holatga almashadi (`app/modules/system/service.py`), `site-config`
   ning bo'sh `payment_methods` to'ladi (`settings/service.py::_assemble`).

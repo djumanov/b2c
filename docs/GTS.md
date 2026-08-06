@@ -69,9 +69,28 @@ Ticket Company        GTS Core / Gateway       Module                Integration
   { "status": "success", "message": "Все ок.", "id": "<uuid>", "time": "...", "total": 2, "data": {} }
   ```
 
-- **Autentifikatsiya**: `POST /v1/auth/signin/` (email + parol) → ikki bosqichli tasdiq
-  `PUT /v1/auth/signin/confirm/`. Sessiya cookie orqali saqlanadi (collection'da bearer token yo'q).
-  Ba'zi ichki so'rovlarda `agent-uid` header'i uzatiladi.
+- **Autentifikatsiya**: `POST /v1/auth/signin/` (email + parol). Ikki bosqichli tasdiq
+  **yoqilgan bo'lsa** — `PUT /v1/auth/signin/confirm/` (email + kod). Ikkalasi ham bir xil
+  javob beradi:
+
+  ```json
+  { "data": { "session_key": "f771d913342bec7e9d6572ef9c8783",
+              "expired_time": "2023-07-06T15:55:06.736536",
+              "timeout_minutes": 360 } }
+  ```
+
+  Ya'ni **sessiya muddati aniq ma'lum** (odatda 6 soat) — sessiya menejeri 401 ni kutmasdan,
+  muddat bo'yicha oldindan qayta kirishi mumkin. Chiqish — `POST /v1/auth/logout/`.
+  Ba'zi so'rovlarda qo'shimcha `agent-uid` header'i uzatiladi.
+- **Ikki bosqichli tasdiq — akkaunt bayrog'i**, protokol talabi emas: akkaunt
+  `two_factory: false` / `type_factory: null` bilan yaratiladi yoki shunday o'zgartiriladi
+  (`/v1/base/root/`, `/v1/users/law/`; turlari `/v1/users/settings/type-factory/` da).
+  Mashina akkaunti uchun kerak bo'lgan narsa aynan shu ([PROJECT.md](PROJECT.md) D1) —
+  demak to'siq **GTS tomondagi sozlama**, bizning kodimizdagi ish emas.
+- Xuddi shu akkaunt sozlamasida yana ikkitasi bor va ikkalasi ham o'rnatmaga ta'sir qiladi:
+  **`white_list`** — IP oq ro'yxati (client serverining IP'si kiritilishi kerak) va
+  **`is_single`** ("Разовая авторизация") — yoqilgan bo'lsa bir vaqtda faqat bitta sessiya,
+  ya'ni o'sha akkaunt bilan GTS panelига brauzerdan kirilsa backend sessiyasi uziladi.
 
 ### Bo'limlar
 
