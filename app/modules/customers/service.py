@@ -504,7 +504,10 @@ async def authenticate_social(
             # verifies. Whoever wants one asks for a password reset, which
             # proves the same address a second time.
             password_hash="",
-            first_name=identity.first_name or email.split("@")[0],
+            # Whatever the provider gave, including nothing: the column is
+            # nullable and a name derived from the address would be a guess
+            # presented to the customer as their own name.
+            first_name=identity.first_name,
             last_name=identity.last_name,
             email_verified_at=now,
         )

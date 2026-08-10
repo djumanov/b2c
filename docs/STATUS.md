@@ -20,8 +20,8 @@ takrorlamaydi.
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
 | Endpointlar | 47 ta yo'l / 66 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 18 ta + `alembic_version` |
-| Migratsiyalar | 11 ta, bitta head (`179a9459a8fa`) |
-| Testlar | 504 ta — unit 15 fayl · contract 7 · integration 18 |
+| Migratsiyalar | 12 ta, bitta head (`3b6f21c0d4ae`) |
+| Testlar | 506 ta — unit 15 fayl · contract 7 · integration 18 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -204,6 +204,7 @@ tug'ilmasligi uchun.
 | 58 | `social/{provider}/` yo'l parametri **enum emas, satr** | Enum bo'lsa noma'lum provayder `422` bo'lardi va anonim chaqiruvchiga bizning ro'yxatimizni tasvirlardi. Tashqaridan "biz buni qo'llamaymiz" va "client buni o'chirgan" farq qilmasligi kerak — ikkalasi ham `404` |
 | 59 | ID token **lokal tekshiriladi**, Google'dan so'ralmaydi | `tokeninfo` chaqiruvi uchinchi tomonni har bir kirishning kritik yo'liga qo'yardi va ularning uzilishi bizniki bo'lardi. Google kalitlarni o'zi chop etadi va shu yo'lni tavsiya qiladi; kalitlar Redis'da keshlanadi |
 | 60 | Verifier override'i **faqat o'z provayderiga** javob beradi | Aks holda pinlangan Google verifier'i qo'llanmaydigan provayderni ishlata boshlardi va testlar hech kim yeta olmaydigan route haqida o'zlari bilan kelishib qolardi |
+| 61 | `register/` da majburiy maydon **faqat ikkitasi**: `email` va `password`; `customers.first_name` `NULL` qabul qiladi | Akkaunt — manzil va uni tasdiqlagan narsa; ism esa profil ekranining ishi (§19). Ustun `NOT NULL` qolganda ro'yxatdan o'tish yo ismni majburlardi, yo o'ylab topilgan qiymat yozardi. Shu sabab social oqim ham endi manzil boshidan ism yasamaydi: mijozga o'zi tanlamagan ism o'ziniki bo'lib ko'rinardi |
 
 ---
 

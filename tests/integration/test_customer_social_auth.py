@@ -11,7 +11,7 @@ top of it would ask for the same proof twice.
 """
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 from httpx import AsyncClient
@@ -86,6 +86,23 @@ async def test_a_new_customer_is_created_and_already_verified(
     assert created.first_name == "Aziz"
     # No password was set, and no hash can be guessed into existence.
     assert created.password_hash == ""
+
+
+async def test_a_provider_that_gives_no_name_leaves_it_empty(
+    api: AsyncClient, verifier: StandInVerifier, session: AsyncSession
+) -> None:
+    """The column is nullable since registration stopped asking for a name, so
+    there is nothing to fill the gap with — and the address's local part would
+    be shown back to the customer as if they had chosen it."""
+    assert verifier.identity is not None
+    verifier.identity = replace(verifier.identity, first_name=None, last_name=None)
+
+    status, body = await _sign_in(api)
+    assert status == 200, body
+
+    created = await session.scalar(select(Customer).where(Customer.email == EMAIL))
+    assert created is not None
+    assert created.first_name is None
 
 
 async def test_the_new_account_can_use_the_public_surface_at_once(

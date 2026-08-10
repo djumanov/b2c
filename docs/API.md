@@ -460,8 +460,10 @@ POST /public/auth/register/
 → 204
 ```
 
-`first_name` majburiy, `last_name` va `phone` ixtiyoriy. Parol uzunligi — kamida
-**8** belgi, aks holda `422 validation`.
+Majburiy maydonlar — faqat `email` va `password`; `first_name`, `last_name` va
+`phone` ixtiyoriy. Akkaunt — bu manzil va uni tasdiqlagan narsa; ism kim
+ekanligining tafsiloti va uni profil ekrani so'raydi (§19). Parol uzunligi —
+kamida **8** belgi, aks holda `422 validation`.
 
 Javob **har doim `204`**, hatto manzil allaqachon band bo'lsa ham. Aks holda bu
 endpoint kimning bizda akkaunti borligini tekshiradigan vositaga aylanardi. Band
@@ -636,6 +638,9 @@ PATCH /public/profile/
 { "first_name": "Aziz", "last_name": "Karimov",
   "phone": "+998901234567", "birth_date": "1995-04-17" }
 ```
+
+Ro'yxatdan o'tishda ism so'ralmagani uchun (§18) `first_name` ham `null` bo'lishi
+mumkin — mijoz uni shu yerda to'ldiradi.
 
 `PATCH` **faqat shu to'rtta maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
 jimgina e'tiborsiz qoldirilmaydi, aks holda panel o'zgarmagan qiymatni o'zgargandek

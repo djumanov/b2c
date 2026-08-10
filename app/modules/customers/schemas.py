@@ -27,11 +27,16 @@ OtpCode = Annotated[str, Field(min_length=OTP_LENGTH, max_length=OTP_LENGTH)]
 
 
 class RegisterIn(BaseModel):
-    """``last_name`` and ``phone`` are optional — API.md §18."""
+    """Only the address and the password are required — API.md §18.
+
+    Everything else is a detail of the person, and the account is the address
+    plus what proves it. A name the customer did not type is asked for again on
+    the profile screen, which is the place that owns it.
+    """
 
     email: EmailStr
     password: Password
-    first_name: PersonName
+    first_name: PersonName | None = None
     last_name: PersonName | None = None
     phone: Annotated[str | None, Field(max_length=32)] = None
 
@@ -107,7 +112,7 @@ class ProfileOut(BaseModel):
 
     id: uuid.UUID
     email: EmailStr
-    first_name: str
+    first_name: str | None
     last_name: str | None
     phone: str | None
     birth_date: date | None

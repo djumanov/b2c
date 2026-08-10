@@ -85,6 +85,26 @@ async def test_register_then_confirm_returns_a_token_pair(
     assert data["expires_in"] == 30 * 60
 
 
+async def test_address_and_password_are_the_whole_required_body(
+    api: AsyncClient, notifier: RecordingNotifier, session: AsyncSession
+) -> None:
+    """API.md §18: the name is optional, and absent means absent — not a
+    placeholder built out of the address."""
+    response = await api.post(REGISTER, json={"email": NEW_EMAIL, "password": PASSWORD})
+    assert response.status_code == 204, response.text
+
+    created = await session.scalar(select(Customer).where(Customer.email == NEW_EMAIL))
+    assert created is not None
+    assert created.first_name is None
+    assert created.last_name is None
+    assert created.phone is None
+
+    confirmed = await api.post(
+        CONFIRM, json={"email": NEW_EMAIL, "code": notifier.last_code}
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+
 async def test_an_unconfirmed_account_cannot_sign_in(
     api: AsyncClient, notifier: RecordingNotifier
 ) -> None:

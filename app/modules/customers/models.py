@@ -84,7 +84,10 @@ class Customer(Entity):
 
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    first_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: Nullable, like every other personal column: registration asks for the
+    #: address and the password and nothing else (API.md §18), so a row can
+    #: exist before anybody has said who they are.
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
