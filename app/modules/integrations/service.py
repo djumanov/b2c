@@ -4,10 +4,12 @@ This is the first caller of ``app/core/crypto.py``. Passwords are sealed on
 the way in and masked on the way out; the only function that hands back a
 readable password is ``active_credential``, and nothing routes to it.
 
-``active_credential`` is also the module's whole outward surface. Everything
-that talks to GTS reaches its account through that one call rather than
-through the model, which is what keeps ``providers/gts`` from importing this
-module's ``models.py`` (ARCHITECTURE.md §4).
+``active_credential`` and ``gts_base_url`` are the module's whole outward
+surface for GTS. Everything that talks to GTS reaches its account — or merely
+its address, which is all the static catalogues need — through those two calls
+rather than through the model, which is what keeps ``providers/gts`` and
+``modules/catalog`` from importing this module's ``models.py``
+(ARCHITECTURE.md §4).
 """
 
 import json
@@ -26,6 +28,7 @@ from app.db.mixins import utcnow
 from app.modules.audit import context as audit_context
 from app.modules.integrations import repository
 from app.modules.integrations.models import (
+    DEFAULT_BASE_URL,
     GtsCredential,
     PaymentProvider,
     SmtpSettings,
@@ -290,6 +293,26 @@ async def active_credential(session: AsyncSession) -> ActiveGtsCredential | None
         agent_uid=row.agent_uid,
         updated_at=row.updated_at,
     )
+
+
+async def gts_base_url(session: AsyncSession) -> str:
+    """Where GTS lives for this installation — with no account involved.
+
+    Separate from ``active_credential`` for two reasons, both of which matter
+    to the one caller that needs it: ``catalog`` reads GTS's static service,
+    which takes no credentials at all.
+
+    It **never decrypts.** A public, unauthenticated endpoint has no business
+    unsealing a password it will not send (PROJECT.md §13).
+
+    And it answers ``str``, not ``str | None``. The static service works
+    without an account, so a citizenship dropdown must not go dark on an
+    installation where nobody has saved a GTS credential yet. The URL still is
+    not hardcoded in the calling module (PROJECT.md §7) — if a row is active,
+    it is that row's.
+    """
+    row = await repository.active(session)
+    return row.base_url if row is not None else DEFAULT_BASE_URL
 
 
 # --- SMTP (API.md §29) ------------------------------------------------------------
@@ -814,6 +837,7 @@ __all__ = [
     "get_credential",
     "get_payment_provider",
     "get_smtp",
+    "gts_base_url",
     "list_credentials",
     "list_payment_providers",
     "list_social_credentials",
