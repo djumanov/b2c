@@ -37,6 +37,7 @@ emptying it, so the two happen together.
 import hashlib
 import secrets
 import uuid
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Final
 
@@ -99,7 +100,9 @@ from app.modules.customers.schemas import (
     TokenPairOut,
 )
 from app.modules.integrations import service as integrations_service
+from app.modules.settings import service as settings_service
 from app.modules.uploads import service as uploads_service
+from app.providers.notifications import html as mail_html
 from app.providers.social.base import SocialAuthError
 from app.providers.storage.base import UploadPurpose
 
@@ -255,12 +258,19 @@ async def _may_send(
     return latest is None or latest.sent_at + OTP_RESEND_COOLDOWN <= utcnow()
 
 
-async def _issue_code(
-    session: AsyncSession, customer: Customer, purpose: OtpPurpose
-) -> str:
-    """Invalidate any open code and write a fresh one. Returns the plain code."""
+async def _record_code(
+    session: AsyncSession, customer: Customer, purpose: OtpPurpose, code: str
+) -> None:
+    """Invalidate any open code and write this one down as sent.
+
+    Called *after* the message has left, never before. This row is what starts
+    the resend cooldown, so writing it for a message the relay refused would
+    leave the address unable to ask again for a minute, with nothing in the
+    inbox to wait for. For the same reason the previous code is invalidated
+    here and not earlier: until a new one has actually reached the reader, the
+    one they may already be holding is the only one they have.
+    """
     await repository.consume_open_otps(session, customer.id, purpose)
-    code = _generate_code()
     now = utcnow()
     session.add(
         EmailOtp(
@@ -271,55 +281,147 @@ async def _issue_code(
             sent_at=now,
         )
     )
-    return code
 
 
-#: Subject and body per purpose, written in Uzbek — ``i18n.DEFAULT_LANGUAGE``,
-#: the language this installation serves unless told otherwise. There is no
-#: per-customer language to pick by: the chain in API.md §7 resolves *stored*
-#: content for a request that carries a header, and a code is mailed with no
-#: request in sight. When the profile grows a language column this dict grows a
-#: second key; until then a message catalogue would be scaffolding with one
-#: language in it.
+@dataclass(frozen=True, slots=True)
+class _Message:
+    """One mail, written once and rendered twice.
+
+    The plain text and the HTML say the same sentences — they are the same
+    message, so they are written in one place rather than in two that drift.
+    Only the arrangement differs: text runs top to bottom, HTML puts the code
+    in a box with ``footnotes`` under it.
+    """
+
+    subject: str
+    heading: str
+    paragraphs: tuple[str, ...] = ()
+    footnotes: tuple[str, ...] = ()
+
+    def text(self, code: str | None = None) -> str:
+        lines = [*self.paragraphs]
+        if code is not None:
+            lines.append(f"Kod: {code}")
+        lines.extend(self.footnotes)
+        return "\n\n".join(lines)
+
+
+#: Written in Uzbek — ``i18n.DEFAULT_LANGUAGE``, the language this installation
+#: serves unless told otherwise. There is no per-customer language to pick by:
+#: the chain in API.md §7 resolves *stored* content for a request that carries a
+#: header, and a code is mailed with no request in sight. When the profile grows
+#: a language column this dict grows a second key; until then a message
+#: catalogue would be scaffolding with one language in it.
 #:
 #: The two purposes read differently on purpose. The same sentence for both
 #: would leave the reset mail unable to say the one thing that matters when it
 #: was not asked for — that ignoring it leaves the password alone.
 #:
-#: ``{code}`` and ``{minutes}`` are filled in below. Deliberately plain text: a
-#: real template lives in the adapter, and this is what a bare relay sends.
-_CODE_MESSAGES: Final[dict[OtpPurpose, tuple[str, str]]] = {
-    OtpPurpose.REGISTER: (
-        "Ro'yxatdan o'tishni tasdiqlash",
-        "Tasdiqlash kodi: {code}\n"
-        "\n"
-        "Kod {minutes} daqiqa amal qiladi.\n"
-        "Agar ro'yxatdan o'tmagan bo'lsangiz, bu xabarga e'tibor bermang.",
+#: ``{minutes}`` is filled in below.
+_CODE_MESSAGES: Final[dict[OtpPurpose, _Message]] = {
+    OtpPurpose.REGISTER: _Message(
+        subject="Ro'yxatdan o'tishni tasdiqlash",
+        heading="Ro'yxatdan o'tishni tasdiqlang",
+        paragraphs=("Quyidagi tasdiqlash kodini kiriting.",),
+        footnotes=(
+            "Kod {minutes} daqiqa amal qiladi.",
+            "Agar ro'yxatdan o'tmagan bo'lsangiz, bu xabarga e'tibor bermang.",
+        ),
     ),
-    OtpPurpose.PASSWORD_RESET: (
-        "Parolni tiklash",
-        "Parolni tiklash kodi: {code}\n"
-        "\n"
-        "Kod {minutes} daqiqa amal qiladi.\n"
-        "Agar so'rov yubormagan bo'lsangiz, bu xabarga e'tibor bermang — "
-        "parolingiz o'zgarmaydi.",
+    OtpPurpose.PASSWORD_RESET: _Message(
+        subject="Parolni tiklash",
+        heading="Parolni tiklash",
+        paragraphs=("Yangi parol o'rnatish uchun quyidagi kodni kiriting.",),
+        footnotes=(
+            "Kod {minutes} daqiqa amal qiladi.",
+            "Agar so'rov yubormagan bo'lsangiz, bu xabarga e'tibor bermang — "
+            "parolingiz o'zgarmaydi.",
+        ),
     ),
 }
+
+#: Not a code, so it has no box and no expiry — but it goes through the same
+#: shell, because it is the same installation writing to the same person.
+_EXISTING_ACCOUNT = _Message(
+    subject="Sizda allaqachon akkaunt bor",
+    heading="Sizda allaqachon akkaunt bor",
+    paragraphs=(
+        "Bu manzil bilan ro'yxatdan o'tishga urinish bo'ldi.",
+        "Sizda allaqachon akkaunt bor. Kira olmayotgan bo'lsangiz, "
+        "parolni tiklashdan foydalaning.",
+    ),
+)
+
+
+async def _send(
+    session: AsyncSession,
+    *,
+    recipient: str,
+    message: _Message,
+    code: str | None = None,
+    context: dict[str, str],
+) -> bool:
+    """Hand one message to whichever notifier this installation uses.
+
+    Which notifier depends on the SMTP settings, and the brand it is dressed in
+    depends on the branding settings — both are asked of the module that owns
+    them, never read from here (ARCHITECTURE.md §4).
+
+    ``False`` when the relay would not take the message, and **never** an
+    exception. Every caller in this module answers `204` for every address by
+    design (API.md §18), so a refused message must not become a `500`: the
+    difference between the two would tell an unauthenticated caller which
+    addresses have an account here, which is the one thing these endpoints are
+    shaped to hide. The owner is the one who needs the reason, and they get it
+    from the log line below and from `notifications/test/` (API.md §29).
+
+    Only the delivery is guarded. Reading the settings and rendering the message
+    are this installation's own doing: if those break, the request deserves to
+    fail loudly rather than quietly send nothing for every address at once.
+    """
+    notifier = await integrations_service.notifier(session)
+    html = mail_html.render(
+        brand=await settings_service.mail_brand(),
+        heading=message.heading,
+        paragraphs=message.paragraphs,
+        code=code,
+        footnotes=message.footnotes,
+    )
+    try:
+        await notifier.send(
+            recipient=recipient,
+            subject=message.subject,
+            body=message.text(code),
+            html=html,
+            context=context,
+        )
+    except Exception as exc:  # noqa: BLE001 - the reason is logged, not raised
+        logger.error(
+            "mail_send_failed",
+            purpose=context.get("purpose"),
+            recipient=recipient,
+            error=f"{type(exc).__name__}: {exc}"[:500],
+        )
+        return False
+    return True
 
 
 async def _send_code(
     session: AsyncSession, customer: Customer, purpose: OtpPurpose, code: str
-) -> None:
-    # Which notifier depends on the installation's SMTP settings, so it takes a
-    # session — a module owns that answer, not the provider package.
-    notifier = await integrations_service.notifier(session)
-    subject, template = _CODE_MESSAGES[purpose]
-    await notifier.send(
+) -> bool:
+    minutes = int(OTP_TTL.total_seconds()) // 60
+    template = _CODE_MESSAGES[purpose]
+    message = replace(
+        template,
+        footnotes=tuple(line.format(minutes=minutes) for line in template.footnotes),
+    )
+    return await _send(
+        session,
         recipient=customer.email,
-        subject=subject,
-        body=template.format(code=code, minutes=int(OTP_TTL.total_seconds()) // 60),
-        # The code also travels as a variable, because a real adapter renders a
-        # template rather than sending this plain fallback text.
+        message=message,
+        code=code,
+        # The code also travels as a variable: what the reader sees is a
+        # rendered message, so the body text is nobody's contract.
         context={
             "purpose": purpose.value,
             "customer_id": str(customer.id),
@@ -331,11 +433,17 @@ async def _send_code(
 async def _issue_and_send(
     session: AsyncSession, customer: Customer, purpose: OtpPurpose
 ) -> None:
-    """The whole cycle, cooldown included. Silent when the cooldown is not up."""
+    """The whole cycle, cooldown included. Silent when the cooldown is not up.
+
+    Generated, sent, and only then written down — the order is the point, and
+    the reason is in ``_record_code``. A relay that refuses leaves no trace but
+    a log line, so the very next attempt is free to try again.
+    """
     if not await _may_send(session, customer, purpose):
         return
-    code = await _issue_code(session, customer, purpose)
-    await _send_code(session, customer, purpose, code)
+    code = _generate_code()
+    if await _send_code(session, customer, purpose, code):
+        await _record_code(session, customer, purpose, code)
 
 
 async def _spend_code(
@@ -381,16 +489,10 @@ async def register(session: AsyncSession, data: RegisterIn) -> None:
     if existing is not None and existing.is_verified:
         # The one message that goes to somebody who did not ask for it — which
         # is the point: the address holder is the only person entitled to know.
-        notifier = await integrations_service.notifier(session)
-        await notifier.send(
+        await _send(
+            session,
             recipient=existing.email,
-            subject="Sizda allaqachon akkaunt bor",
-            body=(
-                "Bu manzil bilan ro'yxatdan o'tishga urinish bo'ldi.\n"
-                "\n"
-                "Sizda allaqachon akkaunt bor. Kira olmayotgan bo'lsangiz, "
-                "parolni tiklashdan foydalaning."
-            ),
+            message=_EXISTING_ACCOUNT,
             context={"purpose": "register_existing", "customer_id": str(existing.id)},
         )
         await session.commit()

@@ -24,8 +24,17 @@ class Notifier(Protocol):
         recipient: str,
         subject: str | None,
         body: str,
+        html: str | None = None,
         context: dict[str, Any] | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Deliver one message.
+
+        ``body`` is the message; ``html`` is the same message dressed up, and
+        an adapter that has no use for it drops it. Email sends both and lets
+        the client pick, SMS and push have nowhere to put it — which is why it
+        is optional here rather than a second method only one adapter answers.
+        """
+        ...
 
     async def verify(self) -> bool:
         """Check the configuration — behind ``integrations/notifications/test/``."""

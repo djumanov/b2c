@@ -484,6 +484,17 @@ akkaunt **hech narsa bermaydi**: `login/` unga `403` qaytaradi va tokeni bo'lmay
 Shu manzil bilan qayta ro'yxatdan o'tilsa kutayotgan kod almashtiriladi va qaytadan
 yuboriladi — ya'ni noto'g'ri terilgan manzil abadiy band bo'lib qolmaydi.
 
+**SMTP yiqilsa javob o'zgarmaydi** — baribir `204`. Xat ketmagani `502` bo'lib
+qaytsa, bu endpoint yana o'sha "bu manzilda akkaunt bormi?" savoliga javob
+beradigan vositaga aylanardi: mavjud manzil bir xil, yo'q manzil boshqa status
+olardi. Buning o'rniga xat ketmagani **kodni yozib qo'ymaydi** — ya'ni qayta
+yuborish taymeri boshlanmaydi va keyingi urinish darhol qayta harakat qiladi,
+oldingi kod (agar bo'lsa) esa amalda qoladi. Sabab `error` darajasida logga
+yoziladi (`mail_send_failed`) va `notifications/test/` (§29) orqali ko'rinadi —
+buni bilishi kerak odam owner, so'rov yuborgan mijoz emas.
+
+Xuddi shu qoida `register/resend/` va `password/reset/request/` uchun ham.
+
 ```json
 POST /public/auth/register/confirm/
 { "email": "user@mail.uz", "code": "4829" }
@@ -1457,6 +1468,13 @@ Rollar ikkita va **kodda qat'iy belgilangan** ([PROJECT.md](PROJECT.md) §9) —
 yangi rol yaratiladi, na mavjudining ruxsati o'zgartiriladi. Xodim yaratilganda yoki
 tahrirlanganda unga `owner` yoki `admin` biriktiriladi, boshqa qiymat `422 validation_error`
 beradi.
+
+`reset-password/` — owner havolani yuboradi, parolni **xodimning o'zi** tanlaydi;
+boshqa odam uchun parol o'rnatilib, keyin unga aytilmaydi. SMTP xatni qabul qilmasa
+bu endpoint `502 upstream_error` qaytaradi — §18 dagi ochiq endpointlardan farqli,
+chunki bu yerda tugmani bosgan owner javob kutib turadi va jim `204` uni ketmagan
+xatni kutishga qoldirardi. Yashiradigan narsa ham yo'q: so'rov allaqachon
+autentifikatsiyalangan.
 
 Bu bo'lim butunlay `owner` da: `admin` §5 matritsasidagi **Jamoa** guruhiga umuman kirmaydi,
 shuning uchun bu yo'llarga urinsa `403 forbidden` oladi.

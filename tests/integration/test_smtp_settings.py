@@ -4,11 +4,9 @@ The claims: a fresh installation answers with defaults rather than a 404, the
 password goes in and never comes back, and only ``owner`` may change any of it.
 """
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -21,7 +19,7 @@ from app.providers.notifications import set_notifier
 from app.providers.notifications.base import Channel
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpNotifier
-from tests.integration.conftest import headers_for
+from tests.integration.conftest import RecordingNotifier, headers_for
 
 SMTP = "/api/v1/admin/integrations/notifications/"
 
@@ -39,29 +37,8 @@ CONFIGURED: dict[str, Any] = {
 
 
 @dataclass
-class RecordingNotifier:
-    """Stands in for the relay and keeps what it was asked to send."""
-
-    channel: Channel = Channel.EMAIL
-    sent: list[dict[str, Any]] = field(default_factory=list)
-
-    async def send(
-        self,
-        *,
-        recipient: str,
-        subject: str | None,
-        body: str,
-        context: dict[str, Any] | None = None,
-    ) -> None:
-        self.sent.append({"recipient": recipient, "subject": subject, "body": body})
-
-    async def verify(self) -> bool:
-        return True
-
-
-@dataclass
 class FailingNotifier:
-    """A relay that will not have us."""
+    """A relay that will not have us. The recorder is ``conftest``'s."""
 
     channel: Channel = Channel.EMAIL
 
@@ -71,20 +48,13 @@ class FailingNotifier:
         recipient: str,
         subject: str | None,
         body: str,
+        html: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
         raise RuntimeError("authentication failed")
 
     async def verify(self) -> bool:
         return False
-
-
-@pytest.fixture
-def notifier() -> Iterator[RecordingNotifier]:
-    recorder = RecordingNotifier()
-    set_notifier(recorder)
-    yield recorder
-    set_notifier(None)
 
 
 async def _get(api: AsyncClient, staff: Staff) -> dict[str, Any]:

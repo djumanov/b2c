@@ -85,6 +85,93 @@ async def test_register_then_confirm_returns_a_token_pair(
     assert data["expires_in"] == 30 * 60
 
 
+async def test_the_code_is_mailed_as_text_and_as_html(
+    api: AsyncClient, notifier: RecordingNotifier
+) -> None:
+    """Both parts carry it: a client that cannot render HTML still gets in."""
+    await _register(api)
+    sent = notifier.sent[-1]
+
+    assert notifier.last_code in sent["body"]
+    assert notifier.last_code in sent["html"]
+    assert sent["html"].startswith("<!doctype html>")
+
+
+async def test_a_relay_that_refuses_still_answers_204(
+    api: AsyncClient, notifier: RecordingNotifier
+) -> None:
+    """API.md §18: `204` for every address, whatever the relay did.
+
+    A `500` here would answer "does this address have an account?" — the taken
+    branch mails a notice and the free branch mails a code, so a broken relay
+    would fail both, but any future difference between them becomes an oracle.
+    The reason belongs in the log, not in the status.
+    """
+    notifier.fails_with = RuntimeError("relay refused the message")
+
+    response = await api.post(REGISTER, json={"email": NEW_EMAIL, "password": PASSWORD})
+
+    assert response.status_code == 204, response.text
+
+
+async def test_a_refused_code_does_not_burn_the_resend_cooldown(
+    api: AsyncClient, notifier: RecordingNotifier, session: AsyncSession
+) -> None:
+    """The cooldown counts messages that went out, not attempts.
+
+    A code written down for a message the relay refused would leave the address
+    waiting a minute with an empty inbox — the account exists, so the request
+    cannot simply be retried into a fresh one either.
+    """
+    notifier.fails_with = RuntimeError("relay refused the message")
+    assert (
+        await api.post(REGISTER, json={"email": NEW_EMAIL, "password": PASSWORD})
+    ).status_code == 204
+    assert notifier.sent == []
+    # Nothing was written down, so nothing is waiting to expire.
+    assert await session.scalar(select(EmailOtp).limit(1)) is None
+
+    notifier.fails_with = None
+    assert (await api.post(RESEND, json={"email": NEW_EMAIL})).status_code == 204
+
+    # The very next attempt delivers, and the code it delivered is the live one.
+    assert notifier.sent[-1]["recipient"] == NEW_EMAIL
+    confirmed = await api.post(
+        CONFIRM, json={"email": NEW_EMAIL, "code": notifier.last_code}
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+
+async def test_a_refused_code_leaves_the_previous_one_alive(
+    api: AsyncClient, notifier: RecordingNotifier, session: AsyncSession
+) -> None:
+    """Until a new code reaches the reader, the one they hold is all they have."""
+    await _register(api)
+    first_code = notifier.last_code
+    await _expire_cooldown(session, NEW_EMAIL)
+
+    notifier.fails_with = RuntimeError("relay refused the message")
+    assert (await api.post(RESEND, json={"email": NEW_EMAIL})).status_code == 204
+
+    confirmed = await api.post(CONFIRM, json={"email": NEW_EMAIL, "code": first_code})
+    assert confirmed.status_code == 200, confirmed.text
+
+
+async def test_a_refused_reset_code_is_answered_the_same_way(
+    api: AsyncClient, notifier: RecordingNotifier, session: AsyncSession
+) -> None:
+    """§18 again: an unknown address gets `204` in silence, so a known one whose
+    mail was refused must not get anything louder."""
+    customer = await make_customer(session)
+    notifier.fails_with = RuntimeError("relay refused the message")
+
+    response = await api.post(
+        "/api/v1/public/auth/password/reset/request/", json={"email": customer.email}
+    )
+
+    assert response.status_code == 204, response.text
+
+
 async def test_address_and_password_are_the_whole_required_body(
     api: AsyncClient, notifier: RecordingNotifier, session: AsyncSession
 ) -> None:

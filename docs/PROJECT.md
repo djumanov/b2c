@@ -164,6 +164,14 @@ saqlanadi va paneldan boshqariladi. Credential va kalitlar shifrlangan holda.
 Natija: client logoni yoki to'lov provayderini o'zgartirsa, **qayta deploy kerak emas**.
 Faqat infratuzilma parametrlari env'da qoladi: DB ulanishi, Redis, shifrlash kaliti, log darajasi.
 
+**Ikkita istisno — "urug'" (seed), sozlama emas.** `FIRST_OWNER_*` va `SMTP_*`
+env'da turadi, lekin ular **bo'sh bazaning birinchi ko'tarilishida bir marta**
+o'qiladi (§14). Sababi oddiy: bo'sh o'rnatmada panelga kiradigan odam ham yo'q,
+kirish kodini yuboradigan relay ham yo'q. Qator to'ldirilgach — birinchi
+bootstrap'dan keyin yoki paneldan yozilgach — env boshqa hech qachon
+o'qilmaydi, ya'ni keyin tahrirlangan `.env` client tanlagan sozlamani jimgina
+almashtirib qo'ymaydi. Sozlamaning o'zi baribir DB'da va paneldan boshqariladi.
+
 **Chegara aniq bo'lishi shart.** Aks holda client panelda rangni o'zgartiradi-yu, natija
 ko'rinmaydi. Quyidagi jadval — shu ajratmaning yakuniy ro'yxati:
 
@@ -351,10 +359,13 @@ O'rnatmani **client o'zi boshqaradi** (D10). Biz artefakt va hujjat beramiz.
 
 Docker Compose bilan ko'tariladi: `api`, `worker`, `beat`, `postgres`, `redis`, reverse proxy.
 Konteyner ishga tushganda **migratsiya avtomatik bajariladi**, so'ng **faqat birinchi marta**
-env'dagi ma'lumotdan birinchi `owner` foydalanuvchisi yaratiladi.
+env'dagi ma'lumotdan birinchi `owner` foydalanuvchisi yaratiladi va SMTP relay'i
+sozlanadi (`SMTP_*`, §7 dagi "urug'" qoidasi). Ikkalasi ham har ko'tarilishda
+ishlaydi va birinchisidan boshqa hech qachon hech narsa o'zgartirmaydi — SMTP
+qatorida `host` bo'lsa, unga tegilmaydi.
 
 Env'da faqat infratuzilma: DB ulanishi, Redis ulanishi, JWT kaliti, **shifrlash kaliti**,
-log darajasi, birinchi owner ma'lumoti. Boshqa hamma narsa — paneldan.
+log darajasi va ikkita urug' (birinchi owner, SMTP). Boshqa hamma narsa — paneldan.
 
 ### Yangilash
 

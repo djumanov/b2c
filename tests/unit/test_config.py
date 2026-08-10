@@ -15,6 +15,28 @@ from app.core.config import PLACEHOLDERS, Settings
 #: here rather than each carrying a secret of its own.
 DEV = {"debug": True}
 
+#: The **seeds**: read once, on the first boot of an empty database, and never
+#: again (PROJECT.md §14). They are the exception the rule needs to survive its
+#: own first morning — an installation with nothing in it has nobody to sign in
+#: and no relay to mail the code that signing in needs. Every one of them is
+#: still a database setting: ``integrations.service.bootstrap_smtp`` refuses to
+#: touch a row that has been configured, so the panel always wins.
+#:
+#: Listed separately from ``ALLOWED_FIELDS`` so that adding to this set is a
+#: visible decision rather than a line lost in an alphabetical list.
+SEED_FIELDS = {
+    "first_owner_email",
+    "first_owner_password",
+    "first_owner_name",
+    "smtp_host",
+    "smtp_port",
+    "smtp_tls",
+    "smtp_username",
+    "smtp_password",
+    "smtp_from",
+    "smtp_from_name",
+}
+
 #: Every field ``Settings`` is allowed to have. Infrastructure only.
 ALLOWED_FIELDS = {
     "debug",
@@ -31,10 +53,7 @@ ALLOWED_FIELDS = {
     "jwt_secret_key",
     "encryption_keys",
     "encryption_key_version",
-    "first_owner_email",
-    "first_owner_password",
-    "first_owner_name",
-}
+} | SEED_FIELDS
 
 
 def test_settings_holds_infrastructure_only() -> None:
@@ -47,10 +66,14 @@ def test_settings_holds_infrastructure_only() -> None:
 
 
 def test_no_branding_or_credential_fields_leaked_in() -> None:
-    """A blunter version of the same rule, by keyword."""
+    """A blunter version of the same rule, by keyword.
+
+    The seeds are exempt by name, not by keyword: a new ``smtp_*`` field that
+    nobody added to ``SEED_FIELDS`` still fails here, which is the point.
+    """
     forbidden = ("logo", "color", "brand", "domain", "timezone", "cors", "gts", "smtp")
 
-    for field in Settings.model_fields:
+    for field in set(Settings.model_fields) - SEED_FIELDS:
         assert not any(word in field for word in forbidden), field
 
 

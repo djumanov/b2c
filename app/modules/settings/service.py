@@ -39,6 +39,7 @@ from app.modules.settings.schemas import (
     SiteOut,
 )
 from app.modules.uploads import service as uploads_service
+from app.providers.notifications.html import DEFAULT_PRIMARY, MailBrand
 from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
@@ -378,43 +379,73 @@ def _origins_for(domain: str | None) -> list[str]:
     return origins
 
 
-async def cors_origins() -> list[str]:
-    """Which origins the browser surfaces may be called from.
+async def _document() -> dict[str, Any]:
+    """The ``site-config`` document, without a session to read it with.
 
-    A **database setting**, not an environment variable: the client owns their
-    domain and changes it from the panel, with no deploy (PROJECT.md §7). It is
-    read through the ``site-config`` cache, which every settings write purges —
-    so a domain change takes effect on the next request rather than on the next
-    restart, which is the whole point.
+    For callers that are not handling a request of their own — a dependency, a
+    mail being sent — and so have no session to pass. One Redis GET on the
+    common path; on a miss it opens a session, assembles and caches. Every
+    settings write purges the same key, so a change lands on the next read
+    rather than on the next restart.
     """
     document = await cache.read()
     if document is None:
         async with get_sessionmaker()() as session:
             document = await _assemble(session)
         await cache.write(document)
-    domain: str | None = document["site"]["domain"]
+    return document
+
+
+async def cors_origins() -> list[str]:
+    """Which origins the browser surfaces may be called from.
+
+    A **database setting**, not an environment variable: the client owns their
+    domain and changes it from the panel, with no deploy (PROJECT.md §7).
+    """
+    domain: str | None = (await _document())["site"]["domain"]
     return _origins_for(domain)
 
 
 async def feature_enabled(flag: str) -> bool:
     """Is this section switched on for this installation? (API.md §28)
 
-    Session-less, for the same reason as ``cors_origins`` above: it is called
-    from a dependency on nearly every request, and it reads through the same
-    ``site-config`` cache that every settings write purges. So switching a
-    section off takes effect on the next request, not on the next restart —
-    one Redis GET, and no second source of truth to keep in step.
-
     An unknown flag reads as its default rather than raising: the caller is
     ``RequireFeature``, which already refused unknown flags at import.
     """
-    document = await cache.read()
-    if document is None:
-        async with get_sessionmaker()() as session:
-            document = await _assemble(session)
-        await cache.write(document)
-    flags: dict[str, bool] = document["features"]
+    flags: dict[str, bool] = (await _document())["features"]
     return bool(flags.get(flag, defaults.FEATURE_DEFAULTS.get(flag, False)))
+
+
+async def mail_brand() -> MailBrand:
+    """How this installation signs the mail it sends (`providers.notifications`).
+
+    Here rather than in the sending modules because this is the module that
+    owns branding: `customers` and `staff` ask for the answer instead of
+    reading `Branding` themselves (ARCHITECTURE.md §4). Session-less like the
+    two above — a code is mailed from inside a transaction that is about
+    something else, and this must not join it.
+
+    The logo is made absolute here for the same reason the storage adapter
+    leaves it relative: the domain is a setting, and this is where settings
+    live. Without a domain there is no logo to send, and the name stands in.
+    """
+    document = await _document()
+    languages = document["languages"]
+    name = i18n.resolve_value(
+        document["site"]["name"],
+        requested=None,
+        default=languages["default"],
+        available=languages["available"],
+    )
+    branding = document["branding"]
+    colors: dict[str, str] = branding["colors"] or {}
+    origins = _origins_for(document["site"]["domain"])
+    logo: str | None = branding["logo_url"]
+    return MailBrand(
+        name=name or "",
+        primary=colors.get("primary") or DEFAULT_PRIMARY,
+        logo_url=f"{origins[0]}{logo}" if logo and origins else None,
+    )
 
 
 async def purge_cache() -> None:
@@ -436,6 +467,7 @@ __all__ = [
     "get_languages",
     "get_products",
     "get_site",
+    "mail_brand",
     "purge_cache",
     "site_config",
     "update_branding",

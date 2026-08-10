@@ -5,58 +5,21 @@ link is issued once, spends itself on use, and never tells an anonymous caller
 whether an address belongs to anybody.
 """
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
-from typing import Any
-
-import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.roles import Role
 from app.modules.staff.models import Staff
-from app.providers.notifications import set_notifier
-from app.providers.notifications.base import Channel
-from tests.integration.conftest import PASSWORD, headers_for, make_staff
+from tests.integration.conftest import (
+    PASSWORD,
+    RecordingNotifier,
+    headers_for,
+    make_staff,
+)
 
 REQUEST = "/api/v1/admin/auth/password/reset/request/"
 CONFIRM = "/api/v1/admin/auth/password/reset/confirm/"
 LOGIN = "/api/v1/admin/auth/login/"
-
-
-@dataclass
-class RecordingNotifier:
-    """Stands in for SMTP and keeps what it was asked to send."""
-
-    channel: Channel = Channel.EMAIL
-    sent: list[dict[str, Any]] = field(default_factory=list)
-
-    async def send(
-        self,
-        *,
-        recipient: str,
-        subject: str | None,
-        body: str,
-        context: dict[str, Any] | None = None,
-    ) -> None:
-        self.sent.append(
-            {"recipient": recipient, "body": body, "context": context or {}}
-        )
-
-    async def verify(self) -> bool:
-        return True
-
-    @property
-    def last_token(self) -> str:
-        return str(self.sent[-1]["context"]["token"])
-
-
-@pytest.fixture
-def notifier() -> Iterator[RecordingNotifier]:
-    recorder = RecordingNotifier()
-    set_notifier(recorder)
-    yield recorder
-    set_notifier(None)
 
 
 async def test_the_link_sets_a_new_password_and_is_spent(
@@ -117,6 +80,53 @@ async def test_the_owner_can_send_an_employee_a_link(
 
     assert response.status_code == 204
     assert notifier.sent[-1]["recipient"] == employee.email
+
+
+async def test_a_relay_that_refuses_keeps_the_request_silent(
+    api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    """Still 204: the endpoint is unauthenticated, so a `502` for a real address
+    and a `204` for an invented one would be the enumeration this hides."""
+    notifier.fails_with = RuntimeError("relay refused the message")
+
+    response = await api.post(REQUEST, json={"email": owner.email})
+
+    assert response.status_code == 204
+
+
+async def test_a_refused_link_leaves_no_working_token(
+    api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    """The token is written down only once the message has gone, so a refused
+    one is not a live reset token sitting in Redis with nobody holding it."""
+    notifier.fails_with = RuntimeError("relay refused the message")
+    assert (await api.post(REQUEST, json={"email": owner.email})).status_code == 204
+
+    notifier.fails_with = None
+    assert (await api.post(REQUEST, json={"email": owner.email})).status_code == 204
+
+    # The delivered link is the only one that works.
+    confirmed = await api.post(
+        CONFIRM, json={"token": notifier.last_token, "new_password": PASSWORD}
+    )
+    assert confirmed.status_code == 204, confirmed.text
+
+
+async def test_the_owner_is_told_when_the_relay_refuses(
+    api: AsyncClient, session: AsyncSession, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    """The one caller that hears about it: somebody pressed the button and is
+    waiting to know whether the employee can expect a mail (API.md §38)."""
+    employee = await make_staff(session, email="aziz@example.uz", role=Role.ADMIN)
+    notifier.fails_with = RuntimeError("relay refused the message")
+
+    response = await api.post(
+        f"/api/v1/admin/staff/{employee.id}/reset-password/",
+        headers=headers_for(owner),
+    )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["errors"][0]["code"] == "upstream_error"
 
 
 async def test_a_blocked_employee_gets_no_link(

@@ -5,7 +5,14 @@ typed field on ``Settings``. Import the ``settings`` singleton everywhere;
 never call ``os.getenv``. ``.env.sample`` documents each variable.
 
 **What may live here.** Database, Redis, the JWT secret, the encryption keys,
-the log level and the first-owner bootstrap. Nothing else.
+the log level, and the two **first-boot** seeds — the first owner and the SMTP
+relay. Nothing else.
+
+A seed is not a setting. It is read once, on an installation that has nothing
+in the row yet, and never again: the moment the panel writes SMTP settings the
+environment stops being consulted, so the client still owns the value and a
+changed ``.env`` cannot silently overwrite what they chose. Without it a fresh
+database has no way to send the code that its own first sign-in needs.
 
 Everything a client could want different — branding, languages, currencies,
 timezone, allowed CORS origins, GTS and payment credentials, SMTP — is stored
@@ -78,6 +85,17 @@ class Settings(BaseSettings):
     first_owner_email: str = ""
     first_owner_password: str = ""
     first_owner_name: str = "Owner"
+
+    # --- SMTP seed (same rule: first boot only, panel owns it afterwards) ---
+    # ``SMTP_HOST`` and ``SMTP_FROM`` together are what make the seed run at
+    # all; the rest only matter once it does.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_tls: str = "starttls"
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_from_name: str = ""
 
     @field_validator("log_level")
     @classmethod

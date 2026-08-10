@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import Conflict, NotFound, ValidationFailed
+from app.core.config import settings
 from app.core.crypto import decrypt, encrypt, mask_secret, needs_reencryption
 from app.core.logging import get_logger
 from app.db.mixins import utcnow
@@ -33,6 +34,7 @@ from app.modules.integrations.models import (
     PaymentProvider,
     SmtpSettings,
     SocialCredential,
+    TlsMode,
 )
 from app.modules.integrations.schemas import (
     CredentialCreateIn,
@@ -475,6 +477,54 @@ async def test_smtp(
     return SmtpTestOut(ok=ok, detail=detail, tested_at=row.last_tested_at)
 
 
+async def bootstrap_smtp(session: AsyncSession) -> SmtpSettings | None:
+    """Fill the relay in from the environment — first boot only (PROJECT.md §14).
+
+    ``None`` when it was a no-op, which is the usual case: the same rule as
+    ``staff.create_first_owner``, and for the same reason. An installation with
+    an empty database cannot send the code its own first sign-in needs, and
+    there is nobody signed in yet to type one into the panel — so the very
+    first configuration comes from ``.env``, once.
+
+    **Once** is the whole design. As soon as the row has a host, somebody has
+    configured this installation and the environment is never consulted again:
+    a ``.env`` edited months later must not quietly replace what the client
+    chose from the panel. The setting still lives in the database (PROJECT.md
+    §7); this only decides what is in it on the first morning.
+    """
+    if not settings.smtp_host or not settings.smtp_from:
+        logger.info("smtp_seed_skipped", reason="SMTP_HOST/SMTP_FROM not set")
+        return None
+
+    row = await repository.smtp(session)
+    if row.host:
+        logger.info("smtp_seed_skipped", reason="already configured")
+        return None
+
+    try:
+        tls = TlsMode(settings.smtp_tls.strip().lower())
+    except ValueError:
+        # Not fatal: mail with the wrong TLS mode fails at the relay, mail with
+        # none of it configured fails silently, and the second is worse.
+        logger.warning("smtp_seed_bad_tls", value=settings.smtp_tls)
+        tls = TlsMode.STARTTLS
+
+    row.host = settings.smtp_host.strip()
+    row.port = settings.smtp_port
+    row.tls = tls
+    row.username = settings.smtp_username.strip() or None
+    row.from_address = settings.smtp_from.strip()
+    row.from_name = settings.smtp_from_name.strip() or None
+    if settings.smtp_password:
+        row.password, row.key_version = encrypt(settings.smtp_password)
+    row.enabled = True
+
+    await session.commit()
+    await session.refresh(row)
+    logger.info("smtp_seeded", host=row.host, from_address=row.from_address)
+    return row
+
+
 # --- payment providers (API.md §29) ---------------------------------------------------
 
 
@@ -833,6 +883,7 @@ __all__ = [
     "create_credential",
     "delete_credential",
     "any_payment_provider_ready",
+    "bootstrap_smtp",
     "enabled_payment_methods",
     "get_credential",
     "get_payment_provider",

@@ -101,12 +101,19 @@ class SmtpNotifier:
             client.login(config.username, config.password or "")
         return client
 
-    def _deliver(self, recipient: str, subject: str | None, body: str) -> None:
+    def _deliver(
+        self, recipient: str, subject: str | None, body: str, html: str | None
+    ) -> None:
         message = EmailMessage()
         message["From"] = self._config.sender
         message["To"] = recipient
         message["Subject"] = subject or ""
         message.set_content(body)
+        if html is not None:
+            # ``multipart/alternative``, plain part first: a client that cannot
+            # render HTML — or a person who has turned it off — still gets the
+            # code. ``add_alternative`` is what turns the message into one.
+            message.add_alternative(html, subtype="html")
 
         client = self._connect()
         try:
@@ -120,9 +127,10 @@ class SmtpNotifier:
         recipient: str,
         subject: str | None,
         body: str,
+        html: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        await asyncio.to_thread(self._deliver, recipient, subject, body)
+        await asyncio.to_thread(self._deliver, recipient, subject, body, html)
         logger.info(
             "notification_sent", channel=self.channel.value, recipient=recipient
         )

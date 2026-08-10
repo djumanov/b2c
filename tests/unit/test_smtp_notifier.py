@@ -104,6 +104,38 @@ async def test_a_message_carries_the_configured_sender() -> None:
     assert message["Subject"] == "Test message"
 
 
+async def test_a_message_with_no_html_stays_plain_text() -> None:
+    client = _client()
+    with patch("smtplib.SMTP", return_value=client):
+        await SmtpNotifier(CONFIG).send(
+            recipient="agent@brand.uz", subject="Test message", body="hello"
+        )
+
+    message = client.send_message.call_args.args[0]
+    assert not message.is_multipart()
+    assert message.get_content_type() == "text/plain"
+
+
+async def test_html_travels_beside_the_text_not_instead_of_it() -> None:
+    """The plain part is what a client that cannot render HTML falls back to."""
+    client = _client()
+    with patch("smtplib.SMTP", return_value=client):
+        await SmtpNotifier(CONFIG).send(
+            recipient="agent@brand.uz",
+            subject="Kod",
+            body="Kod: 1234",
+            html="<p>Kod: 1234</p>",
+        )
+
+    message = client.send_message.call_args.args[0]
+    assert message.get_content_type() == "multipart/alternative"
+    parts = [part.get_content_type() for part in message.iter_parts()]  # type: ignore[attr-defined]
+    # Plain first: a client picks the last part it understands.
+    assert parts == ["text/plain", "text/html"]
+    assert "1234" in message.get_body(("plain",)).get_content()  # type: ignore[union-attr]
+    assert "<p>" in message.get_body(("html",)).get_content()  # type: ignore[union-attr]
+
+
 async def test_the_sender_is_the_bare_address_when_no_name_is_set() -> None:
     nameless = SmtpConfig(**{**_as_dict(CONFIG), "from_name": None})
     assert nameless.sender == "no-reply@brand.uz"

@@ -30,6 +30,7 @@ class LogNotifier:
         recipient: str,
         subject: str | None,
         body: str,
+        html: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
         logger.info(

@@ -38,6 +38,7 @@ from app.api.errors import (
     Forbidden,
     NotFound,
     Unauthorized,
+    UpstreamError,
     ValidationFailed,
 )
 from app.api.listing import (
@@ -75,6 +76,10 @@ from app.db.repository import live
 from app.modules.audit import context as audit_context
 from app.modules.audit import service as audit_service
 from app.modules.integrations import service as integrations_service
+
+# ``settings`` is already the config object from ``app.core.config`` here, so
+# the module that owns the site's own settings comes in under its full name.
+from app.modules.settings import service as site_settings
 from app.modules.staff import repository
 from app.modules.staff.models import Staff, StaffRefreshToken
 from app.modules.staff.schemas import (
@@ -86,6 +91,7 @@ from app.modules.staff.schemas import (
     StaffUpdateIn,
     TokenPairOut,
 )
+from app.providers.notifications import html as mail_html
 
 logger = get_logger(__name__)
 
@@ -348,28 +354,58 @@ def _reset_key(token: str) -> str:
     return f"{_RESET_PREFIX}:{digest}"
 
 
-async def _send_reset_link(session: AsyncSession, staff: Staff) -> None:
+async def _send_reset_link(session: AsyncSession, staff: Staff) -> bool:
+    """Mail a reset code. ``False`` when the relay would not take it.
+
+    Never raises, because the two callers need opposite things from a failure.
+    ``request_password_reset`` is unauthenticated and answers `204` for every
+    address on purpose, so a `500` there would say which addresses belong to an
+    employee; the owner-only endpoint turns the ``False`` into a `502` instead,
+    because somebody is waiting to hear whether the link went out.
+
+    The token reaches Redis only once the message has gone. A key written for a
+    message that never left is a working reset token that nobody can use.
+    """
     token = secrets.token_urlsafe(32)
-    await get_redis().set(_reset_key(token), str(staff.id), ex=RESET_TOKEN_TTL_SECONDS)
-    # Which notifier depends on the installation's SMTP settings, so it takes a
-    # session — a module owns that answer, not the provider package.
+    # Which notifier depends on the installation's SMTP settings and which
+    # brand it wears on the branding ones, so both are asked of the module that
+    # owns them rather than read from here (ARCHITECTURE.md §4).
     notifier = await integrations_service.notifier(session)
-    await notifier.send(
-        recipient=staff.email,
-        subject="Password reset",
-        body=(
-            "A password reset was requested for your account. "
-            f"Use this code to set a new password: {token}\n"
-            f"It expires in {RESET_TOKEN_TTL_SECONDS // 60} minutes."
-        ),
-        # The token also travels as a variable, because a real adapter renders
-        # a template rather than sending this plain fallback text.
-        context={
-            "purpose": "staff_password_reset",
-            "staff_id": str(staff.id),
-            "token": token,
-        },
+    minutes = RESET_TOKEN_TTL_SECONDS // 60
+    intro = "A password reset was requested for your account."
+    expiry = f"This code expires in {minutes} minutes."
+    html = mail_html.render(
+        brand=await site_settings.mail_brand(),
+        heading="Password reset",
+        paragraphs=(intro, "Use this code to set a new password:"),
+        code=token,
+        footnotes=(expiry,),
     )
+    try:
+        await notifier.send(
+            recipient=staff.email,
+            subject="Password reset",
+            body=f"{intro}\n\nUse this code to set a new password: {token}\n{expiry}",
+            html=html,
+            # The token also travels as a variable: what the reader sees is a
+            # rendered message, so the body text is nobody's contract.
+            context={
+                "purpose": "staff_password_reset",
+                "staff_id": str(staff.id),
+                "token": token,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - the reason is logged, not raised
+        logger.error(
+            "mail_send_failed",
+            purpose="staff_password_reset",
+            recipient=staff.email,
+            error=f"{type(exc).__name__}: {exc}"[:500],
+        )
+        return False
+
+    await get_redis().set(_reset_key(token), str(staff.id), ex=RESET_TOKEN_TTL_SECONDS)
+    return True
 
 
 async def request_password_reset(session: AsyncSession, email: str) -> None:
@@ -541,9 +577,15 @@ async def block_staff(
 async def send_reset_password_link(session: AsyncSession, staff_id: uuid.UUID) -> None:
     """``POST /admin/staff/{id}/reset-password/`` — the owner sends the link,
     the employee chooses the password. No password is ever set for somebody
-    else and then read out to them."""
+    else and then read out to them.
+
+    The one caller that is told when the relay refuses: an owner who pressed
+    this button is waiting to hear whether the employee can expect a mail, and
+    a silent `204` would have them wait for one that never left.
+    """
     staff = await _require(session, staff_id)
-    await _send_reset_link(session, staff)
+    if not await _send_reset_link(session, staff):
+        raise UpstreamError("The mail relay would not take the reset link")
 
 
 # --- first boot -------------------------------------------------------------------

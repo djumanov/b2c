@@ -20,7 +20,9 @@ fon vazifalari va tashqi tizimlar bilan ishlash tartibi.
 
 Brending, sayt sozlamalari, to'lov va GTS credential'lari — hammasi DB'da, shifrlangan, paneldan
 boshqariladi va qayta deploy talab qilmaydi. Env'da faqat infratuzilma qoladi: DB ulanishi, Redis,
-shifrlash kaliti, log darajasi.
+shifrlash kaliti, log darajasi — va bo'sh bazani bir marta yo'lga soladigan ikkita **urug'**
+(`FIRST_OWNER_*`, `SMTP_*`), ular qator to'lgach boshqa o'qilmaydi
+([PROJECT.md](PROJECT.md) §7).
 
 Bu qoida buzilsa o'rnatmalar bir-biridan uzoqlashadi va bitta clientga qilingan tuzatish
 boshqalariga yetib bormaydi. **Quyidagi har bir qaror shu mezon bo'yicha tekshirilgan.**
@@ -83,7 +85,7 @@ app/
     middleware.py          # X-Request-Id, so'rov jurnali, CORS manbalari
     openapi.py             # OpenAPI artefaktini envelope bo'yicha qayta yig'ish
   core/
-    config.py              # FAQAT env: DB, Redis, shifrlash kaliti, log darajasi
+    config.py              # FAQAT env: DB, Redis, shifrlash kaliti, log darajasi, urug'lar
     security.py            # JWT, argon2, refresh rotatsiyasi, jti qora ro'yxati
     roles.py               # ikkita rol va ular orasidagi ierarxiya (owner ⊃ admin)
     crypto.py              # DB'dagi sirlar uchun AES-GCM shifrlash
@@ -365,13 +367,15 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 | Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash va katalog yangilash uchun beat kerak |
 | Kesh / broker | Redis | `site-config`, statik kataloglar, idempotency, GTS sessiyasi, rate limit, Celery brokeri. **Qidiruv uchun emas** (D2, §9) |
 | To'lov | `PaymentProvider` porti + Payme, Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Keyinchalik Paygine = bitta adapter va karta/OTP yo'llarini ulash |
-| Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi. **Qaysi adapter ishlatilishini `integrations.service.notifier(session)` hal qiladi** — sozlama DB'da, ya'ni javob modulniki, provayderniki emas (§4). `providers/notifications` da faqat `set_notifier` override'i qoladi |
+| Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi. **Qaysi adapter ishlatilishini `integrations.service.notifier(session)` hal qiladi** — sozlama DB'da, ya'ni javob modulniki, provayderniki emas (§4). `providers/notifications` da faqat `set_notifier` override'i va `html.render` qobig'i qoladi. Portning `send` metodi `html` ni ham oladi: email uni matn bilan yonma-yon (`multipart/alternative`) yuboradi, SMS/push esa tashlab yuboradi — shuning uchun u ikkinchi metod emas, ixtiyoriy argument. Brend qiymatlari `settings.service.mail_brand()` dan **argument sifatida** beriladi, chunki provayder modulni import qilmaydi (§4) |
 | Fayl saqlash | `Storage` porti + lokal disk adapteri | Bitta serverli o'rnatma; Docker volume — zaxira birligi. Client xohlasa S3 shunchaki adapter almashtirish |
 | **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa ikkita va [API.md](API.md) §5 da qat'iy belgilangan |
 
 **Yetkazib berish:** Docker Compose — `api`, `worker`, `beat`, `postgres`, `redis`, reverse proxy.
 Entrypoint `alembic upgrade head` ni bajaradi, so'ng **faqat birinchi ko'tarilishda** env'dan
-birinchi `owner` ni yaratadi. Postgres va yuklangan fayllar uchun volume.
+birinchi `owner` ni yaratadi va SMTP relay'ini sozlaydi
+(`integrations.service.bootstrap_smtp`, [PROJECT.md](PROJECT.md) §7 dagi urug'
+qoidasi). Postgres va yuklangan fayllar uchun volume.
 
 **Beat jadvali:** ochiq buyurtmalar statusini GTS'dan sinxronlash · bog'lanmagan fayllarni tozalash
 (24 soat, [API.md](API.md) §11) · idempotency kalitlarini tozalash · katalog yangilash ·

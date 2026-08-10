@@ -12,7 +12,7 @@ from httpx import AsyncClient
 
 from app.modules.settings import cache
 from app.modules.staff.models import Staff
-from tests.integration.conftest import headers_for
+from tests.integration.conftest import RecordingNotifier, headers_for
 from tests.integration.test_uploads import PNG
 
 CONFIG = "/api/v1/public/site-config/"
@@ -59,6 +59,39 @@ async def test_a_new_logo_is_visible_without_a_restart(
     logo_url = (await api.get(CONFIG)).json()["data"]["branding"]["logo_url"]
     assert logo_url is not None
     assert (await api.get(logo_url)).status_code == 200
+
+
+async def test_the_brand_reaches_the_mail_the_same_way(
+    api: AsyncClient, owner: Staff, notifier: RecordingNotifier
+) -> None:
+    """The promise is not only about the site: mail is dressed from the same row.
+
+    ``settings.service.mail_brand`` reads through the same cached document, so
+    a colour changed in the panel is on the next code that goes out — with no
+    deploy and no restart, exactly like the site.
+    """
+    await api.patch(
+        "/api/v1/admin/settings/site/",
+        headers=headers_for(owner),
+        json={"name": {"uz": "Brand Travel"}},
+    )
+    await api.patch(
+        BRANDING, headers=headers_for(owner), json={"colors": {"primary": "#00AA55"}}
+    )
+    # Any read of the document warms the cache ``mail_brand`` reads through —
+    # here explicitly, because the test's writes live in a transaction that a
+    # session of its own could not see.
+    await api.get(CONFIG)
+
+    registered = await api.post(
+        "/api/v1/public/auth/register/",
+        json={"email": "brandcheck@example.uz", "password": "correct-horse-9"},
+    )
+    assert registered.status_code == 204, registered.text
+
+    html = notifier.sent[-1]["html"]
+    assert "#00AA55" in html
+    assert "Brand Travel" in html
 
 
 # --- who may read it ------------------------------------------------------------------

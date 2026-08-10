@@ -290,6 +290,10 @@ class RecordingNotifier:
 
     channel: Channel = Channel.EMAIL
     sent: list[dict[str, Any]] = field(default_factory=list)
+    #: Set to make every following ``send`` raise instead of record — a relay
+    #: that is down, refusing the password, or simply not there. The type is an
+    #: exception rather than a flag so a test can name the failure it means.
+    fails_with: Exception | None = None
 
     async def send(
         self,
@@ -297,13 +301,17 @@ class RecordingNotifier:
         recipient: str,
         subject: str | None,
         body: str,
+        html: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
+        if self.fails_with is not None:
+            raise self.fails_with
         self.sent.append(
             {
                 "recipient": recipient,
                 "subject": subject,
                 "body": body,
+                "html": html,
                 "context": context or {},
             }
         )
@@ -313,9 +321,15 @@ class RecordingNotifier:
 
     @property
     def last_code(self) -> str:
-        # Read out of ``context`` rather than scraped from the body: a real
-        # adapter renders a template, so the body text is not the contract.
+        # Read out of ``context`` rather than scraped from the body: what the
+        # reader sees is a rendered message, so the body text is not the
+        # contract.
         return str(self.sent[-1]["context"]["code"])
+
+    @property
+    def last_token(self) -> str:
+        """The staff reset token — same idea as ``last_code``."""
+        return str(self.sent[-1]["context"]["token"])
 
 
 @pytest.fixture

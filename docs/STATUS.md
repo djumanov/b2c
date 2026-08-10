@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/catalog-static-proxy`
+**Oxirgi yangilanish:** 2026-08-10 · `feat/otp-email-html`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -21,7 +21,7 @@ takrorlamaydi.
 | Endpointlar | 49 ta yo'l / 68 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 18 ta + `alembic_version` |
 | Migratsiyalar | 14 ta, bitta head (`2a9b860859f1`) |
-| Testlar | 551 ta — unit 17 fayl · contract 7 · integration 19 |
+| Testlar | 574 ta — unit 18 fayl · contract 7 · integration 19 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -61,7 +61,8 @@ kontrakt testlari.
 | `settings` | Brending, sayt, tillar, valyutalar, features, mahsulotlar, kesh, CORS origin'lari | 7 |
 | `settings` (public) | `GET /public/site-config/` — kesh + ETag + i18n | 1 |
 | `integrations` | GTS credential'lari: ro'yxat, bittasi aktiv, shifrlangan parol | 3 |
-| `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari | 2 |
+| `integrations` (SMTP) | Singleton sozlama, shifrlangan parol, haqiqiy sinov xabari, `SMTP_*` dan birinchi ko'tarilish urug'i | 2 |
+| `providers/notifications/html.py` | Brendlangan xat qobig'i: matn va HTML bitta konvertda (`multipart/alternative`), rang va nom `settings.service.mail_brand()` dan | — |
 | `integrations` (to'lov) | Har bir provayder uchun qator, shifrlangan credential obyekti, `site-config` va `health` ga ulanish | 2 |
 | `integrations` (social) | Google OAuth client'i; `client_id` ochiq, `client_secret` shifrlangan | 1 |
 | `system` | health, version (setup'dan) | 2 |
@@ -121,6 +122,7 @@ qo'shadi, `integrations` ga **tegmaydi**. `gts_base_url()` shu mezonni buzmaydi
 | `integrations.service.gts_base_url(session)` | Aktiv qatorning `base_url` i, aktiv qator bo'lmasa `DEFAULT_BASE_URL`. Hech qachon shifrni ochmaydi — `catalog` uchun, akkaunt kerak emas |
 | `integrations.service.payment_providers(session)` | Yoqilgan va credential'i bor provayderlar |
 | `integrations.service.notifier(session)` | SMTP yoki log adapteri |
+| `settings.service.mail_brand()` | Xat uchun brend: nom, `primary` rang, absolyut logo URL'i. Sessiyasiz — `cors_origins()` bilan bir xil, `site-config` keshi orqali |
 | `integrations.service.social_verifier(session, provider)` | Google verifier yoki `None` |
 
 Boshqa **koddagi aniq nuqtalar**:
@@ -223,6 +225,8 @@ tug'ilmasligi uchun.
 | 66 | Yo'lovchi `PATCH` ida `null` ni **`field_validator`** to'xtatadi, `model_validator` emas | `errors._field_from_location` maydon nomini `loc` dan oladi, model darajasidagi validatorda esa `loc` `("body",)` da to'xtaydi — 422 "nimadir xato" der edi, nimasi xatoligini emas (§3). `field_validator` default'lar ustida ishlamaydi, ya'ni u faqat kalit haqiqatan yuborilganda o'q otadi: "yo'q" bilan "`null`" farqli so'rov bo'lib qoladi. Faqat uchta majburiy maydon sanalgan — `staff` dagi "har qanday `None` ni tashlab ket" odati bu yerda hujjat raqamini o'chirishning yagona yo'lini yopib qo'yardi |
 | 67 | `passengers.birth_date` `NOT NULL` ga o'tdi, **backfill'siz** | Tug'ilgan sana uchun halol placeholder yo'q — o'ylab topilgani chiptaga chiqadi. Migratsiya `NULL` qator ustida to'xtaydi va ustun nomini aytadi. §4.61 dagi `first_name` bilan farq ataylab: ismni manzildan yasash mumkin edi va uni mijoz tuzatardi, sanani esa yo'q |
 | 68 | `passengers.citizenship` — **cheklanmagan satr**, enum ham, ISO kodi ham emas | `document_type` bilan bir sabab: davlatlar katalogi GTS tomonda va §26 `countries/` uni faqat **ko'rsatadi**, cheklamaydi — lokal ro'yxat GTS ro'yxati o'zgarganda unga zid bo'lib chiqardi. Ustiga kod tanlash standartni ham tanlash demak — "UZ" mi, "UZB" mi, kontrakt hali aytmagan. Satrni keyin kengaytirish arzon, upstream bilan kelishmaydigan CHECK'ni yechish esa yo'q |
+| 69 | `SMTP_*` env'ga qo'shildi — lekin **urug' sifatida**: faqat `host` bo'sh qatorda o'qiladi | Bo'sh baza pochta yubora olmaydi, pochtasiz esa parol tiklash kodi ham ketmaydi — ya'ni paneldan sozlash uchun avval panelga kirish kerak, kirish uchun esa pochta. `FIRST_OWNER_*` shu tugunni xodim tomonidan yechgandi, bu — relay tomonidan. Sozlama baribir DB'da: qator to'lgach env boshqa o'qilmaydi, shuning uchun keyin tahrirlangan `.env` client tanlaganini almashtira olmaydi. `tests/unit/test_config.py` dagi tripwire saqlanib qoldi — urug'lar `SEED_FIELDS` da nomma-nom sanaladi, ya'ni yangi `smtp_*` maydon baribir testni yiqitadi |
+| 70 | Xat **matn va HTML** bo'lib bitta konvertda ketadi; HTML `providers/notifications/html.py` da, jadval va inline CSS bilan | Kod ko'taradigan xat — yangi mijoz brendni ko'radigan birinchi joy, va yalang'och matn hech kimnikiga o'xshamaydi. Matn qismi qoladi: uni ko'rsatolmaydigan mijoz ham kodni oladi. Markup ataylab eskicha — Gmail `<style>` blokini olib tashlaydi, Outlook esa Word orqali chizadi, flex/grid ikkalasida ham ishonchsiz. Brend qiymatlari argument bo'lib kiradi, chunki provayder `settings` ni import qila olmaydi (ARCHITECTURE.md §4) |
 
 ---
 
