@@ -24,10 +24,6 @@ class UploadPurpose(StrEnum):
     BANNER = "banner"
     DOCUMENT = "document"
     EXPORT = "export"
-    #: The one purpose a customer uploads (API.md §19). Appended rather than
-    #: sorted into place: the migration's CHECK lists these values in
-    #: declaration order, so moving a member rewrites a constraint for nothing.
-    AVATAR = "avatar"
     #: A payment method's mark, shown on the site next to its button
     #: (API.md §17, §29). Its own purpose rather than ``LOGO``: the two are
     #: attached by different resources, and ``uploads.service.link`` takes a

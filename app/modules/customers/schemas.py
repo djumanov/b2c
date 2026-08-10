@@ -107,8 +107,9 @@ class ProfileOut(BaseModel):
     endpoint at all (``service.get_active`` raises first), so the field could
     only ever read ``false``.
 
-    No ``from_attributes``: neither ``avatar_url`` nor ``is_profile_complete``
-    is a column, so the service builds this one field by field.
+    No ``from_attributes``: ``is_profile_complete`` is not a column, and listing
+    the fields is also what keeps ``password_hash`` from ever being one
+    rename away from the response.
     """
 
     id: uuid.UUID
@@ -118,8 +119,9 @@ class ProfileOut(BaseModel):
     middle_name: str | None
     phone: str | None
     birth_date: date | None
-    avatar_id: uuid.UUID | None
-    avatar_url: str | None
+    #: The client's own picture code, returned exactly as it was stored — no
+    #: URL beside it, because there is no file (API.md §19).
+    avatar_id: str | None
     created_at: datetime
     #: Derived — see ``Customer.is_profile_complete``. Read-only: sending it to
     #: ``PATCH`` is an unknown field like any other, so 422.
@@ -142,6 +144,9 @@ class ProfileUpdateIn(BaseModel):
     middle_name: PersonName | None = None
     phone: Annotated[str | None, Field(max_length=32)] = None
     birth_date: date | None = None
+    #: Not validated against a list — there is none on this side (API.md §19).
+    #: The length is the only bound, and ``None`` is how the choice is cleared.
+    avatar_id: Annotated[str | None, Field(max_length=64)] = None
 
 
 class PasswordChangeIn(BaseModel):

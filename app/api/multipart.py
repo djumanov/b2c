@@ -1,9 +1,11 @@
 """Reading an uploaded body without trusting its size.
 
-Two surfaces accept files — ``/admin/uploads/`` (API.md §11) and
-``/public/profile/avatar/`` (§19) — and both need the same guard, so it lives
-here rather than in either module. A router importing another module's router
-to borrow a helper is the shape ARCHITECTURE.md §4 exists to prevent.
+One surface accepts files today — ``/admin/uploads/`` (API.md §11); the public
+one has none, since an avatar is a code and not a picture the customer sends
+(§19). It stays here rather than inside ``uploads`` because the guard is about
+the request body rather than about what a file is for, and because a second
+surface borrowing it must not have to import that module's router
+(ARCHITECTURE.md §4).
 
 Validation itself stays where the rules are (``uploads.rules``): this only
 decides how many bytes are worth pulling into memory before somebody else gets

@@ -68,33 +68,30 @@ def test_documents_and_exports_are_not_public(purpose: UploadPurpose) -> None:
     assert rules.rule_for(purpose).public is False
 
 
-def test_an_avatar_is_public_because_its_owner_has_to_be_able_to_load_it() -> None:
-    """The private file route is guarded by a **staff** token
-    (``uploads/router_files.py``), so a private avatar would be one the customer
-    who uploaded it could not fetch."""
-    assert rules.rule_for(UploadPurpose.AVATAR).public is True
-
-
-def test_an_avatar_may_not_be_an_svg() -> None:
-    """SVG is XML from an anonymous uploader and the signature check cannot see
-    inside one — and unlike a logo, this file is chosen by a stranger."""
-    assert rules.SVG not in rules.rule_for(UploadPurpose.AVATAR).types
-    assert rules.PNG in rules.rule_for(UploadPurpose.AVATAR).types
-
-
-def test_a_payment_logo_may_be_an_svg_where_an_avatar_may_not() -> None:
+def test_a_payment_logo_may_be_an_svg_where_a_store_icon_may_not() -> None:
     """Not an inconsistency. A payment mark is chosen by a staff member the
-    installation already trusts, and the brands publish SVG; an avatar arrives
-    from whoever signed up this morning."""
+    installation already trusts and the brands publish SVG; a store icon is
+    refused one because neither store accepts it."""
     assert rules.SVG in rules.rule_for(UploadPurpose.PAYMENT_LOGO).types
-    assert rules.SVG not in rules.rule_for(UploadPurpose.AVATAR).types
+    assert rules.SVG not in rules.rule_for(UploadPurpose.APP_ICON).types
 
 
-def test_an_avatar_is_the_smallest_thing_anyone_uploads() -> None:
-    """A profile picture has no business being as large as a promo banner."""
-    avatar = rules.rule_for(UploadPurpose.AVATAR).max_bytes
-    assert avatar == 1 * rules.MEGABYTE
-    assert avatar < rules.rule_for(UploadPurpose.PROMO_BANNER).max_bytes
+def test_every_purpose_here_is_uploaded_by_staff() -> None:
+    """The public surface accepts no files at all (API.md §11, §19) — an avatar
+    is a code the client picks, so no purpose on this list comes from a
+    customer. A new customer-uploaded purpose has to answer the private-file
+    route's staff guard first, and this test is where it fails until it does."""
+    assert UploadPurpose.__members__.keys() == {
+        "LOGO",
+        "FAVICON",
+        "APP_ICON",
+        "BLOG_COVER",
+        "PROMO_BANNER",
+        "BANNER",
+        "DOCUMENT",
+        "EXPORT",
+        "PAYMENT_LOGO",
+    }
 
 
 def test_the_overall_cap_matches_the_proxy() -> None:

@@ -67,14 +67,14 @@ kontrakt testlari.
 | `integrations` (social) | Google OAuth client'i; `client_id` ochiq, `client_secret` shifrlangan | 1 |
 | `system` | health, version (setup'dan) | 2 |
 | `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
-| `customers` (profil) | Profil o'qish/tahrir, avatar, parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 5 |
+| `customers` (profil) | Profil o'qish/tahrir (avatar kodi shu yerda), parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 4 |
 | `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
 | `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy, auth yo'q, jadval yo'q | 2 |
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
-| `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — ikkala yuza uchun bitta joyda | — |
+| `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+5+1+2 = 49).
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+4+1+2 = 48).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
@@ -197,20 +197,20 @@ tug'ilmasligi uchun.
 | 38 | Yo'lovchi maydonlari **`PROJECT.md` §13 ro'yxatidan** olingan va undan oshmaydi | Saqlanadigan shaxsiy ma'lumot ro'yxati e'lon qilingan hujjat. Modul o'z ehtiyoji uchun unga maydon qo'shsa, ro'yxat hujjatda emas, kodda bo'lib qoladi — va PII inventarini kod bo'ylab yig'ib chiqish kerak bo'lardi |
 | 39 | `document_type` — **cheklanmagan satr**, enum ham, CHECK ham emas | Katalog GTS tomonda. §26 `document-types/` endi uni klientga beradi, lekin ustunni cheklamaydi: lokal enum GTS ro'yxati o'zgarganda unga zid bo'lib chiqadi, CHECK esa bu xatoni tuzatishni migratsiyaga aylantiradi |
 | 40 | Yo'lovchida **bitta hujjat**, ichma-ich ro'yxat emas | "Yo'lovchilar va hujjatlari" ikki xil o'qiladi. Saqlangan yo'lovchi bron uchun bitta hujjat bilan ishlatiladi; ko'plik kerak bo'lsa bu jadval qatorlar bilan kengayadi, sxema bilan emas |
-| 41 | `avatar` purpose'i **`public`** | Private fayl route'ini `current_staff` qo'riqlaydi (`uploads/router_files.py`), ya'ni private avatar — egasi ocholmaydigan avatar. Uni yechish uchun kalitga egalik tekshiruvi kerak bo'lardi, bu esa route'ning butun dizaynini o'zgartiradi |
-| 42 | `avatar` — faqat **raster**, SVG yo'q | Logotipni client o'zi tanlaydi, avatarni esa notanish odam yuklaydi. SVG — XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi (§4.13 bilan bir sabab, lekin bu yerda yuklovchi ishonchsiz) |
-| 43 | Avatar **to'g'ridan-to'g'ri** `POST /public/profile/avatar/` ga yuklanadi, `uploads/` orqali emas | API.md §11 ning ikki qadamli naqshi `/admin/uploads/` ga tayanadi, unga mijoz tokeni kira olmaydi (§4). Public yuzada `uploads/` resursi ochish — bir endpoint uchun butun bir resurs, ustiga anonim yuklash yuzasi |
+| 41 | Avatar — **fayl emas, kod**: rasmlar to'plami klientda, server tanlangan variantning kodini saqlaydi (`customers.avatar_id`, `VARCHAR(64)`) | **2026-08-10 da avvalgi uchta qarorning o'rniga keldi** — ular avatarni yuklanadigan fayl deb qurgandi. Fayl bo'lmasa: yuklash yuzasi ham, notanish odamdan kelgan baytlar ham, imzo tekshiruvi ham, supurish ham, `avatar_url` ham kerak emas. Kod boshqa maydonlar qatori `PATCH /public/profile/` bilan yoziladi, `null` uni tozalaydi |
+| 42 | `UploadPurpose.AVATAR` va `POST`/`DELETE` `/public/profile/avatar/` **olib tashlandi**, ishlatilmay qoldirilmadi | §4.41 dan keyin ular hech kim chaqirmaydigan yuklash yuzasi bo'lib qolardi — public yuzada esa endi umuman fayl qabul qilinmaydi. Migratsiya CHECK'ni toraytirishdan oldin `avatar` qatorlarini o'chiradi, baytlarni esa orphan sweep oladi: migratsiyada storage adapteri yo'q |
+| 43 | Kod serverda **tekshirilmaydi** — ruxsat etilgan qiymatlar ro'yxati yo'q, faqat 64 belgi chegarasi | Ro'yxatni chiqaradigan tomon — klient, demak uni bilgan tomon ham o'sha. Serverda tursa har bir yangi rasm backend deployiga aylanardi, ustiga ilova va sayt bir xil to'plam chiqarishi shart emas. Noma'lum kod shundayligicha saqlanadi va qaytariladi; uni chiza olmaslik — yuborgan klientning ishi |
 | 44 | Akkaunt o'chirilganda qator **bo'shatiladi**, faqat soft delete emas | `PROJECT.md` §13 "tozalanadi" deydi; `deleted_at` qatorni yashiradi, bo'shatmaydi. Manzilni ham bo'shatish — o'sha odam qaytadan ro'yxatdan o'ta olishining sharti, chunki unique indeks faqat tirik qatorlarni qamraydi |
 | 45 | `DELETE /public/profile/` **parol so'raydi** | Mijoz tokeni bajara oladigan yagona qaytarib bo'lmaydigan amal. Narxi — `DELETE` da tana, va ba'zi klientlar (`httpx`) uni qisqartmada yubora olmaydi; kontraktda ogohlantirish bor |
 | 46 | Yo'lovchi so'rovlari **har doim** egasi bo'yicha cheklangan, boshqa mijozniki `404` | `403` "bunday id bor" deb aytardi. Egasiz chaqirilishi mumkin bo'lgan yordamchi — bu oxir-oqibat egasiz chaqiriladigan yordamchi, shuning uchun `owned_passengers(customer_id)` dan boshqa kirish nuqtasi yo'q |
-| 47 | Tanani chegara bilan o'qish `app/api/multipart.py` ga ko'chirildi | Ikkinchi yuza paydo bo'ldi. Muqobili — bir modul routerining boshqa modul routeridan yordamchi import qilishi, ya'ni ARCHITECTURE.md §4 to'sib turgan bog'liqlikning aynan o'zi |
+| 47 | Tanani chegara bilan o'qish `app/api/multipart.py` da, `uploads` ichida emas | Ikkinchi yuza (avatar yuklash) paydo bo'lganda ko'chirilgandi; §4.41 uni olib tashlagach ham qaytarilmadi. Muqobili — bir modul routerining boshqa modul routeridan yordamchi import qilishi, ya'ni ARCHITECTURE.md §4 to'sib turgan bog'liqlikning aynan o'zi. Yordamchi so'rov tanasi haqida, faylning maqsadi haqida emas |
 | 48 | To'lov credential'lari — **bitta shifrlangan JSON obyekt**, kalit boshiga ustun emas | Payme va Click turli kalitlar so'raydi va ro'yxat har birining o'z hujjatidan keladi. Ustunlar bilan bo'lsa, kontraktda adapterlar keyin rad etadigan sxema paydo bo'lardi. Shu sababli `enabled: true` uchun ham faqat "bo'sh emas" tekshiriladi — aniq kalitlarni adapter biladi |
 | 49 | `PATCH` credential'larni **birlashtiradi**, almashtirmaydi | Panel qiymatlarni faqat maskalangan holda oldi, ya'ni bitta kalitni tahrirlab qolganini qayta yubora olmaydi. Almashtirish rejimida bitta maydonni o'zgartirish qolganini o'chirardi |
 | 50 | Maska ichida **bittagina** nuqta bo'lsa ham qiymat e'tiborsiz qoldiriladi | Birinchi versiya "hammasi nuqta" deb tekshirardi va haqiqiy maskani o'tkazib yuborardi: `mask_secret` oxirgi belgilarni ataylab ko'rsatadi. Provayder beradigan hech bir qiymatda `•` yo'q |
 | 51 | Provayder qatorlari **birinchi o'qishda** yaratiladi, migratsiyada emas | Migratsiya faqat yozilgan paytdagi provayderlarni qamrardi. Bu yo'l bilan keyingi reliz qo'shgan provayder yangilangan o'rnatmada o'zi paydo bo'ladi — o'chirilgan holda |
 | 52 | Standart `sort_order` — enum e'lon tartibi (o'nlab qadam bilan) | Aks holda tartib `code` bo'yicha alifbo bo'lardi, ya'ni hech kim so'ramagan savolga tasodifiy javob. O'nlab qadam keyingi provayderni ikkitasining orasiga qo'yish imkonini beradi |
 | 53 | `health/` **tarmoqqa chiqmaydi**: `ok` "sinab ko'rishga narsa bor" degani | Bu endpoint pollanadi; har pollda GTS'ga kirish client'ning mashina akkauntini hech kim so'ramagan savolga sarflaydi. Da'vo `database`/`redis` nikidan torroq va buni docstring aytadi. Tiriklik — `test/` ning ishi, uni odam bosadi |
-| 54 | `payment_logo` — alohida purpose, `logo` qayta ishlatilmadi | Ikkalasini boshqa-boshqa resurs biriktiradi, va `uploads.service.link` aynan shuni ajratish uchun `purpose` oladi. SVG bu yerda ruxsat: to'lov brendlari SVG chiqaradi va faylni xodim yuklaydi, avatardan farqli |
+| 54 | `payment_logo` — alohida purpose, `logo` qayta ishlatilmadi | Ikkalasini boshqa-boshqa resurs biriktiradi, va `uploads.service.link` aynan shuni ajratish uchun `purpose` oladi. SVG bu yerda ruxsat: to'lov brendlari SVG chiqaradi va faylni xodim yuklaydi, do'kon ikonkasidan farqli |
 | 55 | Social credential'da `client_id` **ochiq**, faqat `client_secret` shifrlanadi | `client_id` tugmani chizadigan har bir brauzerga baribir beriladi. Uni panelda yashirish operatorni Google konsolidagi qiymat bilan solishtira oladigan yagona qiymatdan mahrum qilardi |
 | 56 | Google tasdiqlagan manzil **bu yerda ham tasdiqlangan** | Email OTP manzilni kimdir boshqarishini isbotlash uchun bor; `email_verified` aynan shuni isbotlaydi. Ustiga kod so'rash bir xil isbotni ikki marta so'rash bo'lardi. `email_verified: false` esa rad etiladi — bu istalgan odam boshqasining pochtasi haqida qila oladigan da'vo |
 | 57 | Social oqim akkauntni **topadi yoki yaratadi**, tasdiqlanmaganini esa tasdiqlaydi | Bitta manzilda ikkita akkaunt — bitta odamning ikkita buyurtma tarixi. Yaratilgan qatorda parol xeshi bo'sh: uni taxmin qilib bo'lmaydi, kerak bo'lsa parol tiklash orqali qo'yiladi |
@@ -219,7 +219,7 @@ tug'ilmasligi uchun.
 | 60 | Verifier override'i **faqat o'z provayderiga** javob beradi | Aks holda pinlangan Google verifier'i qo'llanmaydigan provayderni ishlata boshlardi va testlar hech kim yeta olmaydigan route haqida o'zlari bilan kelishib qolardi |
 | 61 | `register/` da majburiy maydon **faqat ikkitasi**: `email` va `password`; `customers.first_name` `NULL` qabul qiladi | Akkaunt — manzil va uni tasdiqlagan narsa; ism esa profil ekranining ishi (§19). Ustun `NOT NULL` qolganda ro'yxatdan o'tish yo ismni majburlardi, yo o'ylab topilgan qiymat yozardi. Shu sabab social oqim ham endi manzil boshidan ism yasamaydi: mijozga o'zi tanlamagan ism o'ziniki bo'lib ko'rinardi |
 | 62 | OTP **to'rt raqam** (`OTP_LENGTH`), generator kenglikni o'sha konstantadan oladi | Maydon million emas, o'n ming — demak `OTP_MAX_ATTEMPTS` endi haqiqiy himoya: shiftsiz kodni terib chiqish soniyalar ishi bo'lardi. Uch to'siq o'z joyida: beshta urinishda kod kuyadi, qayta yuborish orasi 60 s, §14 esa IP'ni 5/daqiqa bilan cheklaydi. Generator `f"…{10**OTP_LENGTH}…"` bilan yozilgan — uzunlikni ikkinchi joyda takrorlash kontrakt qabul qilmaydigan kod chiqarish demakdir |
-| 63 | `is_profile_complete` — **modelda `@property`**, sxemada `computed_field` emas | Bu qator haqidagi fakt, sim shakli haqidagi emas: `is_verified` va `is_active` xuddi shu yerda turadi va `tests/unit` ularni sessiyasiz sinaydi. `ProfileOut` da bo'lganda shartni sinash uchun `avatar_url` bilan birga butun javobni yig'ish kerak bo'lardi, `avatar_url` esa boshqa modulga so'rov |
+| 63 | `is_profile_complete` — **modelda `@property`**, sxemada `computed_field` emas | Bu qator haqidagi fakt, sim shakli haqidagi emas: `is_verified` va `is_active` xuddi shu yerda turadi va `tests/unit` ularni sessiyasiz sinaydi. `ProfileOut` da bo'lganda shartni sinash uchun butun javobni yig'ish kerak bo'lardi. §4.41 `avatar_url` ni olib tashlagach `ProfileOut` boshqa modulga umuman murojaat qilmaydi, lekin sinash joyi o'zgarmaydi: shart qatorniki |
 | 64 | To'lganlik sharti — `bool(value and value.strip())`, ya'ni **faqat bo'sh joy** to'lgan hisoblanmaydi | `PersonName` bir belgi so'raydi, demak `" "` ustungacha yetadi; `phone` da quyi chegara umuman yo'q, demak `""` ham yetadi. Ikkalasi ham "to'ldirdim" degan javob emas, va ularni sanash mijozga server "tugadi" deydigan, o'zi esa bo'sh ko'radigan profil qoldirardi. `[deleted]` sentineliga alohida shox yo'q: u faqat soft-delete qilingan qatorda paydo bo'ladi, u qator esa `get_active` dan o'tmaydi |
 | 65 | `middle_name` `register/` da **yo'q**, faqat profilda | §4.61 ro'yxatdan o'tishni manzil va parolgacha qisqartirgandi; uchinchi ixtiyoriy shaxsiy maydon o'sha qarorni orqaga qaytarardi. Ota ismi profil ekranida so'raladi, u esa tasdiqdan keyingi birinchi ekran |
 | 66 | Yo'lovchi `PATCH` ida `null` ni **`field_validator`** to'xtatadi, `model_validator` emas | `errors._field_from_location` maydon nomini `loc` dan oladi, model darajasidagi validatorda esa `loc` `("body",)` da to'xtaydi — 422 "nimadir xato" der edi, nimasi xatoligini emas (§3). `field_validator` default'lar ustida ishlamaydi, ya'ni u faqat kalit haqiqatan yuborilganda o'q otadi: "yo'q" bilan "`null`" farqli so'rov bo'lib qoladi. Faqat uchta majburiy maydon sanalgan — `staff` dagi "har qanday `None` ni tashlab ket" odati bu yerda hujjat raqamini o'chirishning yagona yo'lini yopib qo'yardi |
@@ -296,7 +296,8 @@ Oltitasi ham tuzatildi. Hujjatning o'zi to'g'ri edi (faqat ikkita raqam xato:
 ### 2026-08-06 — enum CHECK'ini birinchi marta qayta yozishda
 
 `UploadPurpose` ga `avatar` qo'shish uchun `ck_uploads_upload_purpose` qo'lda
-qayta yozildi (§4 dagi 41–43). Zanjirdagi **birinchi shunday migratsiya**, va
+qayta yozildi. (O'sha purpose 2026-08-10 da olib tashlandi — §4.42; bu yerdagi
+ikki tuzoq esa har bir enum-CHECK migratsiyasiga tegishli bo'lib qoldi.) Zanjirdagi **birinchi shunday migratsiya**, va
 ikkita tuzoq ketma-ket chiqdi — keyingisi shu yerdan nusxa olsin:
 
 11. **Nomi ikki marta prefikslanadi.** `op.drop_constraint('ck_uploads_upload_purpose', …)`
@@ -311,8 +312,8 @@ ikkita tuzoq ketma-ket chiqdi — keyingisi shu yerdan nusxa olsin:
     ham. Nom oddiy satr bo'lib qoladi, `op.f(...)` esa har bir ishlatish
     joyida chaqiriladi.
 
-    Uchinchisi tuzoq emas, lekin yodda tutilsin: `downgrade` torroq CHECK'ni
-    qaytarishdan **oldin** `avatar` qatorlarini o'chiradi, aks holda mavjud
+    Uchinchisi tuzoq emas, lekin yodda tutilsin: CHECK'ni toraytiradigan tomon
+    undan tushib qoladigan qatorlarni **oldin** o'chiradi, aks holda mavjud
     qator yangi constraint'ni buzadi.
 
 ---

@@ -104,13 +104,15 @@ class Customer(Entity):
     middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    #: The uploaded avatar, by id and **not** by foreign key. ``uploads`` is a
-    #: module, reached through its service; a foreign key into its table is the
-    #: database's version of importing its ``models.py`` (ARCHITECTURE.md §4).
-    #: ``settings.branding`` holds ``logo_id`` the same way.
-    avatar_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    #: Which of the client's own avatar pictures this customer picked — a code,
+    #: not a file (API.md §19). Nothing is uploaded and nothing is served: the
+    #: set of pictures ships with the app and the site, so the server stores the
+    #: choice and returns it unread.
+    #:
+    #: Opaque text with no CHECK and no list to validate against, for the reason
+    #: §19 gives: a server-side list would make every new picture a backend
+    #: deploy, and the two clients need not even offer the same set.
+    avatar_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: NULL until the register code is confirmed. Until then the row exists but
     #: grants nothing — see ``service.get_active``.
     email_verified_at: Mapped[datetime | None] = mapped_column(

@@ -58,7 +58,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 |---|---|---|---|---|
 | 17 | Sayt konfiguratsiyasi | **1** | ◐ | Yo'l va kesh bor; `payment_methods` `integrations` bilan to'ladi |
 | 18 | Autentifikatsiya | **1** | ✅ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a da, Google 5c da. Chetlanishlar: `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
-| 19 | Profil | **1** | ◐ | `profile/`, `avatar/`, `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7, endi to'liq CRUD + `verify/`), `notifications/` → **4** (§2.8) |
+| 19 | Profil | **1** | ◐ | `profile/` (avatar kodi shu yerda), `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7, endi to'liq CRUD + `verify/`), `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
 | 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
@@ -348,8 +348,11 @@ ikkinchisi birinchisining jadvali ustiga quriladi.
 - `social/{provider}/` bu yerda emas — §2.11.
 
 **6b — profil (§19).** `passengers` jadvali va `customers.avatar_id`; `profile/`,
-`password/`, akkauntni o'chirish; `avatar/` uchun mavjud `uploads.service`
-ishlatiladi — yangi `avatar` purpose, `public`, chunki private yo'lni
+`password/`, akkauntni o'chirish. (Avatar dastlab yuklanadigan fayl edi —
+`avatar/` endpointlari va `avatar` purpose'i bilan; 2026-08-10 da u klient
+tanlaydigan kodga aylandi va ikkalasi ham olib tashlandi, STATUS.md §4.41.
+Quyidagi ikki xatboshi o'sha eski dizaynni tasvirlaydi.) `avatar/` uchun mavjud
+`uploads.service` ishlatilardi — yangi `avatar` purpose, `public`, chunki private yo'lni
 `current_staff` qo'riqlaydi.
 
 - Yo'lovchi maydonlari [PROJECT.md](PROJECT.md) §13 dagi ro'yxatdan olinadi va

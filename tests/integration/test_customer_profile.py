@@ -2,37 +2,21 @@
 
 Three things here are decisions rather than plumbing, and each has a test that
 fails loudly if somebody relaxes it: ``email`` is refused rather than ignored,
-deleting an account empties the row rather than only hiding it, and the avatar
-that gets replaced is released rather than destroyed.
+deleting an account empties the row rather than only hiding it, and
+``avatar_id`` is a code this side never interprets.
 """
-
-import uuid
 
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.customers.models import Customer
-from app.modules.uploads.models import Upload
-from tests.integration.conftest import (
-    PASSWORD,
-    customer_headers_for,
-    make_customer,
-)
+from tests.integration.conftest import PASSWORD, customer_headers_for
 
 PROFILE = "/api/v1/public/profile/"
-AVATAR = "/api/v1/public/profile/avatar/"
 PASSWORD_URL = "/api/v1/public/profile/password/"
 LOGIN = "/api/v1/public/auth/login/"
 REGISTER = "/api/v1/public/auth/register/"
-
-#: A real 1x1 PNG — the signature check is part of what is under test, so
-#: ``b"fake"`` would be rejected for the wrong reason.
-PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000a49444154789c6300010000050001a5f645ee0000000049454e44ae426082"
-)
-SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
 
 
 # --- reading and editing ------------------------------------------------------------
@@ -48,7 +32,7 @@ async def test_the_profile_reports_the_signed_in_customer(
     assert data["id"] == str(customer.id)
     assert data["email"] == customer.email
     assert data["avatar_id"] is None
-    assert data["avatar_url"] is None
+    assert "avatar_url" not in data
 
 
 async def test_the_profile_needs_a_token(api: AsyncClient) -> None:
@@ -204,102 +188,82 @@ async def test_a_wrong_current_password_is_422_not_401(
     assert response.json()["errors"][0]["field"] == "current_password"
 
 
-# --- avatar -------------------------------------------------------------------------
+# --- avatar (a code, not a file — API.md §19) ---------------------------------------
 
 
-async def _upload_avatar(
-    api: AsyncClient,
-    customer: Customer,
-    *,
-    content: bytes = PNG,
-    filename: str = "me.png",
-    mime: str = "image/png",
-) -> tuple[int, dict[str, object]]:
-    response = await api.post(
-        AVATAR,
+async def test_the_avatar_code_is_stored_and_returned_unchanged(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """Stored verbatim: the set of pictures is the client's, so this side has
+    nothing to resolve the code against and nothing to rewrite it into."""
+    response = await api.patch(
+        PROFILE,
         headers=customer_headers_for(customer),
-        files={"file": (filename, content, mime)},
+        json={"avatar_id": "avatar-07"},
     )
-    return response.status_code, response.json()
 
-
-async def test_an_avatar_is_uploaded_and_reported_on_the_profile(
-    api: AsyncClient, customer: Customer
-) -> None:
-    status, body = await _upload_avatar(api, customer)
-
-    assert status == 200, body
-    data = body["data"]
-    assert isinstance(data, dict)
-    assert data["avatar_id"] is not None
-    # A public purpose, so the URL is the unauthenticated one.
-    assert str(data["avatar_url"]).startswith("/uploads/avatar/")
-
-
-async def test_the_avatar_is_readable_without_a_token(
-    api: AsyncClient, customer: Customer
-) -> None:
-    """It is `public` precisely so its owner can fetch it — the private file
-    route is guarded by a staff token."""
-    _, body = await _upload_avatar(api, customer)
-    url = str(body["data"]["avatar_url"])  # type: ignore[index]
-
-    response = await api.get(url)
-
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "image/png"
-
-
-async def test_replacing_an_avatar_releases_the_old_one(
-    api: AsyncClient, customer: Customer, session: AsyncSession
-) -> None:
-    """Released, not deleted — the sweep collects it after the grace period, so
-    a customer who changes their mind within the day has not lost it."""
-    _, first = await _upload_avatar(api, customer)
-    first_id = uuid.UUID(str(first["data"]["avatar_id"]))  # type: ignore[index]
-
-    _, second = await _upload_avatar(api, customer, filename="new.png")
-    second_id = uuid.UUID(str(second["data"]["avatar_id"]))  # type: ignore[index]
-    assert second_id != first_id
-
-    released = await session.scalar(select(Upload).where(Upload.id == first_id))
-    kept = await session.scalar(select(Upload).where(Upload.id == second_id))
-    assert released is not None and released.linked_at is None
-    assert kept is not None and kept.linked_at is not None
-
-
-async def test_deleting_the_avatar_clears_it(
-    api: AsyncClient, customer: Customer
-) -> None:
-    await _upload_avatar(api, customer)
-
-    removed = await api.delete(AVATAR, headers=customer_headers_for(customer))
-    assert removed.status_code == 204
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["avatar_id"] == "avatar-07"
 
     profile = await api.get(PROFILE, headers=customer_headers_for(customer))
-    assert profile.json()["data"]["avatar_id"] is None
+    assert profile.json()["data"]["avatar_id"] == "avatar-07"
 
 
-async def test_an_svg_avatar_is_refused(api: AsyncClient, customer: Customer) -> None:
-    """SVG is XML from an anonymous uploader, and the signature check cannot
-    see inside one — so this purpose takes raster only."""
-    status, body = await _upload_avatar(
-        api, customer, content=SVG, filename="me.svg", mime="image/svg+xml"
-    )
-
-    assert status == 422
-    assert body["errors"][0]["field"] == "file"  # type: ignore[index]
-
-
-async def test_an_oversized_avatar_is_refused(
+async def test_a_code_this_side_does_not_know_is_still_accepted(
     api: AsyncClient, customer: Customer
 ) -> None:
-    status, body = await _upload_avatar(
-        api, customer, content=PNG + b"\x00" * 2_000_000
+    """There is no allowed list on the server and this is the test that says
+    so: adding a picture to the app must not require a backend deploy, and the
+    two clients need not even ship the same set."""
+    response = await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"avatar_id": "something-only-the-app-knows"},
     )
 
-    assert status == 422
-    assert body["errors"][0]["field"] == "file"  # type: ignore[index]
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["avatar_id"] == "something-only-the-app-knows"
+
+
+async def test_null_clears_the_avatar(api: AsyncClient, customer: Customer) -> None:
+    """No endpoint of its own to clear it — it is a column like the rest."""
+    await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"avatar_id": "avatar-07"},
+    )
+
+    response = await api.patch(
+        PROFILE, headers=customer_headers_for(customer), json={"avatar_id": None}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["avatar_id"] is None
+
+
+async def test_an_overlong_avatar_code_is_refused(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """The length is the only thing checked, so it is the only thing that can
+    come back as a 422 here."""
+    response = await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"avatar_id": "x" * 65},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "avatar_id"
+
+
+async def test_the_avatar_is_not_uploaded(api: AsyncClient, customer: Customer) -> None:
+    """The upload endpoints are gone, not merely unused (API.md §11, §19): the
+    public surface accepts no files at all."""
+    headers = customer_headers_for(customer)
+    gone = f"{PROFILE}avatar/"
+
+    assert (await api.post(gone, headers=headers)).status_code == 404
+    assert (await api.delete(gone, headers=headers)).status_code == 404
 
 
 # --- deleting the account ---------------------------------------------------------
@@ -310,13 +274,16 @@ async def test_deleting_the_account_empties_the_row(
 ) -> None:
     """PROJECT.md §13 says personal data is *cleared*. A soft delete conceals a
     row without emptying it, so both happen."""
-    await _upload_avatar(api, customer)
     # Filled in first, or the assertions below would pass on a column the
     # fixture never wrote.
     await api.patch(
         PROFILE,
         headers=customer_headers_for(customer),
-        json={"middle_name": "Baxtiyorovich", "phone": "+998901234567"},
+        json={
+            "middle_name": "Baxtiyorovich",
+            "phone": "+998901234567",
+            "avatar_id": "avatar-07",
+        },
     )
 
     response = await api.request(
@@ -390,21 +357,3 @@ async def test_deleting_needs_the_password(
     assert response.json()["errors"][0]["field"] == "password"
     await session.refresh(customer)
     assert not customer.is_deleted
-
-
-async def test_another_customers_avatar_is_not_reachable_through_the_profile(
-    api: AsyncClient, customer: Customer, session: AsyncSession
-) -> None:
-    """There is no id to pass — the avatar is set by uploading, never by
-    naming an existing file, so one account cannot claim another's."""
-    other = await make_customer(session, email="other@example.uz")
-    _, body = await _upload_avatar(api, other)
-    other_avatar = body["data"]["avatar_id"]  # type: ignore[index]
-
-    response = await api.patch(
-        PROFILE,
-        headers=customer_headers_for(customer),
-        json={"avatar_id": other_avatar},
-    )
-
-    assert response.status_code == 422

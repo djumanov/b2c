@@ -16,14 +16,12 @@ until then.
 """
 
 import uuid
-from typing import Annotated
 
-from fastapi import Depends, File, Response, UploadFile
+from fastapi import Depends, Response
 
 from app.api.deps import CurrentCustomer, PaginationDep, current_customer
 from app.api.envelope import Page, enveloped_router
 from app.api.listing import ListQueryDep
-from app.api.multipart import read_limited
 from app.db.session import SessionDep
 from app.modules.customers import service
 from app.modules.customers.schemas import (
@@ -35,11 +33,6 @@ from app.modules.customers.schemas import (
     ProfileOut,
     ProfileUpdateIn,
 )
-
-#: One byte over what an avatar may be. Tighter than ``/admin/uploads/``'s cap
-#: because this route accepts exactly one purpose, so a 20 MB body is refused
-#: after a megabyte rather than after twenty-five.
-_READ_LIMIT = service.AVATAR_MAX_BYTES + 1
 
 router = enveloped_router(
     prefix="/profile",
@@ -53,12 +46,10 @@ router = enveloped_router(
 
 @router.get("/", summary="The signed-in customer's own details")
 async def get_profile(customer: CurrentCustomer, session: SessionDep) -> ProfileOut:
-    return await service.to_profile(
-        session, await service.get_active(session, customer.id)
-    )
+    return service.to_profile(await service.get_active(session, customer.id))
 
 
-@router.patch("/", summary="Change name, phone or birth date")
+@router.patch("/", summary="Change name, phone, birth date or avatar")
 async def update_profile(
     data: ProfileUpdateIn, customer: CurrentCustomer, session: SessionDep
 ) -> ProfileOut:
@@ -84,32 +75,6 @@ async def change_password(
     await service.change_password(
         session, await service.get_active(session, customer.id), data
     )
-    return Response(status_code=204)
-
-
-# --- avatar -------------------------------------------------------------------------
-
-
-@router.post("/avatar/", summary="Upload an avatar")
-async def set_avatar(
-    customer: CurrentCustomer,
-    session: SessionDep,
-    file: Annotated[UploadFile, File()],
-) -> ProfileOut:
-    # No ``purpose`` form field, unlike ``/admin/uploads/``: on this route it
-    # could only ever be ``avatar`` (API.md §11, §19).
-    return await service.set_avatar(
-        session,
-        await service.get_active(session, customer.id),
-        content=await read_limited(file, limit=_READ_LIMIT),
-        filename=file.filename or "avatar",
-        content_type=(file.content_type or "").split(";")[0].strip().lower(),
-    )
-
-
-@router.delete("/avatar/", status_code=204, summary="Remove the avatar")
-async def clear_avatar(customer: CurrentCustomer, session: SessionDep) -> Response:
-    await service.clear_avatar(session, await service.get_active(session, customer.id))
     return Response(status_code=204)
 
 

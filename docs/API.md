@@ -298,9 +298,8 @@ etilgan MIME va o'lcham shunga qarab tekshiriladi. Bog'lanmagan fayllar 24 soatd
 tozalanadi.
 
 > **Bu naqsh — admin yuzasiniki.** Public yuzada `uploads/` resursi yo'q va mijoz tokeni
-> `/admin/*` ga kira olmaydi (§4). Shu sababli mijoz yuklaydigan yagona fayl — avatar —
-> **to'g'ridan-to'g'ri** `POST /public/profile/avatar/` ga boradi va `purpose` so'ramaydi
-> (§19). Saqlash, tekshiruv va supurish qoidalari o'sha-o'sha.
+> `/admin/*` ga kira olmaydi (§4). Mijoz **hech qanday fayl yuklamaydi**: avatar ham
+> fayl emas, klientning o'z rasmlar to'plamidan tanlangan kod (§19).
 
 ---
 
@@ -643,8 +642,7 @@ hech narsani oshkor qilmaydi.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
-| `GET` `PATCH` | `/public/profile/` | ✓ | Shaxsiy ma'lumot |
-| `POST` `DELETE` | `/public/profile/avatar/` | ✓ | Avatar yuklash / o'chirish |
+| `GET` `PATCH` | `/public/profile/` | ✓ | Shaxsiy ma'lumot va avatar kodi |
 | `POST` | `/public/profile/password/` | ✓ | Parolni o'zgartirish |
 | `DELETE` | `/public/profile/` | ✓ | Akkauntni o'chirish |
 | CRUD | `/public/profile/passengers/` | ✓ | Saqlangan yo'lovchilar va hujjatlari |
@@ -667,14 +665,14 @@ GET /public/profile/
               "first_name": "Aziz", "last_name": "Karimov",
               "middle_name": "Baxtiyorovich",
               "phone": "+998901234567", "birth_date": "1995-04-17",
-              "avatar_id": "1a7b…", "avatar_url": "/uploads/avatar/ab/…png",
+              "avatar_id": "avatar-07",
               "created_at": "…", "is_profile_complete": true } }
 ```
 
 ```json
 PATCH /public/profile/
 { "first_name": "Aziz", "last_name": "Karimov", "middle_name": "Baxtiyorovich",
-  "phone": "+998901234567", "birth_date": "1995-04-17" }
+  "phone": "+998901234567", "birth_date": "1995-04-17", "avatar_id": "avatar-07" }
 ```
 
 Ro'yxatdan o'tishda ism so'ralmagani uchun (§18) `first_name` ham `null` bo'lishi
@@ -687,7 +685,7 @@ chunki har bir klient uni o'zicha hisoblasa, "profilni to'ldiring" ekrani ilovad
 saytdagidan boshqacha chiqadi — va bu farqni hech kim xato deb bildirmaydi. `PATCH` da
 yuborilsa u noma'lum maydon, ya'ni `422 validation`.
 
-`PATCH` **faqat shu beshta maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
+`PATCH` **faqat shu oltita maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
 jimgina e'tiborsiz qoldirilmaydi, aks holda panel o'zgarmagan qiymatni o'zgargandek
 ko'rsatardi.
 
@@ -698,23 +696,26 @@ tasdiqlaydigan alohida oqimni talab qiladi; u oqim belgilangunga qadar `email` y
 
 ### Avatar
 
+**Avatar — fayl emas.** Rasmlar to'plami klientning o'zida (ilova va sayt o'z
+rasmlarini o'zi yuklab beradi), foydalanuvchi shundan bittasini tanlaydi va server
+faqat tanlangan variant **kodini** saqlaydi. Shuning uchun yuklash endpointi ham,
+`avatar_url` ham yo'q — `avatar_id` boshqa maydonlar qatori `PATCH /public/profile/`
+orqali yoziladi va `null` yuborilsa tozalanadi.
+
+```json
+PATCH /public/profile/
+{ "avatar_id": "avatar-07" }
+
+PATCH /public/profile/
+{ "avatar_id": null }
 ```
-POST /public/profile/avatar/     (multipart/form-data: file)
-→ 200 — yangilangan profil
 
-DELETE /public/profile/avatar/
-→ 204
-```
-
-Bu **§11 dagi ikki qadamli naqshdan chetlanish** va sababi kontraktda: §11 ning yagona
-yuklash yo'li `/admin/uploads/`, unga esa mijoz tokeni bilan kirilmaydi — §4 bo'yicha u
-`403` oladi. Public yuzada `uploads/` resursi yo'q, shuning uchun fayl **to'g'ridan-to'g'ri
-shu yo'lga** yuklanadi. `purpose` yuborilmaydi: bu endpointda u faqat `avatar` bo'lishi
-mumkin.
-
-Faqat **raster** rasm (`png`, `jpeg`, `webp`) va **1 MB** gacha. SVG qabul qilinmaydi:
-u XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi. Almashtirilgan
-avatar darhol o'chmaydi — bog'lanishi uziladi va 24 soatdan keyin supuriladi (§11).
+Kod — server uchun **shaffof matn**, uzunligi 64 belgigacha. Ruxsat etilgan qiymatlar
+ro'yxati serverda **yo'q** va tekshirilmaydi: to'plamni klient chiqaradi, demak uni
+klient biladi. Ro'yxat serverda turganda har bir yangi rasm backend deployini talab
+qilardi, ustiga rasmlar to'plami ilovada va saytda bir xil bo'lishi shart ham emas.
+Server bilmagan kod kelsa u shundayligicha saqlanadi va shundayligicha qaytariladi;
+bunday kodni ko'rsata olmaslik — uni yuborgan klientning ishi.
 
 ### Parolni o'zgartirish va akkauntni o'chirish
 

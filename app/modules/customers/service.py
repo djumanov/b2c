@@ -102,10 +102,8 @@ from app.modules.customers.schemas import (
 from app.modules.integrations import service as integrations_service
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
-from app.modules.uploads import service as uploads_service
 from app.providers.notifications import html as mail_html
 from app.providers.social.base import SocialAuthError
-from app.providers.storage.base import UploadPurpose
 
 logger = get_logger(__name__)
 
@@ -129,10 +127,6 @@ _RESET_PREFIX: Final = "auth:customer-password-reset"
 #: out of attempts. Telling them apart would say how far a guesser had got.
 _CODE_REJECTED: Final = "This code is invalid or has expired"
 _RESET_TOKEN_REJECTED: Final = "This reset link is invalid or has expired"
-
-#: How large an avatar may be, asked of the module that owns the answer. The
-#: router needs it to size its body read; this module does not second-guess it.
-AVATAR_MAX_BYTES: Final = uploads_service.max_bytes(UploadPurpose.AVATAR)
 
 #: What a scrubbed row's required name column holds. Not an empty string — a
 #: reader of the table should be able to tell "erased" from "never filled in".
@@ -799,12 +793,10 @@ async def confirm_password_reset(
 # --- the profile (API.md §19) --------------------------------------------------------
 
 
-async def to_profile(session: AsyncSession, customer: Customer) -> ProfileOut:
-    """Built field by field rather than from attributes, because ``avatar_url``
-    is not a column — it is asked of the module that owns the file, and that
-    lookup is tolerant: a file swept out from under the row renders as "no
-    avatar" rather than as a 500. ``settings/service.py::_branding_out`` does
-    the same for the logo."""
+def to_profile(customer: Customer) -> ProfileOut:
+    """Every field is a column or a property of this row, so nothing here is
+    asked of another module — ``avatar_id`` is the client's own picture code
+    and has no file behind it to look up (API.md §19)."""
     return ProfileOut(
         id=customer.id,
         email=customer.email,
@@ -814,7 +806,6 @@ async def to_profile(session: AsyncSession, customer: Customer) -> ProfileOut:
         phone=customer.phone,
         birth_date=customer.birth_date,
         avatar_id=customer.avatar_id,
-        avatar_url=await uploads_service.url_for(session, customer.avatar_id),
         created_at=customer.created_at,
         is_profile_complete=customer.is_profile_complete,
     )
@@ -823,10 +814,12 @@ async def to_profile(session: AsyncSession, customer: Customer) -> ProfileOut:
 async def update_profile(
     session: AsyncSession, customer: Customer, data: ProfileUpdateIn
 ) -> ProfileOut:
+    """``avatar_id`` rides along with the rest: it is a column the client sets,
+    and ``None`` clears it like any other field (API.md §19)."""
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(customer, field, value)
     await session.commit()
-    return await to_profile(session, customer)
+    return to_profile(customer)
 
 
 async def change_password(
@@ -845,55 +838,6 @@ async def change_password(
     await _revoke_all_sessions(session, customer.id)
     await session.commit()
     logger.info("customer_password_changed", customer_id=str(customer.id))
-
-
-# --- avatar (API.md §19) -------------------------------------------------------------
-
-
-async def set_avatar(
-    session: AsyncSession,
-    customer: Customer,
-    *,
-    content: bytes,
-    filename: str,
-    content_type: str,
-) -> ProfileOut:
-    """Store the bytes, point the row at them, release whatever it held.
-
-    The upload goes straight here rather than through ``/admin/uploads/``:
-    the public surface has no uploads resource and a customer token cannot
-    reach the admin one (API.md §4, §11).
-    """
-    uploaded = await uploads_service.create(
-        session,
-        content=content,
-        filename=filename,
-        content_type=content_type,
-        purpose=UploadPurpose.AVATAR,
-        uploaded_by=customer.id,
-    )
-    previous = customer.avatar_id
-    if previous == uploaded.id:  # pragma: no cover - a fresh id never collides
-        return await to_profile(session, customer)
-
-    # Link first: it is the step that can still refuse, and nothing has been
-    # mutated yet (settings/service.py::_attach_image does the same).
-    await uploads_service.link(session, uploaded.id, purpose=UploadPurpose.AVATAR)
-    if previous is not None:
-        # Released, not deleted — the sweep collects it after the 24h grace, so
-        # a customer who changes their mind has not lost the old one yet.
-        await uploads_service.unlink(session, previous)
-    customer.avatar_id = uploaded.id
-    await session.commit()
-    return await to_profile(session, customer)
-
-
-async def clear_avatar(session: AsyncSession, customer: Customer) -> None:
-    if customer.avatar_id is None:
-        return
-    await uploads_service.unlink(session, customer.avatar_id)
-    customer.avatar_id = None
-    await session.commit()
 
 
 # --- account deletion (API.md §19, PROJECT.md §13) -----------------------------------
@@ -915,9 +859,9 @@ async def delete_account(
     if not verify_password(data.password, customer.password_hash):
         raise ValidationFailed("Password is incorrect", field="password")
 
-    if customer.avatar_id is not None:
-        await uploads_service.unlink(session, customer.avatar_id)
-        customer.avatar_id = None
+    # Nothing to release with it — the code names a picture the client ships,
+    # not a file this installation stores.
+    customer.avatar_id = None
     for passenger in await repository.live_passengers_for(session, customer.id):
         passenger.soft_delete()
     # A service call, not a cascade: ``customer_cards`` belongs to ``payments``
@@ -1020,7 +964,6 @@ async def delete_passenger(
 
 
 __all__ = [
-    "AVATAR_MAX_BYTES",
     "OTP_MAX_ATTEMPTS",
     "OTP_RESEND_COOLDOWN",
     "OTP_TTL",
@@ -1028,7 +971,6 @@ __all__ = [
     "authenticate",
     "authenticate_social",
     "change_password",
-    "clear_avatar",
     "confirm_password_reset",
     "confirm_registration",
     "create_passenger",
@@ -1042,7 +984,6 @@ __all__ = [
     "register",
     "request_password_reset",
     "resend_registration_code",
-    "set_avatar",
     "to_profile",
     "update_passenger",
     "update_profile",
