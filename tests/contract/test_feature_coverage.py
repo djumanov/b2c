@@ -47,6 +47,11 @@ CORE_PREFIXES: tuple[str, ...] = (
     # Nor is having an account. A customer's own details and saved travellers
     # are not a section of the product that a client chooses to sell.
     f"{API_PREFIX}/public/profile/",
+    # Nor are the lists a passenger form is filled in from. A client who
+    # "switched off" document types would have a booking flow nobody can
+    # complete, so there is no flag in FEATURE_DEFAULTS this could hang from —
+    # and inventing one would offer a switch that must never be thrown.
+    f"{API_PREFIX}/public/catalog/",
 )
 
 

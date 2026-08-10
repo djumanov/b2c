@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import RateLimit
 from app.api.envelope import enveloped_router
 from app.modules.audit import router_admin as audit_admin
+from app.modules.catalog import router_public as catalog_public
 from app.modules.customers import router_profile as customers_profile
 from app.modules.customers import router_public as customers_public
 from app.modules.integrations import router_admin as integrations_admin
@@ -49,6 +50,7 @@ public_router.include_router(settings_public.router)
 public_router.include_router(customers_public.router)
 public_router.include_router(customers_profile.router)
 public_router.include_router(customers_profile.passengers_router)
+public_router.include_router(catalog_public.router)
 
 admin_router.include_router(staff_admin.auth_router)
 admin_router.include_router(settings_admin.router)
