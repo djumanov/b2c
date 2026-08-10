@@ -183,19 +183,22 @@ async def _clear_rate_limit() -> None:
 async def test_a_wrong_code_is_422_and_the_attempts_run_out(
     api: AsyncClient, notifier: RecordingNotifier
 ) -> None:
-    """Six digits is a small space; the ceiling is what makes it enough."""
+    """Four digits is a tiny space; the ceiling is what makes it enough."""
     await _register(api)
     real_code = notifier.last_code
+    # Chosen against the real one rather than fixed: at four digits a literal
+    # guess collides once in ten thousand runs, and a suite that fails that
+    # rarely gets rerun rather than read.
+    wrong_code = "0000" if real_code != "0000" else "1111"
 
     for _ in range(5):
         await _clear_rate_limit()
-        wrong = await api.post(CONFIRM, json={"email": NEW_EMAIL, "code": "000000"})
+        wrong = await api.post(CONFIRM, json={"email": NEW_EMAIL, "code": wrong_code})
         assert wrong.status_code == 422
         assert wrong.json()["errors"][0]["field"] == "code"
     await _clear_rate_limit()
 
     # Burnt: even the code that was actually mailed no longer works.
-    assert real_code != "000000"
     spent = await api.post(CONFIRM, json={"email": NEW_EMAIL, "code": real_code})
     assert spent.status_code == 422
 

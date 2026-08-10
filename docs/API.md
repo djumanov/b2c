@@ -477,7 +477,7 @@ yuboriladi — ya'ni noto'g'ri terilgan manzil abadiy band bo'lib qolmaydi.
 
 ```json
 POST /public/auth/register/confirm/
-{ "email": "user@mail.uz", "code": "482913" }
+{ "email": "user@mail.uz", "code": "4829" }
 
 → { "status": "success",
     "data": { "access_token": "…", "refresh_token": "…", "expires_in": 1800 } }
@@ -538,7 +538,7 @@ POST /public/auth/password/reset/request/
 → 204
 
 POST /public/auth/password/reset/verify/
-{ "email": "user@mail.uz", "code": "482913" }
+{ "email": "user@mail.uz", "code": "4829" }
 
 → { "status": "success",
     "data": { "reset_token": "…", "expires_in": 900 } }
@@ -558,9 +558,11 @@ token bilan almashtiriladi. Parol o'zgargach **barcha sessiyalar** o'chadi.
 
 Ro'yxatdan o'tish va parol tiklash bitta mexanizmni ishlatadi:
 
-- kod — **olti raqam**, amal muddati **10 daqiqa**;
-- **beshta** noto'g'ri urinishdan keyin kod kuyadi va yangisini so'rash kerak —
-  aks holda olti raqamni terib chiqish mumkin bo'lardi;
+- kod — **to'rt raqam**, amal muddati **10 daqiqa**;
+- **beshta** noto'g'ri urinishdan keyin kod kuyadi va yangisini so'rash kerak.
+  To'rt raqamda bu shift oldingidan ham muhimroq: maydon o'n ming, ya'ni
+  shiftsiz kodni terib chiqish soniyalar ishi bo'lardi. Beshta urinishdan keyin
+  kod kuyadi va keyingisi boshqa son;
 - yangi kod berilganda oldingisi **darhol kuyadi** — bitta manzilda bir vaqtda
   ikkita ishlaydigan kod bo'lmaydi;
 - qayta yuborish orasida **60 soniya**. Bu chegara **jim** ishlaydi: javob

@@ -31,13 +31,15 @@ def _customer(
     )
 
 
-def test_a_code_is_always_six_characters() -> None:
+def test_a_code_is_always_otp_length_characters() -> None:
     """Zero padding is not cosmetic.
 
-    ``str(randbelow(1_000_000))`` gives ``"42"`` about one time in ten
-    thousand, and the schema requires exactly six characters — so an unpadded
-    code would be a registration that cannot be confirmed, for a fraction of
-    users, with nothing in the logs to say why.
+    ``str(randbelow(10_000))`` gives ``"42"`` about one time in a hundred, and
+    the schema requires exactly ``OTP_LENGTH`` characters — so an unpadded code
+    would be a registration that cannot be confirmed, for a fraction of users,
+    with nothing in the logs to say why. At four digits that fraction is a
+    hundred times what it was at six, which is what makes this test worth more
+    than it used to be, not less.
     """
     codes = [_generate_code() for _ in range(2000)]
 
@@ -51,11 +53,11 @@ def test_codes_are_not_all_the_same() -> None:
 
 def test_a_code_is_hashed_before_it_is_stored() -> None:
     """The column is 64 characters wide because the digest is."""
-    digest = _hash_code("482913")
+    digest = _hash_code("4829")
 
-    assert digest != "482913"
+    assert digest != "4829"
     assert len(digest) == 64
-    assert _hash_code("482913") == digest
+    assert _hash_code("4829") == digest
 
 
 def test_an_account_is_active_only_when_confirmed() -> None:

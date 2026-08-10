@@ -25,7 +25,7 @@ immediately rather than parking it somewhere, which keeps one address in one
 place — but ``is_active`` requires ``email_verified_at``, so until the code comes
 back the row is a reservation and not an account.
 
-**A code is spent by being wrong, too.** Six digits is a small space; the
+**A code is spent by being wrong, too.** Four digits is a tiny space; the
 attempt ceiling is what makes it enough, so a wrong guess is recorded even
 though the request is about to fail.
 
@@ -83,6 +83,7 @@ from app.modules.customers.models import (
     Passenger,
 )
 from app.modules.customers.schemas import (
+    OTP_LENGTH,
     AccountDeleteIn,
     LoginIn,
     PassengerCreateIn,
@@ -107,8 +108,10 @@ logger = get_logger(__name__)
 #: API.md §18. Long enough for mail to arrive and be read, short enough that a
 #: forwarded message stops working.
 OTP_TTL: Final = timedelta(minutes=10)
-#: What makes six digits enough. Without a ceiling the whole space is a million
-#: requests away, and this endpoint is unauthenticated.
+#: What makes four digits enough, and the reason it carries more weight than it
+#: used to: the space is ten thousand, so without a ceiling the endpoint — which
+#: is unauthenticated — would be a few seconds of typing. Five guesses burn the
+#: code and the next one is a different number.
 OTP_MAX_ATTEMPTS: Final = 5
 #: Between two codes for the same address and purpose.
 OTP_RESEND_COOLDOWN: Final = timedelta(seconds=60)
@@ -228,8 +231,10 @@ def _decode_refresh(token: str) -> TokenClaims:
 
 def _generate_code() -> str:
     # Zero-padded: the leading zeros are part of the code, which is why it
-    # travels as a string everywhere.
-    return f"{secrets.randbelow(1_000_000):06d}"
+    # travels as a string everywhere. The width is ``OTP_LENGTH``'s and not a
+    # second place to change it — ``schemas`` is what the contract validates
+    # against, so a mismatch here would issue codes the API then refuses.
+    return f"{secrets.randbelow(10**OTP_LENGTH):0{OTP_LENGTH}d}"
 
 
 def _hash_code(code: str) -> str:

@@ -18,8 +18,9 @@ from pydantic import BaseModel, EmailStr, Field
 #: being the thing that protects the account.
 MIN_PASSWORD_LENGTH: Final = 8
 
-#: API.md §18. Six digits, as a string — leading zeros are part of the code.
-OTP_LENGTH: Final = 6
+#: API.md §18. Four digits, as a string — leading zeros are part of the code,
+#: which is why it never travels as a number.
+OTP_LENGTH: Final = 4
 
 Password = Annotated[str, Field(min_length=MIN_PASSWORD_LENGTH, max_length=128)]
 PersonName = Annotated[str, Field(min_length=1, max_length=120)]

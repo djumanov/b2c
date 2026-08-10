@@ -23,7 +23,7 @@ denylist every request consults; this table is what survives a flush.
 ``email_otps`` is the register/reset codes. It could have lived in Redis, where
 the reset *token* does — but a code carries an attempt counter and a resend
 cooldown, and both are things that must not reset when Redis does. Losing them
-turns a six-digit code into something worth guessing.
+turns a four-digit code into something worth guessing.
 
 The personal columns (``first_name`` … ``birth_date``) are created here although
 API.md §19 is what exposes them. They are the personal data PROJECT.md §13
@@ -188,7 +188,7 @@ class CustomerRefreshToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class EmailOtp(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """One six-digit code sent to a customer's address (API.md §18)."""
+    """One four-digit code sent to a customer's address (API.md §18)."""
 
     __tablename__ = "email_otps"
 
@@ -199,7 +199,7 @@ class EmailOtp(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     purpose: Mapped[OtpPurpose] = mapped_column(OTP_PURPOSE_COLUMN, nullable=False)
-    #: SHA-256 of the code. Six digits is a small space, but a database dump
+    #: SHA-256 of the code. Four digits is a tiny space, but a database dump
     #: should still not be a list of codes that work right now.
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
@@ -208,7 +208,7 @@ class EmailOtp(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     consumed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    #: Wrong guesses so far. The ceiling is what makes six digits enough.
+    #: Wrong guesses so far. The ceiling is what makes four digits enough.
     attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
