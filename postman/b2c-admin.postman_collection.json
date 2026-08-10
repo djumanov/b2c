@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "5f2a1c7e-8d43-4b91-9e6a-3c0f7b21d4aa",
     "name": "B2C Admin API (phase 1)",
-    "description": "Every endpoint that exists in the code today — 66 operations across `/api/v1/public/*`, `/api/v1/admin/*` and the three un-enveloped file routes.\n\n**Scope.** `docs/API.md` specifies roughly 150 operations; this collection carries only the ones phase 1 actually implements. Deliberately absent, because they answer 404 today: the whole `/api/v1/webhooks/*` tree (no routes registered), the five product verticals, orders, payments, promo codes, content, leads, catalogs, reports, notification templates, `settings/menu/`, `profile/cards/`, `profile/notifications/`, `integrations/gts/test/`, `integrations/payments/{code}/test/` and `auth/devices/`. `docs/API.md` remains the full contract.\n\n**Before you start.** Run the stack (`docker compose up -d`, or `uv run uvicorn app.main:app --reload --port 8000`), then open the collection's *Variables* tab and set `origin` if you are not on `http://localhost:8000`.\n\n**Tokens are automatic.** `Admin ▸ Auth ▸ login` writes `adminAccessToken`/`adminRefreshToken`; `Public ▸ Auth ▸ login` (and `register/confirm`, `social`, `refresh`) writes `accessToken`/`refreshToken`. Folders inherit the right bearer token, so nothing has to be pasted by hand.\n\n**Three things that bite.**\n1. Every path ends in a slash. The app runs with `redirect_slashes=False`, so dropping it is a hard 404, never a redirect.\n2. The login body field is `login`, not `email` — on both surfaces.\n3. The auth folders are rate limited to 5 requests per minute per IP, enforced in Redis and surviving a restart. A 429 carries `Retry-After`.\n\n**Envelope.** Every `/api/v1/*` response is `{status, data, errors, meta}`. List endpoints put the rows in `data` and `{page, page_size, total, total_pages}` in `meta`. The `/healthz` and `/uploads/*` routes are outside it.\n\n**Audiences.** A customer token on `/admin/*` is a **403**, not a 401 — the token is valid, it is just for the other surface.",
+    "description": "Every endpoint that exists in the code today — 68 operations across `/api/v1/public/*`, `/api/v1/admin/*` and the three un-enveloped file routes.\n\n**Scope.** `docs/API.md` specifies roughly 150 operations; this collection carries only the ones phase 1 actually implements. Deliberately absent, because they answer 404 today: the whole `/api/v1/webhooks/*` tree (no routes registered), the five product verticals, the rest of §26 (`places/`, `stations/`, `airlines/`, `currencies/`), orders, payments, promo codes, content, leads, reports, notification templates, `settings/menu/`, `profile/cards/`, `profile/notifications/`, `integrations/gts/test/`, `integrations/payments/{code}/test/` and `auth/devices/`. `docs/API.md` remains the full contract.\n\n**Before you start.** Run the stack (`docker compose up -d`, or `uv run uvicorn app.main:app --reload --port 8000`), then open the collection's *Variables* tab and set `origin` if you are not on `http://localhost:8000`.\n\n**Tokens are automatic.** `Admin ▸ Auth ▸ login` writes `adminAccessToken`/`adminRefreshToken`; `Public ▸ Auth ▸ login` (and `register/confirm`, `social`, `refresh`) writes `accessToken`/`refreshToken`. Folders inherit the right bearer token, so nothing has to be pasted by hand.\n\n**Three things that bite.**\n1. Every path ends in a slash. The app runs with `redirect_slashes=False`, so dropping it is a hard 404, never a redirect.\n2. The login body field is `login`, not `email` — on both surfaces.\n3. The auth folders are rate limited to 5 requests per minute per IP, enforced in Redis and surviving a restart. A 429 carries `Retry-After`.\n\n**Envelope.** Every `/api/v1/*` response is `{status, data, errors, meta}`. List endpoints put the rows in `data` and `{page, page_size, total, total_pages}` in `meta`. The `/healthz` and `/uploads/*` routes are outside it.\n\n**Audiences.** A customer token on `/admin/*` is a **403**, not a 401 — the token is valid, it is just for the other surface.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -869,6 +869,53 @@
                   "path": ["public", "profile", "passengers", "{{passengerId}}", ""]
                 },
                 "description": "204."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Catalog",
+          "description": "API.md §26 — the lists a passenger form is filled in from. **No auth**, and none is possible: the form is rendered before there is anything to authenticate.\n\nBoth are a cached passthrough to GTS's `/static/*` service, which needs no account of its own, so they work on an installation that has not yet saved a GTS credential. Items arrive in **GTS's own shape**: the `translations` object is kept whole and no `lang` is added, which is the one exemption from API.md §7.\n\nThe answer is held in Redis for 24 hours and carries `Cache-Control: public, max-age=86400`. The first call takes as long as GTS does (~0.4 s); every one after it is served locally. A GTS failure is a 502 with its original code in `meta.upstream`, a timeout a 504 — and neither is cached.",
+          "item": [
+            {
+              "name": "GET catalog/document-types",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/catalog/document-types/?country=UZ",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "catalog", "document-types", ""],
+                  "query": [
+                    {
+                      "key": "country",
+                      "value": "UZ",
+                      "description": "ISO 3166-1 alpha-2, exactly two letters — anything else is a 422. Adds the documents only that country issues; omit it for the universal set. Each value is cached under its own key."
+                    }
+                  ]
+                },
+                "description": "Passenger document types. `data[].type` is the code to store in `passengers.document_type` (`PSP`, `ZC`, `NP`, `SR`, `DP`, `SPU`, `VV`); `data[].translations` carries the label per language."
+              },
+              "response": []
+            },
+            {
+              "name": "GET catalog/countries",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/catalog/countries/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "catalog", "countries", ""]
+                },
+                "description": "216 countries. `data[].code` is the alpha-2 code, alongside `phone_code`, `phone_mask`, `emoji` and a flag image URL — enough for both the citizenship field and a phone input."
               },
               "response": []
             }

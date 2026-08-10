@@ -131,10 +131,10 @@ yupqa yig'uvchi.
 | Modul | Nimaga egalik qiladi | Izoh |
 |---|---|---|
 | `settings` | Brending, sayt, tillar, valyutalar, menyu, `features`, mahsulot ro'yxati, `site-config` yig'ilishi | Redis read-through kesh; **har qanday yozuv `site-config` keshini tozalaydi** — "logoni almashtir, deploy shart emas" shu bilan haqiqatga aylanadi |
-| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi. GTS credential'lari **ro'yxat**, ulardan bittasi aktiv; SMTP — **singleton** (§10). Tashqariga ikkita eshik: `service.active_credential()` va `service.notifier()` |
+| `integrations` | GTS, to'lov va bildirishnoma xizmatlari sozlamasi va shifrlangan credential'lari, `test/` tekshiruvlari | Sirlar o'qishda maskalanadi, hech qachon to'liq qaytarilmaydi. GTS credential'lari **ro'yxat**, ulardan bittasi aktiv; SMTP — **singleton** (§10). Tashqariga uchta eshik: `service.active_credential()`, `service.gts_base_url()` (akkauntsiz — `catalog` uchun) va `service.notifier()` |
 | `cms` | 7 ta kontent resursi + publish/unpublish/reorder | Tarjimali maydonlar JSONB; public o'qish alohida "yassilovchi" serializer orqali |
 | `feedback` | Sharhlar va moderatsiya holati | `pending → accepted \| rejected` |
-| `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar | GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish |
+| `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar, hujjat turlari | **Manzil** — GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish. **Bugun** — `document-types/` va `countries/` uchun keshlangan passthrough: modul jadvalga egalik qilmaydi, migratsiya yo'q, TTL yagona invalidatsiya. Beat kelganda router va service saqlanadi, faqat ma'lumot manbai ko'chadi |
 | `customers` | Akkaunt, auth, profil, saqlangan yo'lovchi/karta, qurilma, ichki bildirishnomalar | `aud: public` tokenlari |
 | `staff` | Xodimlar va ularning roli — `owner` yoki `admin`, kodda qat'iy belgilangan | `aud: admin` tokenlari |
 | `products` | Qidiruv oqimi routerlari (`search`/`offers`/`verify`/`upsell`) va `ProductAdapter` registry | **Holatsiz** (D2): hech narsa saqlamaydi, GTS'ga uzatadi va javobni normallashtiradi |

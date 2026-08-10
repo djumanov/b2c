@@ -65,7 +65,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | 23 | Promokod | **2** | — | Shu hujjatdagi qaror (§2.3), `PROJECT.md` §15 ga yozib qo'yilgan |
 | 24 | Kontent (o'qish) | **4** | — | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `pages/{slug}/` → **5** |
 | 25 | Murojaat va aloqa | **4** | — | `leads` va `feedback` modullari bilan (§2.5) |
-| 26 | Kataloglar | **2** + **3** | — | `places`, `countries`, `airlines`, `currencies` → 2; `stations/` poyezd bilan → 3 (§2.6) |
+| 26 | Kataloglar | **1** + **2** + **3** | ◐ | `document-types`, `countries` → 1 (proxy, §2.6); `places`, `airlines`, `currencies` → 2; `stations/` poyezd bilan → 3 |
 
 ### III qism — admin yuza
 
@@ -139,10 +139,30 @@ ni `admin/leads/sources/` dagi sxema bo'yicha tekshiradi
 tomonidan oldin** kerak. Ikkalasi ham `leads` modulida, 4-fazada. 5-fazada bu
 yuza faqat **iste'mol qilinadi**.
 
-**2.6 · §26 Kataloglar bo'linadi.** `places`, `countries`, `airlines`,
-`currencies` aviachipta qidiruv formasi uchun kerak → 2-faza. `stations/` faqat
-`railway` uchun ma'noga ega → 3-faza. Valyuta kurslarini yangilaydigan beat
-vazifasi ham 2-fazada.
+**2.6 · §26 Kataloglar bo'linadi.** `places`, `airlines`, `currencies`
+aviachipta qidiruv formasi uchun kerak → 2-faza. `stations/` faqat `railway`
+uchun ma'noga ega → 3-faza. Valyuta kurslarini yangilaydigan beat vazifasi ham
+2-fazada.
+
+`document-types/` va `countries/` esa **1-fazaga tushdi**. Sabab: §19 yo'lovchi
+formasi 1-fazada qurildi, `document_type` va `citizenship` ni klient tanlashi
+kerak, va bu ikki ro'yxatni beradigan GTS `/static/` servisi **auth talab
+qilmaydi** — ya'ni 2-fazaning 1-bo'lagini (sessiya menejeri) kutmaydi.
+
+Bu faza chegarasini surgani uchun nima qilingani ochiq yozilsin:
+
+- `providers/gts/static.py` — 2.1-bo'lak qo'shadigan `client.py` dan **alohida
+  fayl**. 2.1 sof qo'shimcha bo'lib qoladi va bu faylga tegmaydi.
+- Beat vazifasi ham, `catalog` jadvali ham, migratsiya ham **yo'q**. 2/3-faza
+  Redis TTL sini rejalashtirilgan yangilanishga almashtiradi; router va service
+  saqlanadi ([ARCHITECTURE.md](ARCHITECTURE.md) §5).
+- Retry **yo'q** — API.md §12 dagi ikki takror `client.py` ga tegishli, oldida
+  24 soatlik kesh turibdi.
+- `integrations` ga bitta qo'shimcha: `service.gts_base_url()`. 2-fazaning
+  "`integrations` ga tegmaydi" mezoni buzilmaydi — unga tegayotgani **shu**
+  o'zgarish, 2-faza emas.
+- `airlines/`, `currencies/`, `places/`, `stations/` tegilmadi va o'z fazasida
+  qoladi.
 
 **2.7 · §19 `profile/cards/` → 2-faza.** Bo'limda faqat `GET` va `DELETE` bor —
 karta **yaratilmaydi**, u to'lov provayderidan token sifatida keladi. 1-fazada
@@ -323,8 +343,9 @@ ishlatiladi — yangi `avatar` purpose, `public`, chunki private yo'lni
 `current_staff` qo'riqlaydi.
 
 - Yo'lovchi maydonlari [PROJECT.md](PROJECT.md) §13 dagi ro'yxatdan olinadi va
-  undan oshmaydi; `document_type` cheklanmagan satr bo'lib qoladi, chunki
-  hujjat turlari katalogi GTS'da va §26 da uni beradigan endpoint yo'q.
+  undan oshmaydi; `document_type` cheklanmagan satr bo'lib qoladi. Ro'yxatning
+  o'zi endi §26 `document-types/` dan olinadi (§2.6), lekin ustunni cheklash —
+  boshqa qaror: lokal enum GTS ro'yxati o'zgarganda unga zid bo'lib chiqardi.
 - `email` `PATCH` orqali o'zgarmaydi — yangi manzilni tasdiqlaydigan oqim
   kontraktda yo'q (§2.12).
 - `cards/` → 2-faza (§2.7), `notifications/` → 4-faza (§2.8).

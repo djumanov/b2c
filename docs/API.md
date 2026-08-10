@@ -222,6 +222,11 @@ Sayt qaysi tillarni qo'llab-quvvatlashi `settings/languages/` da belgilanadi; ro
 bo'lmagan til so'ralsa asosiy tilga tushadi. **Barcha tillar to'ldirilishi shart emas** —
 bo'sh til shu zanjir bo'yicha almashtiriladi.
 
+**Yagona istisno — §26 kataloglari.** Ular GTS'dan kelgan shaklda qaytadi: `translations`
+obyekti butunligicha qoladi va `lang` qo'shilmaydi. Sabab — bu tarjima qilingan bizning
+kontentimiz emas, tashqi ma'lumotnoma; uni siqish GTS ro'yxatiga parallel ikkinchi
+lug'atni yuritishni anglatardi, va GTS bizda yo'q tillarni ham beradi (`az`).
+
 ---
 
 ## 8. Standart CRUD naqshi
@@ -742,14 +747,17 @@ GET /public/profile/passengers/
   har doim ham bo'lmaydi (chet el pasporti), amal muddati esa hujjatning har bir turida
   bo'lmaydi.
 - `citizenship` — `document_type` kabi **cheklanmagan satr**, enum ham, ISO kodi ham emas.
-  Davlatlar ro'yxati GTS tomonda ([GTS.md](GTS.md) §9) va §26 da uni beradigan endpoint
-  hozircha yo'q; lokal ro'yxat keyin keladigan katalogga zid bo'lib chiqardi, kod tanlash
-  esa qaysi standart ekanini ("UZ" yoki "UZB") kontrakt aytmaguncha erta bo'lardi.
+  Davlatlar ro'yxati GTS tomonda ([GTS.md](GTS.md) §9) va klientga `/public/catalog/countries/`
+  (§26) orqali beriladi, lekin ustunning o'zi cheklanmaydi: kod tanlash qaysi standart
+  ekanini ("UZ" yoki "UZB") kontrakt aytmaguncha erta bo'lardi, ro'yxatni esa GTS
+  o'zgartirsa saqlangan yo'lovchi yaroqsiz bo'lib qolardi.
 - **Bitta yo'lovchida bitta hujjat.** Ichma-ich ro'yxat emas: saqlangan yo'lovchi bron
   uchun bitta hujjat bilan ishlatiladi.
 - `document_type` — **cheklanmagan satr**. Hujjat turlari katalogi GTS tomonda
-  ([GTS.md](GTS.md) §9) va §26 da uni beradigan endpoint hozircha yo'q; lokal enum keyin
-  keladigan katalogga zid bo'lib chiqishi mumkin.
+  ([GTS.md](GTS.md) §9) va klientga `/public/catalog/document-types/` (§26) orqali
+  beriladi — forma shundan to'ldiriladi. Ustun baribir cheklanmaydi: lokal enum GTS
+  ro'yxati o'zgarganda unga zid bo'lib chiqardi, va buni saqlash paytida emas, bron
+  paytida bilib qolinardi.
 - Takrorlanish taqiqlanmaydi — bitta odam eski va yangi pasporti bilan ikki marta
   saqlanishi mumkin.
 - `search` — ism va familiya bo'yicha; `ordering` default `-created_at`.
@@ -956,17 +964,30 @@ POST /public/leads/
 
 ## 26. Kataloglar
 
-Qidiruv formalari uchun statik ma'lumot. Auth talab qilinmaydi, uzoq keshlanadi.
+Qidiruv va yo'lovchi formalari uchun statik ma'lumot. Auth talab qilinmaydi, uzoq
+keshlanadi.
 
 | Metod | Yo'l | Izoh |
 |---|---|---|
 | `GET` | `/public/catalog/places/` | Shahar/aeroport avtoto'ldirish; `?q=`, `?type=` |
 | `GET` | `/public/catalog/stations/` | Temir yo'l stansiyalari; `?q=` |
-| `GET` | `/public/catalog/countries/` | Davlatlar |
+| `GET` | `/public/catalog/document-types/` | Hujjat turlari; `?country=` (ISO 3166-1 alpha-2) |
+| `GET` | `/public/catalog/countries/` | Davlatlar — kod, telefon kodi va maskasi, bayroq |
 | `GET` | `/public/catalog/airlines/` | Aviakompaniyalar |
 | `GET` | `/public/catalog/currencies/` | Valyutalar va joriy kurs |
 
-Kataloglar GTS static servisidan sinxronlanadi — [ARCHITECTURE.md](ARCHITECTURE.md) §5.
+Kataloglar GTS static servisidan olinadi — [ARCHITECTURE.md](ARCHITECTURE.md) §5.
+Elementlar **upstream shaklida** qaytadi: tarjimalar siqilmaydi va `lang` qo'shilmaydi
+(§7). Bular bizning kontentimiz emas, GTS ma'lumotnomasi — o'z shaklini berish ikkinchi
+lug'atni qo'lda yuritishni anglatardi.
+
+`document-types/` va `countries/` **jonli proxy** sifatida ishlaydi: GTS static servisi
+auth talab qilmaydi, javob Redis'da 24 soat keshlanadi va `Cache-Control:
+public, max-age=86400` bilan qaytadi. Beat bilan sinxronizatsiya va qolgan uchta
+katalog — [PHASES.md](PHASES.md) §2.6.
+
+Ular ishlashi uchun GTS credential'i kiritilgan bo'lishi **shart emas**; aktiv
+credential bo'lsa (§29), uning `base_url` i ishlatiladi.
 
 ---
 ---

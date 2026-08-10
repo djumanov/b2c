@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/customer-middle-name`
+**Oxirgi yangilanish:** 2026-08-10 · `feat/catalog-static-proxy`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 47 ta yo'l / 66 operatsiya (API.md dagi ~150 dan) |
+| Endpointlar | 49 ta yo'l / 68 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 18 ta + `alembic_version` |
 | Migratsiyalar | 14 ta, bitta head (`2a9b860859f1`) |
-| Testlar | 524 ta — unit 16 fayl · contract 7 · integration 18 |
+| Testlar | 551 ta — unit 17 fayl · contract 7 · integration 19 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -68,15 +68,17 @@ kontrakt testlari.
 | `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
 | `customers` (profil) | Profil o'qish/tahrir, avatar, parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 5 |
 | `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
+| `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy, auth yo'q, jadval yo'q | 2 |
+| `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — ikkala yuza uchun bitta joyda | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+5+1 = 47).
+> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+5+1+2 = 49).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
 > auth qismida 10 yo'l = 10 operatsiya (hammasi `POST`), profil qismida esa
-> 5 yo'lda 11 ta.
+> 5 yo'lda 11 ta. `catalog` ning ikkitasida ikkita.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
@@ -110,21 +112,25 @@ To'liq reja — [PHASES.md](PHASES.md).
 
 **Seam'lar 2-faza uchun tayyor**, va qabul mezoni 5-bo'lakdagi bilan bir xil:
 2-faza `providers/gts/client.py` va `providers/payments/{payme,click}.py`
-qo'shadi, `integrations` ga **tegmaydi**.
+qo'shadi, `integrations` ga **tegmaydi**. `gts_base_url()` shu mezonni buzmaydi
+— uni 2-faza emas, `catalog` (1-faza, [PHASES.md](PHASES.md) §2.6) qo'shdi.
 
 | Seam | Nima qaytaradi |
 |---|---|
 | `integrations.service.active_credential(session)` | Shifri ochilgan GTS akkaunti yoki `None` |
+| `integrations.service.gts_base_url(session)` | Aktiv qatorning `base_url` i, aktiv qator bo'lmasa `DEFAULT_BASE_URL`. Hech qachon shifrni ochmaydi — `catalog` uchun, akkaunt kerak emas |
 | `integrations.service.payment_providers(session)` | Yoqilgan va credential'i bor provayderlar |
 | `integrations.service.notifier(session)` | SMTP yoki log adapteri |
 | `integrations.service.social_verifier(session, provider)` | Google verifier yoki `None` |
 
 Boshqa **koddagi aniq nuqtalar**:
 
-- **2-faza uchun ochiq savol:** `passengers.document_type` cheklanmagan satr.
-  Hujjat turlari katalogi GTS'da ([GTS.md](GTS.md) §9), API.md §26 da esa uni
-  beradigan endpoint yo'q. Bron oqimi qat'iy qiymat talab qilsa — avval §26 ga
-  `document-types/` qo'shiladi, keyin bu ustun cheklanadi.
+- **2-faza uchun ochiq savol:** `passengers.document_type` va `citizenship`
+  cheklanmagan satr bo'lib qolmoqda. Shartning **birinchi yarmi bajarildi** —
+  §26 ga `document-types/` qo'shildi va `countries/` ochildi, ya'ni klient
+  endi ro'yxatni oladi. Ustunni cheklash alohida qaror: GTS ning `PSP`/`ZC`
+  lug'ati va iso2 kodlari saqlangan yo'lovchini muzlatib qo'yishga yetarli
+  barqarormi — buni bron oqimi ko'rsatadi.
 - **Bron GTS'ga yo'lovchi yuborganda** §13 dagi maydonlar yetmasligi mumkin
   (jins, fuqarolik, hujjat amal muddati — GTS'ning DOCS/DOCO/DOCA oilasi).
   Ular qo'shilishi kerak bo'lsa **avval `PROJECT.md` §13** tahrirlanadi:
@@ -173,6 +179,11 @@ tug'ilmasligi uchun.
 | 27 | Relay rad etsa `test/` **`200`** qaytaradi, `502` emas | `502` owner'ga "nimadir buzildi" deydi, lekin nimasi buzilganini aytmaydi — bu tugma esa aynan shuning uchun bor. Sabab `detail` da va qatorda saqlanadi |
 | 28 | Bo'lim bayrog'i sweep testi **teskari** yozilgan: "har bir route yo yadro, yo bayroq ostida" | To'g'ridan-to'g'ri "bayroqli route'da gate bormi" bugun **vakuum** bo'lardi — to'siladigan modul hali yo'q. Teskarisi esa hozirdan tishlaydi: 40 ta route aniq tasniflandi va 4-fazadagi birinchi kontent routeri ham majburan tasniflanadi |
 | 29 | `CORE_PREFIXES` **testda**, ilova kodida emas | Bu sozlama emas — qabul qilingan qarorning yozuvi. Unga e'tiroz bildiriladigan joy — diff |
+| 30 | `providers/gts/static.py` — `client.py` dan **alohida fayl** | GTS `/static/*` sessiya, cookie va `agent-uid` talab qilmaydi. Bittasiga qo'shib qo'yish fuqarolik dropdown'ini 2-fazaning sessiya menejeriga bog'lab qo'yardi, va GTS credential'i hali kiritilmagan o'rnatmada forma bo'sh qolardi |
+| 31 | Static chaqiruvlarda **retry yo'q** (API.md §12 ikkitasiga ruxsat bersa ham) | Retry siyosati `client.py` ga tegishli — u yerda umumiy backoff va 401-relogin turadi. Oldida 24 soatlik kesh borligi uchun bir martalik nosozlik mingta so'rovdan bittasiga tegadi |
+| 32 | Static so'rovda `follow_redirects=True` — paketning boshqa joyida **yo'q** | So'rovda credential ham, cookie ham yo'q, ya'ni redirect'da oqadigan narsa yo'q. Foydasi bor: DB'da `http://` bo'lib qolgan `base_url` 301 oladi va javobsiz qolmaydi. `client.py` buni ko'chirmasligi kerak |
+| 33 | Static yo'llarda **trailing slash yo'q** | Bizning har bir yo'limiz slash bilan tugaydi (API.md §1), GTS static servisi esa aynan shunda `404` beradi. Kod noto'g'ridek ko'rinadi, shuning uchun izoh ham, test ham bor |
+| 34 | `catalog` da `purge()` yo'q — TTL yagona invalidatsiya | `site-config` da TTL yozuvga qo'yilgan tozalashning orqasidagi to'r, chunki ma'lumot client'niki. Bu yerda uni bizda hech kim yozmaydi, tozalash uchun hodisa yo'q. Narxi — GTS tomonidagi tuzatish bir kungacha ko'rinmasligi |
 | 30 | `RequireFeature` — class, `RateLimit`/`Audited` esa funksiya-fabrika | Sweep uni dependency daraxtidan `isinstance` bilan topishi kerak; closure'ga atribut osish ishlardi-yu, birinchi o'quvchidan omon qolmasdi |
 | 31 | Noma'lum bayroq **import vaqtida** yiqiladi | `RATE_LIMITS[kind]` bilan bir xil: xato yozilgan bayroq jarayonni boot'da to'xtatadi, aks holda hech kim o'chira olmaydigan bo'lim jimgina xizmat qilaverardi |
 | 32 | `register/` akkaunt qatorini **darhol**, tasdiqlanmagan holda yaratadi — kutayotgan ro'yxatlar uchun alohida joy yo'q | Bitta manzil bitta joyda turadi. Muqobili — tasdiqlanmagan yozuvlar do'koni, keyin uni `customers` bilan sinxron saqlash. `is_active` `email_verified_at` ni talab qilgani uchun bunday qator hech narsa bermaydi: u akkaunt emas, band qilingan joy |
@@ -182,7 +193,7 @@ tug'ilmasligi uchun.
 | 36 | Mijoz auth hodisalari `audit_log` ga **yozilmaydi** | PROJECT.md §13 jurnalni **paneldagi** mutatsiyalar bilan chegaralaydi va `tests/contract/test_audit_coverage.py` faqat `/admin/*` ni supuradi. Mijoz login'lari `/admin/system/audit/` ni ko'mib tashlardi — u aynan xodimlar faoliyatini ko'rsatish uchun bor |
 | 37 | Parol pastki chegarasi `customers` da **qayta yozilgan**, `staff` dan import qilinmagan | Bugun ikkalasi 8, lekin ular boshqa-boshqa narsa: biri client o'z xodimlariga qo'ygan siyosat, ikkinchisi ommaga qo'yilgani. Umumiy konstanta bo'lsa bittasini o'zgartirish ikkalasini o'zgartirgandek ko'rinardi |
 | 38 | Yo'lovchi maydonlari **`PROJECT.md` §13 ro'yxatidan** olingan va undan oshmaydi | Saqlanadigan shaxsiy ma'lumot ro'yxati e'lon qilingan hujjat. Modul o'z ehtiyoji uchun unga maydon qo'shsa, ro'yxat hujjatda emas, kodda bo'lib qoladi — va PII inventarini kod bo'ylab yig'ib chiqish kerak bo'lardi |
-| 39 | `document_type` — **cheklanmagan satr**, enum ham, CHECK ham emas | Katalog GTS tomonda va §26 da uni beradigan endpoint yo'q. Lokal enum keyin keladigan katalogga zid bo'lib chiqishi mumkin, CHECK esa bu xatoni tuzatishni migratsiyaga aylantiradi |
+| 39 | `document_type` — **cheklanmagan satr**, enum ham, CHECK ham emas | Katalog GTS tomonda. §26 `document-types/` endi uni klientga beradi, lekin ustunni cheklamaydi: lokal enum GTS ro'yxati o'zgarganda unga zid bo'lib chiqadi, CHECK esa bu xatoni tuzatishni migratsiyaga aylantiradi |
 | 40 | Yo'lovchida **bitta hujjat**, ichma-ich ro'yxat emas | "Yo'lovchilar va hujjatlari" ikki xil o'qiladi. Saqlangan yo'lovchi bron uchun bitta hujjat bilan ishlatiladi; ko'plik kerak bo'lsa bu jadval qatorlar bilan kengayadi, sxema bilan emas |
 | 41 | `avatar` purpose'i **`public`** | Private fayl route'ini `current_staff` qo'riqlaydi (`uploads/router_files.py`), ya'ni private avatar — egasi ocholmaydigan avatar. Uni yechish uchun kalitga egalik tekshiruvi kerak bo'lardi, bu esa route'ning butun dizaynini o'zgartiradi |
 | 42 | `avatar` — faqat **raster**, SVG yo'q | Logotipni client o'zi tanlaydi, avatarni esa notanish odam yuklaydi. SVG — XML, ichida `<script>` bo'lishi mumkin va imzo tekshiruvi buni ko'rmaydi (§4.13 bilan bir sabab, lekin bu yerda yuklovchi ishonchsiz) |
@@ -211,7 +222,7 @@ tug'ilmasligi uchun.
 | 65 | `middle_name` `register/` da **yo'q**, faqat profilda | §4.61 ro'yxatdan o'tishni manzil va parolgacha qisqartirgandi; uchinchi ixtiyoriy shaxsiy maydon o'sha qarorni orqaga qaytarardi. Ota ismi profil ekranida so'raladi, u esa tasdiqdan keyingi birinchi ekran |
 | 66 | Yo'lovchi `PATCH` ida `null` ni **`field_validator`** to'xtatadi, `model_validator` emas | `errors._field_from_location` maydon nomini `loc` dan oladi, model darajasidagi validatorda esa `loc` `("body",)` da to'xtaydi — 422 "nimadir xato" der edi, nimasi xatoligini emas (§3). `field_validator` default'lar ustida ishlamaydi, ya'ni u faqat kalit haqiqatan yuborilganda o'q otadi: "yo'q" bilan "`null`" farqli so'rov bo'lib qoladi. Faqat uchta majburiy maydon sanalgan — `staff` dagi "har qanday `None` ni tashlab ket" odati bu yerda hujjat raqamini o'chirishning yagona yo'lini yopib qo'yardi |
 | 67 | `passengers.birth_date` `NOT NULL` ga o'tdi, **backfill'siz** | Tug'ilgan sana uchun halol placeholder yo'q — o'ylab topilgani chiptaga chiqadi. Migratsiya `NULL` qator ustida to'xtaydi va ustun nomini aytadi. §4.61 dagi `first_name` bilan farq ataylab: ismni manzildan yasash mumkin edi va uni mijoz tuzatardi, sanani esa yo'q |
-| 68 | `passengers.citizenship` — **cheklanmagan satr**, enum ham, ISO kodi ham emas | `document_type` bilan bir sabab: davlatlar katalogi GTS tomonda va §26 da uni beradigan endpoint yo'q, ya'ni lokal ro'yxat keyin keladigan katalogga zid bo'lib chiqardi. Ustiga kod tanlash standartni ham tanlash demak — "UZ" mi, "UZB" mi, kontrakt hali aytmagan. Satrni keyin kengaytirish arzon, upstream bilan kelishmaydigan CHECK'ni yechish esa yo'q |
+| 68 | `passengers.citizenship` — **cheklanmagan satr**, enum ham, ISO kodi ham emas | `document_type` bilan bir sabab: davlatlar katalogi GTS tomonda va §26 `countries/` uni faqat **ko'rsatadi**, cheklamaydi — lokal ro'yxat GTS ro'yxati o'zgarganda unga zid bo'lib chiqardi. Ustiga kod tanlash standartni ham tanlash demak — "UZ" mi, "UZB" mi, kontrakt hali aytmagan. Satrni keyin kengaytirish arzon, upstream bilan kelishmaydigan CHECK'ni yechish esa yo'q |
 
 ---
 
