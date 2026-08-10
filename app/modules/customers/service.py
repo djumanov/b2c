@@ -274,9 +274,36 @@ async def _issue_code(
     return code
 
 
-_SUBJECTS: Final[dict[OtpPurpose, str]] = {
-    OtpPurpose.REGISTER: "Confirm your email address",
-    OtpPurpose.PASSWORD_RESET: "Password reset",
+#: Subject and body per purpose, written in Uzbek — ``i18n.DEFAULT_LANGUAGE``,
+#: the language this installation serves unless told otherwise. There is no
+#: per-customer language to pick by: the chain in API.md §7 resolves *stored*
+#: content for a request that carries a header, and a code is mailed with no
+#: request in sight. When the profile grows a language column this dict grows a
+#: second key; until then a message catalogue would be scaffolding with one
+#: language in it.
+#:
+#: The two purposes read differently on purpose. The same sentence for both
+#: would leave the reset mail unable to say the one thing that matters when it
+#: was not asked for — that ignoring it leaves the password alone.
+#:
+#: ``{code}`` and ``{minutes}`` are filled in below. Deliberately plain text: a
+#: real template lives in the adapter, and this is what a bare relay sends.
+_CODE_MESSAGES: Final[dict[OtpPurpose, tuple[str, str]]] = {
+    OtpPurpose.REGISTER: (
+        "Ro'yxatdan o'tishni tasdiqlash",
+        "Tasdiqlash kodi: {code}\n"
+        "\n"
+        "Kod {minutes} daqiqa amal qiladi.\n"
+        "Agar ro'yxatdan o'tmagan bo'lsangiz, bu xabarga e'tibor bermang.",
+    ),
+    OtpPurpose.PASSWORD_RESET: (
+        "Parolni tiklash",
+        "Parolni tiklash kodi: {code}\n"
+        "\n"
+        "Kod {minutes} daqiqa amal qiladi.\n"
+        "Agar so'rov yubormagan bo'lsangiz, bu xabarga e'tibor bermang — "
+        "parolingiz o'zgarmaydi.",
+    ),
 }
 
 
@@ -286,13 +313,11 @@ async def _send_code(
     # Which notifier depends on the installation's SMTP settings, so it takes a
     # session — a module owns that answer, not the provider package.
     notifier = await integrations_service.notifier(session)
+    subject, template = _CODE_MESSAGES[purpose]
     await notifier.send(
         recipient=customer.email,
-        subject=_SUBJECTS[purpose],
-        body=(
-            f"Your confirmation code is {code}.\n"
-            f"It expires in {int(OTP_TTL.total_seconds()) // 60} minutes."
-        ),
+        subject=subject,
+        body=template.format(code=code, minutes=int(OTP_TTL.total_seconds()) // 60),
         # The code also travels as a variable, because a real adapter renders a
         # template rather than sending this plain fallback text.
         context={
@@ -359,11 +384,12 @@ async def register(session: AsyncSession, data: RegisterIn) -> None:
         notifier = await integrations_service.notifier(session)
         await notifier.send(
             recipient=existing.email,
-            subject="You already have an account",
+            subject="Sizda allaqachon akkaunt bor",
             body=(
-                "Somebody tried to register with this address. "
-                "You already have an account — use password reset if you "
-                "cannot sign in."
+                "Bu manzil bilan ro'yxatdan o'tishga urinish bo'ldi.\n"
+                "\n"
+                "Sizda allaqachon akkaunt bor. Kira olmayotgan bo'lsangiz, "
+                "parolni tiklashdan foydalaning."
             ),
             context={"purpose": "register_existing", "customer_id": str(existing.id)},
         )
