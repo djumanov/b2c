@@ -577,7 +577,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["public", "profile", ""]
                 },
-                "description": "Returns `id, email, first_name, last_name, phone, birth_date, avatar_id, avatar_url, created_at`.\n\nNo `is_blocked`: a blocked account cannot reach this endpoint at all, so the field could only ever read `false`."
+                "description": "Returns `id, email, first_name, last_name, middle_name, phone, birth_date, avatar_id, avatar_url, created_at, is_profile_complete`.\n\nNo `is_blocked`: a blocked account cannot reach this endpoint at all, so the field could only ever read `false`.\n\n`is_profile_complete` is derived and read-only: `true` only when all five of `first_name`, `last_name`, `middle_name`, `phone` and `birth_date` are filled. Whitespace does not count as filled. Sending it to `PATCH` is a 422."
               },
               "response": []
             },
@@ -593,7 +593,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"phone\": \"+998901234567\",\n  \"birth_date\": \"1995-03-14\"\n}",
+                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"middle_name\": \"Baxtiyorovich\",\n  \"phone\": \"+998901234567\",\n  \"birth_date\": \"1995-03-14\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"
@@ -605,7 +605,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["public", "profile", ""]
                 },
-                "description": "**These four fields and nothing else.** The model is `extra=\"forbid\"`, so sending `email` — or any other key — is a 422 naming the field. The address is what the OTP proved and what password reset trusts, so it cannot be changed here.\n\nPartial: only the keys present change."
+                "description": "**These five fields and nothing else.** The model is `extra=\"forbid\"`, so sending `email` or `is_profile_complete` — or any other key — is a 422 naming the field. The address is what the OTP proved and what password reset trusts, so it cannot be changed here.\n\nPartial: only the keys present change."
               },
               "response": []
             },
@@ -800,7 +800,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"birth_date\": \"1995-03-14\",\n  \"document_type\": \"passport\",\n  \"document_number\": \"AA1234567\"\n}",
+                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"middle_name\": \"Baxtiyorovich\",\n  \"birth_date\": \"1995-03-14\",\n  \"citizenship\": \"Uzbekistan\",\n  \"document_type\": \"passport\",\n  \"document_number\": \"AA1234567\",\n  \"document_expiry_date\": \"2030-01-01\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"
@@ -812,7 +812,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["public", "profile", "passengers", ""]
                 },
-                "description": "Only `first_name` and `last_name` are required. `document_type` is free text (max 32) — the catalogue of document types is GTS's and has no endpoint yet.\n\n201. The test script stores the new id as `passengerId`."
+                "description": "`first_name`, `last_name` and `birth_date` are required; `middle_name`, `citizenship` and the document fields are optional. A passenger without a birth date would still have to be retyped before it could be booked, so it is refused here rather than at booking. `document_type` (max 32) and `citizenship` (max 64) are free text — the catalogues of document types and countries are GTS's and have no endpoint yet, and a country code would also mean choosing a standard the contract has not named.\n\n201. The test script stores the new id as `passengerId`."
               },
               "response": []
             },
@@ -854,7 +854,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["public", "profile", "passengers", "{{passengerId}}", ""]
                 },
-                "description": "Partial, and `extra=\"forbid\"` — an unknown key is a 422. Settable: `first_name`, `last_name`, `birth_date`, `document_type`, `document_number`."
+                "description": "Partial, and `extra=\"forbid\"` — an unknown key is a 422. Settable: `first_name`, `last_name`, `middle_name`, `birth_date`, `citizenship`, `document_type`, `document_number`, `document_expiry_date`.\n\nSending `null` for `first_name`, `last_name` or `birth_date` is a 422 naming the field — those three have no NULL in the table. The optional fields may be cleared with `null`; that is the only way to remove a stored document number."
               },
               "response": []
             },

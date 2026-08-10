@@ -76,6 +76,16 @@ OTP_PURPOSE_COLUMN = Enum(
 )
 
 
+def _filled(value: str | None) -> bool:
+    """Whitespace is not an answer.
+
+    ``PersonName`` only asks for one character, so ``" "`` reaches the column,
+    and ``phone`` has no lower bound at all, so ``""`` does too. Neither is
+    somebody having filled the field in.
+    """
+    return bool(value and value.strip())
+
+
 class Customer(Entity):
     """An end user. No role — API.md §4 gives ``role`` to staff tokens only."""
 
@@ -89,6 +99,9 @@ class Customer(Entity):
     #: exist before anybody has said who they are.
     first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    #: Optional in the column and in ``PATCH``, but ``is_profile_complete``
+    #: counts it: here a full name has three parts (PROJECT.md §13).
+    middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     #: The uploaded avatar, by id and **not** by foreign key. ``uploads`` is a
@@ -124,16 +137,39 @@ class Customer(Entity):
         """
         return self.is_verified and not self.is_blocked and not self.is_deleted
 
+    @property
+    def is_profile_complete(self) -> bool:
+        """Has this customer finished saying who they are? (API.md §19)
+
+        Registration asks for the address and the password and nothing else,
+        so a live row with every personal column NULL is normal rather than
+        broken. The rule for "finished" lives here instead of in each client:
+        the app and the site must not disagree about whether to show the
+        fill-in-your-profile prompt, and a disagreement like that is one
+        nobody reports.
+
+        No special case for the ``[deleted]`` sentinel ``delete_account``
+        writes — it only ever lands on a soft-deleted row, and such a row
+        never reaches ``/public/profile/``; ``get_active`` refuses it first.
+        """
+        return (
+            _filled(self.first_name)
+            and _filled(self.last_name)
+            and _filled(self.middle_name)
+            and _filled(self.phone)
+            and self.birth_date is not None
+        )
+
 
 class Passenger(Entity):
     """Somebody this customer books for — themselves included (API.md §19).
 
     The field set comes from PROJECT.md §13's inventory of stored personal
-    data and stops there: name, birth date, document type and number. Gender,
-    citizenship and document expiry are **not** in that list, so they are not
-    here either — a declared PII inventory is not something a module extends
-    on its way past. Booking may well want them in phase 2; that starts with
-    an edit to §13.
+    data and stops there: name, patronymic, birth date, citizenship, document
+    type, number and expiry. Gender is **not** in that list, so it is not here
+    either — a declared PII inventory is not something a module extends on its
+    way past. Booking may well want it in phase 2; that starts with an edit
+    to §13.
 
     An ``Entity``, so ``DELETE`` is the soft delete API.md §8 promises. Nothing
     unique about it: the same person legitimately appears twice, once with an
@@ -150,13 +186,25 @@ class Passenger(Entity):
     )
     first_name: Mapped[str] = mapped_column(String(120), nullable=False)
     last_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Optional here, unlike on ``Customer``'s completeness rule: a foreign
+    #: passport frequently has no patronymic to copy off it.
+    middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    #: Required. A saved passenger exists to save retyping, and one without a
+    #: birth date has to be retyped before it can be booked anyway — so the
+    #: gap would surface at booking time rather than at save time (API.md §19).
+    birth_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: Free text for the same reason as ``document_type``: the list of countries
+    #: is GTS's, and picking a code here would also mean picking a standard
+    #: ("UZ" or "UZB") the contract has not named yet.
+    citizenship: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: Free text, not an enum. The catalogue of document types lives on the GTS
     #: side (GTS.md §9) and API.md §26 has no endpoint that serves it, so a
     #: local enum would be a guess — and a CHECK constraint is the expensive
     #: kind of guess to be wrong about.
     document_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     document_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Optional: not every kind of document carries one.
+    document_expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class CustomerRefreshToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):

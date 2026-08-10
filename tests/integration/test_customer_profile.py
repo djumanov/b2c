@@ -72,6 +72,74 @@ async def test_patch_changes_the_fields_it_is_given(
     assert data["first_name"] == customer.first_name
 
 
+async def test_the_profile_says_when_it_is_not_finished_yet(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """The fixture account has a first name and nothing else, which is what a
+    real one looks like after registration (API.md §18). The flag flips on the
+    field that completes the set, not before it."""
+    headers = customer_headers_for(customer)
+    assert (await api.get(PROFILE, headers=headers)).json()["data"][
+        "is_profile_complete"
+    ] is False
+
+    partial = await api.patch(
+        PROFILE,
+        headers=headers,
+        json={"last_name": "Karimov", "middle_name": "Baxtiyorovich"},
+    )
+    assert partial.json()["data"]["is_profile_complete"] is False
+
+    finished = await api.patch(
+        PROFILE,
+        headers=headers,
+        json={"phone": "+998901234567", "birth_date": "1995-04-17"},
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["data"]["middle_name"] == "Baxtiyorovich"
+    assert finished.json()["data"]["is_profile_complete"] is True
+
+
+async def test_clearing_a_field_makes_the_profile_incomplete_again(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """Every customer column is nullable, so ``null`` is how somebody removes a
+    phone number they no longer want stored — and the flag has to follow it
+    back down rather than latch."""
+    headers = customer_headers_for(customer)
+    await api.patch(
+        PROFILE,
+        headers=headers,
+        json={
+            "last_name": "Karimov",
+            "middle_name": "Baxtiyorovich",
+            "phone": "+998901234567",
+            "birth_date": "1995-04-17",
+        },
+    )
+
+    cleared = await api.patch(PROFILE, headers=headers, json={"phone": None})
+
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["data"]["phone"] is None
+    assert cleared.json()["data"]["is_profile_complete"] is False
+
+
+async def test_the_completeness_flag_cannot_be_sent(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """It is derived, so writing it is meaningless — and accepting it silently
+    would let a client tell itself the profile was finished."""
+    response = await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"is_profile_complete": True},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "is_profile_complete"
+
+
 async def test_changing_the_email_is_refused_not_ignored(
     api: AsyncClient, customer: Customer
 ) -> None:
@@ -243,6 +311,13 @@ async def test_deleting_the_account_empties_the_row(
     """PROJECT.md §13 says personal data is *cleared*. A soft delete conceals a
     row without emptying it, so both happen."""
     await _upload_avatar(api, customer)
+    # Filled in first, or the assertions below would pass on a column the
+    # fixture never wrote.
+    await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"middle_name": "Baxtiyorovich", "phone": "+998901234567"},
+    )
 
     response = await api.request(
         "DELETE",
@@ -255,6 +330,7 @@ async def test_deleting_the_account_empties_the_row(
     await session.refresh(customer)
     assert customer.is_deleted
     assert customer.email != "buyer@example.uz"
+    assert customer.middle_name is None
     assert customer.phone is None
     assert customer.birth_date is None
     assert customer.avatar_id is None

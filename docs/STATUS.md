@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-06 · `feat/payment-integrations`
+**Oxirgi yangilanish:** 2026-08-10 · `feat/customer-middle-name`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -20,8 +20,8 @@ takrorlamaydi.
 | Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
 | Endpointlar | 47 ta yo'l / 66 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 18 ta + `alembic_version` |
-| Migratsiyalar | 12 ta, bitta head (`3b6f21c0d4ae`) |
-| Testlar | 506 ta — unit 15 fayl · contract 7 · integration 18 |
+| Migratsiyalar | 14 ta, bitta head (`2a9b860859f1`) |
+| Testlar | 524 ta — unit 16 fayl · contract 7 · integration 18 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -206,6 +206,12 @@ tug'ilmasligi uchun.
 | 60 | Verifier override'i **faqat o'z provayderiga** javob beradi | Aks holda pinlangan Google verifier'i qo'llanmaydigan provayderni ishlata boshlardi va testlar hech kim yeta olmaydigan route haqida o'zlari bilan kelishib qolardi |
 | 61 | `register/` da majburiy maydon **faqat ikkitasi**: `email` va `password`; `customers.first_name` `NULL` qabul qiladi | Akkaunt — manzil va uni tasdiqlagan narsa; ism esa profil ekranining ishi (§19). Ustun `NOT NULL` qolganda ro'yxatdan o'tish yo ismni majburlardi, yo o'ylab topilgan qiymat yozardi. Shu sabab social oqim ham endi manzil boshidan ism yasamaydi: mijozga o'zi tanlamagan ism o'ziniki bo'lib ko'rinardi |
 | 62 | OTP **to'rt raqam** (`OTP_LENGTH`), generator kenglikni o'sha konstantadan oladi | Maydon million emas, o'n ming — demak `OTP_MAX_ATTEMPTS` endi haqiqiy himoya: shiftsiz kodni terib chiqish soniyalar ishi bo'lardi. Uch to'siq o'z joyida: beshta urinishda kod kuyadi, qayta yuborish orasi 60 s, §14 esa IP'ni 5/daqiqa bilan cheklaydi. Generator `f"…{10**OTP_LENGTH}…"` bilan yozilgan — uzunlikni ikkinchi joyda takrorlash kontrakt qabul qilmaydigan kod chiqarish demakdir |
+| 63 | `is_profile_complete` — **modelda `@property`**, sxemada `computed_field` emas | Bu qator haqidagi fakt, sim shakli haqidagi emas: `is_verified` va `is_active` xuddi shu yerda turadi va `tests/unit` ularni sessiyasiz sinaydi. `ProfileOut` da bo'lganda shartni sinash uchun `avatar_url` bilan birga butun javobni yig'ish kerak bo'lardi, `avatar_url` esa boshqa modulga so'rov |
+| 64 | To'lganlik sharti — `bool(value and value.strip())`, ya'ni **faqat bo'sh joy** to'lgan hisoblanmaydi | `PersonName` bir belgi so'raydi, demak `" "` ustungacha yetadi; `phone` da quyi chegara umuman yo'q, demak `""` ham yetadi. Ikkalasi ham "to'ldirdim" degan javob emas, va ularni sanash mijozga server "tugadi" deydigan, o'zi esa bo'sh ko'radigan profil qoldirardi. `[deleted]` sentineliga alohida shox yo'q: u faqat soft-delete qilingan qatorda paydo bo'ladi, u qator esa `get_active` dan o'tmaydi |
+| 65 | `middle_name` `register/` da **yo'q**, faqat profilda | §4.61 ro'yxatdan o'tishni manzil va parolgacha qisqartirgandi; uchinchi ixtiyoriy shaxsiy maydon o'sha qarorni orqaga qaytarardi. Ota ismi profil ekranida so'raladi, u esa tasdiqdan keyingi birinchi ekran |
+| 66 | Yo'lovchi `PATCH` ida `null` ni **`field_validator`** to'xtatadi, `model_validator` emas | `errors._field_from_location` maydon nomini `loc` dan oladi, model darajasidagi validatorda esa `loc` `("body",)` da to'xtaydi — 422 "nimadir xato" der edi, nimasi xatoligini emas (§3). `field_validator` default'lar ustida ishlamaydi, ya'ni u faqat kalit haqiqatan yuborilganda o'q otadi: "yo'q" bilan "`null`" farqli so'rov bo'lib qoladi. Faqat uchta majburiy maydon sanalgan — `staff` dagi "har qanday `None` ni tashlab ket" odati bu yerda hujjat raqamini o'chirishning yagona yo'lini yopib qo'yardi |
+| 67 | `passengers.birth_date` `NOT NULL` ga o'tdi, **backfill'siz** | Tug'ilgan sana uchun halol placeholder yo'q — o'ylab topilgani chiptaga chiqadi. Migratsiya `NULL` qator ustida to'xtaydi va ustun nomini aytadi. §4.61 dagi `first_name` bilan farq ataylab: ismni manzildan yasash mumkin edi va uni mijoz tuzatardi, sanani esa yo'q |
+| 68 | `passengers.citizenship` — **cheklanmagan satr**, enum ham, ISO kodi ham emas | `document_type` bilan bir sabab: davlatlar katalogi GTS tomonda va §26 da uni beradigan endpoint yo'q, ya'ni lokal ro'yxat keyin keladigan katalogga zid bo'lib chiqardi. Ustiga kod tanlash standartni ham tanlash demak — "UZ" mi, "UZB" mi, kontrakt hali aytmagan. Satrni keyin kengaytirish arzon, upstream bilan kelishmaydigan CHECK'ni yechish esa yo'q |
 
 ---
 

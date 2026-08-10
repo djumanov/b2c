@@ -707,11 +707,13 @@ async def to_profile(session: AsyncSession, customer: Customer) -> ProfileOut:
         email=customer.email,
         first_name=customer.first_name,
         last_name=customer.last_name,
+        middle_name=customer.middle_name,
         phone=customer.phone,
         birth_date=customer.birth_date,
         avatar_id=customer.avatar_id,
         avatar_url=await uploads_service.url_for(session, customer.avatar_id),
         created_at=customer.created_at,
+        is_profile_complete=customer.is_profile_complete,
     )
 
 
@@ -819,6 +821,7 @@ async def delete_account(
     customer.email = f"deleted-{customer.id}@invalid"
     customer.first_name = _REDACTED
     customer.last_name = None
+    customer.middle_name = None
     customer.phone = None
     customer.birth_date = None
     # Not a hash of anything: argon2 will never verify against it, so no

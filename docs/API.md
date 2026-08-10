@@ -465,6 +465,10 @@ Majburiy maydonlar — faqat `email` va `password`; `first_name`, `last_name` va
 ekanligining tafsiloti va uni profil ekrani so'raydi (§19). Parol uzunligi —
 kamida **8** belgi, aks holda `422 validation`.
 
+`middle_name` bu yerda **yo'q** — u faqat profilda to'ldiriladi (§19). Ro'yxatdan
+o'tish yangi shaxsiy maydon qabul qilmaydi: qancha kam so'ralsa, shuncha ko'p odam
+oxirigacha yetadi, qolgani esa profil ekranining ishi.
+
 Javob **har doim `204`**, hatto manzil allaqachon band bo'lsa ham. Aks holda bu
 endpoint kimning bizda akkaunti borligini tekshiradigan vositaga aylanardi. Band
 manzil o'rniga **o'sha akkauntga** "sizda allaqachon akkaunt bor, parolni tiklang"
@@ -630,21 +634,29 @@ GET /public/profile/
 → { "status": "success",
     "data": { "id": "9f2c…", "email": "user@mail.uz",
               "first_name": "Aziz", "last_name": "Karimov",
+              "middle_name": "Baxtiyorovich",
               "phone": "+998901234567", "birth_date": "1995-04-17",
               "avatar_id": "1a7b…", "avatar_url": "/uploads/avatar/ab/…png",
-              "created_at": "…" } }
+              "created_at": "…", "is_profile_complete": true } }
 ```
 
 ```json
 PATCH /public/profile/
-{ "first_name": "Aziz", "last_name": "Karimov",
+{ "first_name": "Aziz", "last_name": "Karimov", "middle_name": "Baxtiyorovich",
   "phone": "+998901234567", "birth_date": "1995-04-17" }
 ```
 
 Ro'yxatdan o'tishda ism so'ralmagani uchun (§18) `first_name` ham `null` bo'lishi
 mumkin — mijoz uni shu yerda to'ldiradi.
 
-`PATCH` **faqat shu to'rtta maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
+`is_profile_complete` — **faqat o'qish uchun**, ustun emas: `first_name`, `last_name`,
+`middle_name`, `phone` va `birth_date` ning **beshalasi ham** to'ldirilgan bo'lsa `true`.
+Faqat bo'sh joydan iborat qiymat to'ldirilgan hisoblanmaydi. Shart serverda turadi,
+chunki har bir klient uni o'zicha hisoblasa, "profilni to'ldiring" ekrani ilovada
+saytdagidan boshqacha chiqadi — va bu farqni hech kim xato deb bildirmaydi. `PATCH` da
+yuborilsa u noma'lum maydon, ya'ni `422 validation`.
+
+`PATCH` **faqat shu beshta maydonni** oladi. Boshqa nom yuborilsa `422 validation` —
 jimgina e'tiborsiz qoldirilmaydi, aks holda panel o'zgarmagan qiymatni o'zgargandek
 ko'rsatardi.
 
@@ -695,8 +707,8 @@ uni bajarishga yetarli bo'lmasligi kerak.
 > yubora olmaydi (masalan `httpx`) — u holda umumiy `request("DELETE", …)` shakli
 > ishlatiladi.
 
-**Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi — ism, telefon, tug'ilgan sana va
-manzil qatordan olib tashlanadi, saqlangan yo'lovchilar ham. Buyurtma va to'lov yozuvlari
+**Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi — ism va ota ismi, telefon, tug'ilgan
+sana va manzil qatordan olib tashlanadi, saqlangan yo'lovchilar ham. Buyurtma va to'lov yozuvlari
 esa moliyaviy hujjat sifatida anonimlashtirilib saqlanadi
 ([PROJECT.md](PROJECT.md) §13). Manzil bo'shaydi, ya'ni o'sha email bilan qaytadan
 ro'yxatdan o'tish mumkin.
@@ -711,17 +723,28 @@ GET /public/profile/passengers/
 → { "status": "success",
     "data": [
       { "id": "3c1d…", "first_name": "Aziz", "last_name": "Karimov",
-        "birth_date": "1995-04-17",
+        "middle_name": "Baxtiyorovich", "birth_date": "1995-04-17",
+        "citizenship": "Uzbekistan",
         "document_type": "passport", "document_number": "AA1234567",
+        "document_expiry_date": "2030-01-01",
         "created_at": "…", "updated_at": "…" }
     ],
     "errors": [], "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
 ```
 
 - Maydonlar to'plami [PROJECT.md](PROJECT.md) §13 dagi saqlanadigan shaxsiy ma'lumot
-  ro'yxatidan olingan va undan oshmaydi. Jins, fuqarolik va hujjat amal muddati **yo'q** —
-  ular o'sha ro'yxatda yo'q, ya'ni qo'shilishi kerak bo'lsa avval `PROJECT.md` §13
-  tahrirlanadi.
+  ro'yxatidan olingan va undan oshmaydi. Jins **yo'q** — u o'sha ro'yxatda yo'q, ya'ni
+  qo'shilishi kerak bo'lsa avval `PROJECT.md` §13 tahrirlanadi.
+- `birth_date` — **majburiy**. Saqlangan yo'lovchi qayta terishni oldini olish uchun bor,
+  tug'ilgan sanasiz yozuv esa bron uchun baribir yaramaydi: u yarim to'ldirilgan shakl
+  bo'lib qolardi va buni saqlagan paytda emas, bron paytida bilib qolinardi.
+- `middle_name`, `citizenship` va `document_expiry_date` — **ixtiyoriy**. Ota ismi hujjatda
+  har doim ham bo'lmaydi (chet el pasporti), amal muddati esa hujjatning har bir turida
+  bo'lmaydi.
+- `citizenship` — `document_type` kabi **cheklanmagan satr**, enum ham, ISO kodi ham emas.
+  Davlatlar ro'yxati GTS tomonda ([GTS.md](GTS.md) §9) va §26 da uni beradigan endpoint
+  hozircha yo'q; lokal ro'yxat keyin keladigan katalogga zid bo'lib chiqardi, kod tanlash
+  esa qaysi standart ekanini ("UZ" yoki "UZB") kontrakt aytmaguncha erta bo'lardi.
 - **Bitta yo'lovchida bitta hujjat.** Ichma-ich ro'yxat emas: saqlangan yo'lovchi bron
   uchun bitta hujjat bilan ishlatiladi.
 - `document_type` — **cheklanmagan satr**. Hujjat turlari katalogi GTS tomonda
@@ -737,7 +760,9 @@ GET /public/profile/passengers/
 |---|---|---|
 | Token yo'q yoki muddati tugagan | `unauthorized` | 401 |
 | Tasdiqlanmagan yoki bloklangan akkaunt | `forbidden` | 403 |
-| `PATCH` da noma'lum maydon (jumladan `email`) | `validation` | 422 |
+| `PATCH` da noma'lum maydon (jumladan `email` va `is_profile_complete`) | `validation` | 422 |
+| Yo'lovchida `birth_date` yo'q | `validation` (`field: "birth_date"`) | 422 |
+| Yo'lovchi `PATCH` ida majburiy maydonga `null` (`first_name`, `last_name`, `birth_date`) | `validation` (`field`: o'sha maydon) | 422 |
 | Noto'g'ri joriy parol | `validation` (`field: "current_password"`) | 422 |
 | `DELETE /public/profile/` da noto'g'ri parol | `validation` (`field: "password"`) | 422 |
 | Fayl turi yoki hajmi mos emas | `validation` (`field: "file"`) | 422 |

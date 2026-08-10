@@ -166,6 +166,91 @@ async def test_a_passenger_needs_a_name(api: AsyncClient, customer: Customer) ->
     assert response.json()["errors"][0]["field"] == "first_name"
 
 
+async def test_a_passenger_needs_a_birth_date(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """A saved passenger exists to save retyping. Without a birth date it has
+    to be retyped before it can be booked anyway, so the gap is refused at save
+    time rather than discovered at booking time (API.md §19)."""
+    payload = {name: value for name, value in AZIZ.items() if name != "birth_date"}
+
+    response = await api.post(
+        PASSENGERS, headers=customer_headers_for(customer), json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "birth_date"
+
+
+async def test_a_required_field_cannot_be_cleared(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """The three required columns have no NULL in the table, so ``null`` has to
+    come back as a 422 naming the field — not as the 500 a blind ``setattr``
+    would turn it into."""
+    created = await _create(api, customer)
+    url = f"{PASSENGERS}{created['id']}/"
+
+    for field in ("first_name", "last_name", "birth_date"):
+        response = await api.patch(
+            url, headers=customer_headers_for(customer), json={field: None}
+        )
+        assert response.status_code == 422, f"{field}: {response.text}"
+        assert response.json()["errors"][0]["field"] == field
+
+
+async def test_an_optional_document_field_can_be_cleared(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """The mirror of the test above, and the reason the guard names three
+    fields rather than skipping every ``None``: clearing a document number is
+    the only way to remove one."""
+    created = await _create(api, customer)
+
+    response = await api.patch(
+        f"{PASSENGERS}{created['id']}/",
+        headers=customer_headers_for(customer),
+        json={"document_number": None},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["document_number"] is None
+
+
+async def test_the_optional_person_and_document_fields_round_trip(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """A foreign passport has no patronymic and not every document carries an
+    expiry, so both stay optional — but both come back when given."""
+    given = await _create(
+        api,
+        customer,
+        middle_name="Baxtiyorovich",
+        citizenship="Uzbekistan",
+        document_expiry_date="2030-01-01",
+    )
+    assert given["middle_name"] == "Baxtiyorovich"
+    assert given["citizenship"] == "Uzbekistan"
+    assert given["document_expiry_date"] == "2030-01-01"
+
+    omitted = await _create(api, customer, document_number="BB7654321")
+    assert omitted["middle_name"] is None
+    assert omitted["citizenship"] is None
+    assert omitted["document_expiry_date"] is None
+
+
+async def test_citizenship_is_not_constrained(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """Free text like ``document_type``: the country list is GTS's, and a code
+    column would also pick a standard the contract has not named."""
+    spelled_out = await _create(api, customer, citizenship="Republic of Uzbekistan")
+    assert spelled_out["citizenship"] == "Republic of Uzbekistan"
+
+    as_a_code = await _create(api, customer, citizenship="UZB")
+    assert as_a_code["citizenship"] == "UZB"
+
+
 async def test_the_document_type_is_not_constrained(
     api: AsyncClient, customer: Customer
 ) -> None:

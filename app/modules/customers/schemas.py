@@ -12,7 +12,7 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Final
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 #: A floor, not a policy (PROJECT.md §7): below this the argon2 hash stops
 #: being the thing that protects the account.
@@ -107,19 +107,23 @@ class ProfileOut(BaseModel):
     endpoint at all (``service.get_active`` raises first), so the field could
     only ever read ``false``.
 
-    No ``from_attributes``: ``avatar_url`` is not a column, so the service
-    builds this one field by field.
+    No ``from_attributes``: neither ``avatar_url`` nor ``is_profile_complete``
+    is a column, so the service builds this one field by field.
     """
 
     id: uuid.UUID
     email: EmailStr
     first_name: str | None
     last_name: str | None
+    middle_name: str | None
     phone: str | None
     birth_date: date | None
     avatar_id: uuid.UUID | None
     avatar_url: str | None
     created_at: datetime
+    #: Derived — see ``Customer.is_profile_complete``. Read-only: sending it to
+    #: ``PATCH`` is an unknown field like any other, so 422.
+    is_profile_complete: bool
 
 
 class ProfileUpdateIn(BaseModel):
@@ -135,6 +139,7 @@ class ProfileUpdateIn(BaseModel):
 
     first_name: PersonName | None = None
     last_name: PersonName | None = None
+    middle_name: PersonName | None = None
     phone: Annotated[str | None, Field(max_length=32)] = None
     birth_date: date | None = None
 
@@ -160,9 +165,12 @@ class PassengerOut(BaseModel):
     id: uuid.UUID
     first_name: str
     last_name: str
-    birth_date: date | None
+    middle_name: str | None
+    birth_date: date
+    citizenship: str | None
     document_type: str | None
     document_number: str | None
+    document_expiry_date: date | None
     created_at: datetime
     updated_at: datetime
 
@@ -170,11 +178,20 @@ class PassengerOut(BaseModel):
 class PassengerCreateIn(BaseModel):
     first_name: PersonName
     last_name: PersonName
-    birth_date: date | None = None
+    #: Optional, unlike the customer's own: a foreign passport often has no
+    #: patronymic on it.
+    middle_name: PersonName | None = None
+    #: Required — API.md §19. A saved passenger without one still has to be
+    #: retyped before it can be booked, so it would only look saved.
+    birth_date: date
+    #: Free text, like ``document_type`` — and for the extra reason that a code
+    #: would mean choosing a standard ("UZ" or "UZB") the contract has not named.
+    citizenship: Annotated[str | None, Field(max_length=64)] = None
     #: Free text: the catalogue of document types is GTS's and API.md §26 has
     #: no endpoint serving it yet.
     document_type: Annotated[str | None, Field(max_length=32)] = None
     document_number: Annotated[str | None, Field(max_length=64)] = None
+    document_expiry_date: date | None = None
 
 
 class PassengerUpdateIn(BaseModel):
@@ -182,9 +199,33 @@ class PassengerUpdateIn(BaseModel):
 
     first_name: PersonName | None = None
     last_name: PersonName | None = None
+    middle_name: PersonName | None = None
     birth_date: date | None = None
+    citizenship: Annotated[str | None, Field(max_length=64)] = None
     document_type: Annotated[str | None, Field(max_length=32)] = None
     document_number: Annotated[str | None, Field(max_length=64)] = None
+    document_expiry_date: date | None = None
+
+    @field_validator("first_name", "last_name", "birth_date")
+    @classmethod
+    def _not_cleared[T](cls, value: T) -> T:
+        """These three have no NULL in the table, so ``PATCH`` may leave them
+        out but may not empty them.
+
+        A **field** validator rather than a model one: ``api/errors.py`` reads
+        the field name out of ``loc``, and a model validator's ``loc`` stops at
+        ``("body",)`` — the 422 would say something was wrong without saying
+        what, which is the one thing §3 asks of a validation error.
+
+        Pydantic does not run validators over defaults, so this fires only when
+        the key was really sent: omitted and ``null`` stay different requests.
+        The optional document fields are deliberately not listed — ``null`` is
+        how a customer clears one, and the staff module's habit of skipping
+        ``None`` (``staff/service.py``) would silently make that impossible.
+        """
+        if value is None:
+            raise ValueError("This field cannot be cleared")
+        return value
 
 
 __all__ = [

@@ -306,8 +306,14 @@ foydalanuvchiga tushunarli xabar ko'rsatiladi. GTS xatosi hech qachon yashirilma
 
 ## 13. Xavfsizlik va shaxsiy ma'lumot
 
-**Saqlanadigan shaxsiy ma'lumot:** ism va familiya, email, telefon, tug'ilgan sana, hujjat turi
-va raqami (yo'lovchi ma'lumoti sifatida), buyurtma tarixi, IP manzil, qurilma push tokeni.
+**Saqlanadigan shaxsiy ma'lumot:** ism, familiya va ota ismi, email, telefon, tug'ilgan sana,
+fuqarolik, hujjat turi, raqami va amal muddati (yo'lovchi ma'lumoti sifatida), buyurtma tarixi,
+IP manzil, qurilma push tokeni.
+
+Ota ismi **ustun sifatida ixtiyoriy** (`NULL` qabul qiladi), lekin profil "to'liq" hisoblanishi
+uchun kerak — [API.md](API.md) §19 dagi `is_profile_complete` beshta maydonni sanaydi. Hujjat
+amal muddati ham ixtiyoriy: u hujjatning har bir turida bo'lavermaydi. Ro'yxat — **shift**,
+majburiyat emas: bu yerda turgan maydon har bir jadvalda paydo bo'lishi shart degani emas.
 
 | Mavzu | Qoida |
 |---|---|
