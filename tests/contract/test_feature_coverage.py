@@ -52,6 +52,11 @@ CORE_PREFIXES: tuple[str, ...] = (
     # complete, so there is no flag in FEATURE_DEFAULTS this could hang from —
     # and inventing one would offer a switch that must never be thrown.
     f"{API_PREFIX}/public/catalog/",
+    # Static pages, the same reasoning: privacy-policy and terms must exist on
+    # every installation (API.md §28), so there is no flag that could remove
+    # them. Precise prefixes — FAQ under /content/ stays behind its own flag.
+    f"{API_PREFIX}/admin/content/pages/",
+    f"{API_PREFIX}/public/content/pages/",
 )
 
 

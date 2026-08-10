@@ -1,9 +1,10 @@
-"""``/admin/content/faq/`` (API.md §30).
+"""``/admin/content/faq/`` and ``/admin/content/pages/`` (API.md §30).
 
-The whole section sits behind the ``faq`` feature flag: switched off it
-answers 404 on both surfaces (API.md §28). ``current_staff`` runs first, so an
-anonymous caller is told 401 and a customer token 403 before the flag can turn
-either into a 404.
+FAQ sits behind the ``faq`` feature flag: switched off it answers 404 on both
+surfaces (API.md §28). Pages take no flag — privacy-policy and terms must
+exist on every installation, so there is no switch that could remove them.
+``current_staff`` runs first, so an anonymous caller is told 401 and a
+customer token 403 before a flag can turn either into a 404.
 """
 
 import uuid
@@ -18,7 +19,15 @@ from app.db.session import SessionDep
 from app.modules.audit.deps import Audited
 from app.modules.cms import service
 from app.modules.cms.models import ContentStatus
-from app.modules.cms.schemas import FaqAdminOut, FaqIn, FaqUpdateIn, ReorderItemIn
+from app.modules.cms.schemas import (
+    FaqAdminOut,
+    FaqIn,
+    FaqUpdateIn,
+    PageAdminOut,
+    PageIn,
+    PageUpdateIn,
+    ReorderItemIn,
+)
 
 faq_router = enveloped_router(
     prefix="/content/faq",
@@ -87,4 +96,56 @@ async def unpublish_faq(id: uuid.UUID, session: SessionDep) -> FaqAdminOut:
     return await service.set_faq_status(session, id, ContentStatus.DRAFT)
 
 
-__all__ = ["faq_router"]
+# --- static pages ----------------------------------------------------------------
+
+pages_router = enveloped_router(
+    prefix="/content/pages",
+    tags=["cms"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@pages_router.get("/", summary="List static pages")
+async def list_pages(
+    session: SessionDep,
+    pagination: PaginationDep,
+    query: ListQueryDep,
+    status: StatusParam = None,
+) -> Page[PageAdminOut]:
+    return await service.list_pages_admin(session, pagination, query, status=status)
+
+
+@pages_router.post("/", status_code=201, summary="Add a static page (as a draft)")
+async def create_page(data: PageIn, session: SessionDep) -> PageAdminOut:
+    return await service.create_page(session, data)
+
+
+@pages_router.get("/{id}/", summary="One static page")
+async def get_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
+    return await service.get_page(session, id)
+
+
+@pages_router.patch("/{id}/", summary="Change slug, title or body")
+async def update_page(
+    id: uuid.UUID, data: PageUpdateIn, session: SessionDep
+) -> PageAdminOut:
+    return await service.update_page(session, id, data)
+
+
+@pages_router.delete("/{id}/", status_code=204, summary="Remove a static page")
+async def delete_page(id: uuid.UUID, session: SessionDep) -> Response:
+    await service.delete_page(session, id)
+    return Response(status_code=204)
+
+
+@pages_router.post("/{id}/publish/", summary="Publish a static page")
+async def publish_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
+    return await service.set_page_status(session, id, ContentStatus.PUBLISHED)
+
+
+@pages_router.post("/{id}/unpublish/", summary="Take a static page off the site")
+async def unpublish_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
+    return await service.set_page_status(session, id, ContentStatus.DRAFT)
+
+
+__all__ = ["faq_router", "pages_router"]

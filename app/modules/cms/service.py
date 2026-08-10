@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import NotFound
+from app.api.errors import NotFound, ValidationFailed
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -24,13 +24,18 @@ from app.api.listing import (
 )
 from app.core import i18n
 from app.core.logging import get_logger
-from app.db.repository import get_live_or_404, live
+from app.db.repository import exists_live, get_live_or_404, live
 from app.modules.cms.models import ContentStatus, Faq
+from app.modules.cms.models import Page as PageModel
 from app.modules.cms.schemas import (
     FaqAdminOut,
     FaqIn,
     FaqPublicOut,
     FaqUpdateIn,
+    PageAdminOut,
+    PageIn,
+    PagePublicOut,
+    PageUpdateIn,
     ReorderItemIn,
 )
 from app.modules.settings import service as settings_service
@@ -191,13 +196,149 @@ async def list_faq_public(
     return items
 
 
+# --- pages, admin (API.md §30) ---------------------------------------------------
+
+_PAGE_ORDERING: OrderingMap = {
+    "slug": PageModel.slug,
+    "created_at": PageModel.created_at,
+}
+
+
+async def _require_free_slug(session: AsyncSession, slug: str) -> None:
+    """A 422 naming the field; the partial unique index is the guarantee."""
+    if await exists_live(session, PageModel, PageModel.slug == slug):
+        raise ValidationFailed(
+            f"A page with slug {slug!r} already exists", field="slug"
+        )
+
+
+async def list_pages_admin(
+    session: AsyncSession,
+    pagination: Pagination,
+    query: ListQuery,
+    *,
+    status: str | None = None,
+) -> Page[PageAdminOut]:
+    stmt = live(PageModel)
+    if status is not None:
+        stmt = stmt.where(PageModel.status == status)
+    stmt = apply_search(stmt, query, PageModel.slug)
+    stmt = apply_created_range(stmt, query, PageModel.created_at)
+    stmt = apply_ordering(
+        stmt, query, allowed=_PAGE_ORDERING, default="slug", tiebreak=PageModel.id
+    )
+    rows, total = await paginate(session, stmt, pagination)
+    return page([PageAdminOut.model_validate(row) for row in rows], pagination, total)
+
+
+async def create_page(session: AsyncSession, data: PageIn) -> PageAdminOut:
+    await _require_free_slug(session, data.slug)
+    row = PageModel(
+        slug=data.slug,
+        title=data.title,
+        body=data.body,
+        status=ContentStatus.DRAFT,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    logger.info("page_created", page_id=str(row.id), slug=row.slug)
+    return PageAdminOut.model_validate(row)
+
+
+async def get_page(session: AsyncSession, page_id: uuid.UUID) -> PageAdminOut:
+    return PageAdminOut.model_validate(await _require_page(session, page_id))
+
+
+async def update_page(
+    session: AsyncSession, page_id: uuid.UUID, data: PageUpdateIn
+) -> PageAdminOut:
+    row = await _require_page(session, page_id)
+    if data.slug is not None and data.slug != row.slug:
+        await _require_free_slug(session, data.slug)
+        row.slug = data.slug
+    # Translated fields merge per language, same as the FAQ.
+    if data.title is not None:
+        row.title = {**row.title, **data.title}
+    if data.body is not None:
+        row.body = {**row.body, **data.body}
+    await session.commit()
+    await session.refresh(row)
+    return PageAdminOut.model_validate(row)
+
+
+async def delete_page(session: AsyncSession, page_id: uuid.UUID) -> None:
+    row = await _require_page(session, page_id)
+    row.soft_delete()
+    await session.commit()
+    logger.info("page_deleted", page_id=str(row.id), slug=row.slug)
+
+
+async def set_page_status(
+    session: AsyncSession, page_id: uuid.UUID, status: ContentStatus
+) -> PageAdminOut:
+    row = await _require_page(session, page_id)
+    row.status = status
+    await session.commit()
+    await session.refresh(row)
+    logger.info("page_status_set", page_id=str(row.id), status=str(status))
+    return PageAdminOut.model_validate(row)
+
+
+async def _require_page(session: AsyncSession, page_id: uuid.UUID) -> PageModel:
+    return await get_live_or_404(session, PageModel, page_id, name="Page")
+
+
+# --- pages, public (API.md §24) --------------------------------------------------
+
+
+async def get_page_public(
+    session: AsyncSession, slug: str, *, requested: str | None
+) -> PagePublicOut:
+    row = await session.scalar(live(PageModel).where(PageModel.slug == slug))
+    # Missing and unpublished answer the same 404 — a draft's existence is
+    # nobody's business (the shape API.md §41 gives every absent thing).
+    if row is None or row.status != ContentStatus.PUBLISHED:
+        raise NotFound("Page not found")
+
+    languages = await settings_service.get_languages(session)
+    title = i18n.resolve(
+        row.title,
+        requested=requested,
+        default=languages.default,
+        available=languages.available,
+    )
+    body = i18n.resolve_value(
+        row.body,
+        requested=requested,
+        default=languages.default,
+        available=languages.available,
+    )
+    if title.value is None or body is None:
+        raise NotFound("Page not found")
+    return PagePublicOut(
+        slug=row.slug,
+        title=title.value,
+        body=body,
+        lang=title.lang,
+        updated_at=row.updated_at,
+    )
+
+
 __all__ = [
     "create_faq",
+    "create_page",
     "delete_faq",
+    "delete_page",
     "get_faq",
+    "get_page",
+    "get_page_public",
     "list_faq_admin",
     "list_faq_public",
+    "list_pages_admin",
     "reorder_faq",
     "set_faq_status",
+    "set_page_status",
     "update_faq",
+    "update_page",
 ]

@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.i18n import SUPPORTED_LANGUAGES, Translated
 
+#: Lowercase, hyphenated — the shape of ``privacy-policy``, ``terms``, ``about``.
+SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+
 
 def _check_translated(value: Translated) -> Translated:
     filtered = {
@@ -75,6 +78,54 @@ class FaqPublicOut(BaseModel):
     lang: str | None
 
 
+# --- pages -----------------------------------------------------------------------
+
+
+class PageIn(BaseModel):
+    slug: Annotated[str, Field(max_length=160, pattern=SLUG_PATTERN)]
+    title: Translated
+    #: Markdown per language.
+    body: Translated
+
+    @field_validator("title", "body")
+    @classmethod
+    def _known_languages(cls, value: Translated) -> Translated:
+        return _check_translated(value)
+
+
+class PageUpdateIn(BaseModel):
+    slug: Annotated[str, Field(max_length=160, pattern=SLUG_PATTERN)] | None = None
+    title: Translated | None = None
+    body: Translated | None = None
+
+    @field_validator("title", "body")
+    @classmethod
+    def _known_languages(cls, value: Translated | None) -> Translated | None:
+        return None if value is None else _check_translated(value)
+
+
+class PageAdminOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    slug: str
+    title: Translated
+    body: Translated
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PagePublicOut(BaseModel):
+    slug: str
+    title: str
+    #: Markdown — rendered by the client.
+    body: str
+    #: The language the text actually came back in (API.md §7).
+    lang: str | None
+    updated_at: datetime
+
+
 # --- reorder ---------------------------------------------------------------------
 
 
@@ -84,9 +135,14 @@ class ReorderItemIn(BaseModel):
 
 
 __all__ = [
+    "SLUG_PATTERN",
     "FaqAdminOut",
     "FaqIn",
     "FaqPublicOut",
     "FaqUpdateIn",
+    "PageAdminOut",
+    "PageIn",
+    "PagePublicOut",
+    "PageUpdateIn",
     "ReorderItemIn",
 ]

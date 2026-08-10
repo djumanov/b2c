@@ -1,8 +1,9 @@
 """Content the panel writes and the site reads (API.md §24, §30).
 
-Translatable text is ``JSONB {language: value}`` (API.md §7). Every resource
-carries a ``draft | published`` status: the panel edits in the open, the
-public surface only ever sees what has been published.
+Translatable text is ``JSONB {language: value}`` (API.md §7); a page body is
+markdown per language (§30 "Sahifa tanasi") — rendering happens on the client.
+Every resource carries a ``draft | published`` status: the panel edits in the
+open, the public surface only ever sees what has been published.
 """
 
 import enum
@@ -12,6 +13,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Entity
+from app.db.mixins import soft_delete_unique_index
 
 
 class ContentStatus(enum.StrEnum):
@@ -47,4 +49,32 @@ class Faq(Entity):
     )
 
 
-__all__ = ["ContentStatus", "Faq"]
+class Page(Entity):
+    """A static page — ``privacy-policy``, ``terms``, ``about`` by convention.
+
+    The slugs are conventions, not seeded rows: the admin creates the page,
+    and a slug that does not exist or is not published answers 404 publicly.
+    Social links are not page content — they live in the site settings and
+    ride out in ``site-config`` (API.md §17).
+    """
+
+    __tablename__ = "pages"
+    __table_args__ = (
+        _status_check(),
+        soft_delete_unique_index("pages", "slug"),
+    )
+
+    slug: Mapped[str] = mapped_column(String(160), nullable=False)
+    title: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    #: Markdown per language.
+    body: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text(f"'{ContentStatus.DRAFT}'")
+    )
+
+
+__all__ = ["ContentStatus", "Faq", "Page"]
