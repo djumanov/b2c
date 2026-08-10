@@ -1,4 +1,4 @@
-"""``/admin/content/faq/`` and ``/admin/content/pages/`` (API.md §30).
+"""``/admin/content/faq/`` and the fixed static pages (API.md §30).
 
 FAQ sits behind the ``faq`` feature flag: switched off it answers 404 on both
 surfaces (API.md §28). Pages take no flag — privacy-policy and terms must
@@ -23,9 +23,8 @@ from app.modules.cms.schemas import (
     FaqAdminOut,
     FaqIn,
     FaqUpdateIn,
+    FixedPageIn,
     PageAdminOut,
-    PageIn,
-    PageUpdateIn,
     ReorderItemIn,
 )
 
@@ -99,53 +98,63 @@ async def unpublish_faq(id: uuid.UUID, session: SessionDep) -> FaqAdminOut:
 # --- static pages ----------------------------------------------------------------
 
 pages_router = enveloped_router(
-    prefix="/content/pages",
+    prefix="/content",
     tags=["cms"],
     dependencies=[Depends(current_staff)],
 )
 
-
-@pages_router.get("/", summary="List static pages")
-async def list_pages(
-    session: SessionDep,
-    pagination: PaginationDep,
-    query: ListQueryDep,
-    status: StatusParam = None,
-) -> Page[PageAdminOut]:
-    return await service.list_pages_admin(session, pagination, query, status=status)
+#: What Swagger calls each fixed page (API.md §30, "Sahifa tanasi").
+_PAGE_LABELS = {
+    "privacy-policy": "the privacy policy",
+    "terms": "the terms of use",
+    "about": "the about page",
+}
 
 
-@pages_router.post("/", status_code=201, summary="Add a static page (as a draft)")
-async def create_page(data: PageIn, session: SessionDep) -> PageAdminOut:
-    return await service.create_page(session, data)
+def _register_page(slug: str, label: str) -> None:
+    """Four routes per page, closed over its slug.
+
+    A ``{slug}`` path parameter would serve the same rows in less code, but
+    the frontend and mobile devs build from Swagger — a parameter names none
+    of the pages, separate operations name all of them.
+    """
+
+    async def get_page(session: SessionDep) -> PageAdminOut:
+        return await service.get_fixed_page_admin(session, slug)
+
+    async def put_page(data: FixedPageIn, session: SessionDep) -> PageAdminOut:
+        return await service.upsert_fixed_page(session, slug, data)
+
+    async def publish_page(session: SessionDep) -> PageAdminOut:
+        return await service.set_fixed_page_status(
+            session, slug, ContentStatus.PUBLISHED
+        )
+
+    async def unpublish_page(session: SessionDep) -> PageAdminOut:
+        return await service.set_fixed_page_status(session, slug, ContentStatus.DRAFT)
+
+    name = slug.replace("-", "_")
+    pages_router.get(
+        f"/{slug}/", name=f"get_{name}", summary=f"Current state of {label}"
+    )(get_page)
+    pages_router.put(
+        f"/{slug}/",
+        name=f"put_{name}",
+        summary=f"Write {label} — first PUT creates the draft, later ones "
+        "merge languages",
+    )(put_page)
+    pages_router.post(
+        f"/{slug}/publish/", name=f"publish_{name}", summary=f"Publish {label}"
+    )(publish_page)
+    pages_router.post(
+        f"/{slug}/unpublish/",
+        name=f"unpublish_{name}",
+        summary=f"Take {label} off the site",
+    )(unpublish_page)
 
 
-@pages_router.get("/{id}/", summary="One static page")
-async def get_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
-    return await service.get_page(session, id)
-
-
-@pages_router.patch("/{id}/", summary="Change slug, title or body")
-async def update_page(
-    id: uuid.UUID, data: PageUpdateIn, session: SessionDep
-) -> PageAdminOut:
-    return await service.update_page(session, id, data)
-
-
-@pages_router.delete("/{id}/", status_code=204, summary="Remove a static page")
-async def delete_page(id: uuid.UUID, session: SessionDep) -> Response:
-    await service.delete_page(session, id)
-    return Response(status_code=204)
-
-
-@pages_router.post("/{id}/publish/", summary="Publish a static page")
-async def publish_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
-    return await service.set_page_status(session, id, ContentStatus.PUBLISHED)
-
-
-@pages_router.post("/{id}/unpublish/", summary="Take a static page off the site")
-async def unpublish_page(id: uuid.UUID, session: SessionDep) -> PageAdminOut:
-    return await service.set_page_status(session, id, ContentStatus.DRAFT)
+for _slug in service.FIXED_PAGE_SLUGS:
+    _register_page(_slug, _PAGE_LABELS[_slug])
 
 
 __all__ = ["faq_router", "pages_router"]

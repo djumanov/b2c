@@ -1080,7 +1080,9 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 | `GET` | `/public/content/promotions/{slug}/` | Aksiya tafsiloti |
 | `GET` | `/public/content/faq/` | `?category=` |
 | `GET` | `/public/content/contacts/` | Ofis va kontakt nuqtalari |
-| `GET` | `/public/content/pages/{slug}/` | Statik sahifa — markdown tana (§30) |
+| `GET` | `/public/content/privacy-policy/` | Maxfiylik siyosati — markdown tana (§30) |
+| `GET` | `/public/content/terms/` | Foydalanish shartlari — markdown tana (§30) |
+| `GET` | `/public/content/about/` | Biz haqimizda — markdown tana (§30) |
 | `GET` | `/public/content/banners/` | `?placement=` |
 | `GET` | `/public/content/popular-directions/` | Bosh sahifadagi yo'nalishlar |
 | `GET` | `/public/content/feedbacks/` | Chop etilgan sharhlar |
@@ -1238,7 +1240,7 @@ bu o'rnatmada bunday resurs umuman mavjud emas.
 `promo_codes` ataylab `promo` deb atalmagan: `promotions` (CMS aksiyalari) yonida turadi
 va bir harfli farq noto'g'ri tugmani bosishga olib keladi.
 
-**Sahifalar (`content/pages/`) bayroq olmaydi.** `privacy-policy` va `terms` har bir
+**Statik sahifalar bayroq olmaydi.** `privacy-policy` va `terms` har bir
 o'rnatmada bo'lishi shart — ularni o'chiradigan tugma sozlash emas, buzish bo'lardi.
 Shu sabab sahifalar yadro yuzasiga kiradi (katalog bilan bir xil mulohaza).
 
@@ -1467,7 +1469,7 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 | Aksiyalar | `/admin/content/promotions/` | `admin` | CRUD; `placement`, `starts_at`, `ends_at` |
 | FAQ | `/admin/content/faq/` | `admin` | CRUD; `question`/`answer` obyektlar, `category` — erkin kod; `?status=`, `?category=` |
 | Kontaktlar | `/admin/content/contacts/` | `admin` | CRUD — ofis nuqtalari, koordinatalar |
-| Sahifalar | `/admin/content/pages/` | `admin` | CRUD; `slug`, `title` (obyekt), `body` (obyekt, markdown); `?status=` |
+| Sahifalar | `/admin/content/{page}/` | `admin` | `GET`/`PUT` + `publish`/`unpublish`; `{page}` ∈ `privacy-policy`, `terms`, `about` — "Sahifa tanasi"ga qarang |
 | Bannerlar | `/admin/content/banners/` | `admin` | CRUD; `?placement=` |
 | Mashhur yo'nalishlar | `/admin/content/popular-directions/` | `admin` | CRUD |
 
@@ -1480,7 +1482,9 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 | `POST` | `/admin/content/{resource}/reorder/` | Tartibni o'zgartirish (`[{id, order}]`) |
 
 `reorder/` faqat tartiblangan resurslarga tegishli (faq, bannerlar, mashhur
-yo'nalishlar) — sahifalar tartiblanmaydi.
+yo'nalishlar) — sahifalar tartiblanmaydi. `{resource}/{id}/publish/` shakli
+sahifalarga tegishli emas — ular `id` emas, nom bilan yashaydi ("Sahifa
+tanasi"ga qarang).
 
 Tarjima qilinadigan maydonlar obyekt sifatida keladi va shunday yuboriladi:
 
@@ -1495,12 +1499,23 @@ Barcha tillar to'ldirilishi shart emas — bo'sh til uchun public API fallback q
 
 ### Sahifa tanasi
 
-Statik sahifaning `body` maydoni — har til bo'yicha **markdown** matn:
-`{ "uz": "# Sarlavha…", "ru": "…" }`. Konstruktor yo'q — render klient tomonda.
-`privacy-policy`, `terms`, `about` — konventsion sluglar, oldindan yaratilmaydi:
-admin sahifani o'zi ochadi, mavjud bo'lmagan yoki chop etilmagan slug public'da
-`404` qaytaradi. "Ilova haqida" sahifasi kompaniya matnini beradi; ijtimoiy tarmoq
-havolalari esa `site-config` dagi `site.social` dan olinadi (§17).
+Statik sahifalar — qat'iy uchlik: `privacy-policy`, `terms`, `about`. Har biri
+Swagger'da o'z endpointi bilan turadi — frontend va mobil dev qidirib
+yurmaydi:
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `GET` | `/admin/content/{page}/` | Joriy holat; hali yozilmagan bo'lsa `404` |
+| `PUT` | `/admin/content/{page}/` | Upsert: birinchi `PUT` qoralama yaratadi, keyingilari tillarni birlashtiradi (PATCH semantikasi, §7) |
+| `POST` | `/admin/content/{page}/publish/` | Chop etish |
+| `POST` | `/admin/content/{page}/unpublish/` | Chop etishni to'xtatish |
+
+`PUT` tanasi — `{ "title": {til: matn}, "body": {til: matn} }`, ikkalasi ham
+ixtiyoriy, lekin yaratishda kamida bitta tilda qiymat bo'lishi shart (`422`).
+`body` — har til bo'yicha **markdown** matn: `{ "uz": "# Sarlavha…", "ru": "…" }`.
+Konstruktor yo'q — render klient tomonda. Yozilmagan yoki chop etilmagan sahifa
+public'da `404` qaytaradi. "Biz haqimizda" sahifasi kompaniya matnini beradi;
+ijtimoiy tarmoq havolalari esa `site-config` dagi `site.social` dan olinadi (§17).
 
 ### Sharh moderatsiyasi
 
@@ -1735,9 +1750,10 @@ ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
 > Click'ning karta-token API'lari ishlatiladi ([PROJECT.md](PROJECT.md) §11, §13). Bu
 > yo'llar 2-fazada, to'lov moduli bilan birga keladi.
 
-> **Ro'yxatdan chiqqan:** `/admin/content/pages/` va `/public/content/pages/{slug}/`
-> ham ulanadi. §16 1-savolning sahifa yarmi yechildi — tana har til bo'yicha markdown
-> (§30, "Sahifa tanasi"); menyu yarmi ochiqligicha qoladi.
+> **Ro'yxatdan chiqqan:** statik sahifalar ham ulanadi — `privacy-policy`, `terms`
+> va `about` har biri o'z endpointi bilan, ikkala sirtda ham (§24, §30 "Sahifa
+> tanasi"). §16 1-savolning sahifa yarmi yechildi — tana har til bo'yicha markdown;
+> menyu yarmi ochiqligicha qoladi.
 
 > `404` ning **ikkita sababi** bor va ular boshqa-boshqa. Bu yerdagisi — relizga
 > kirmagan, ya'ni **har bir o'rnatmada** bir xil. Ikkinchisi — client bo'limni

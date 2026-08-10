@@ -50,12 +50,13 @@ class Faq(Entity):
 
 
 class Page(Entity):
-    """A static page — ``privacy-policy``, ``terms``, ``about`` by convention.
+    """A static page — the fixed set ``service.FIXED_PAGE_SLUGS``.
 
-    The slugs are conventions, not seeded rows: the admin creates the page,
-    and a slug that does not exist or is not published answers 404 publicly.
-    Social links are not page content — they live in the site settings and
-    ride out in ``site-config`` (API.md §17).
+    Each page has its own route on both surfaces (API.md §24, §30); the slug
+    column keys the row behind them. Rows are not seeded: the first admin PUT
+    creates one, and a page never written or not published answers 404
+    publicly. Social links are not page content — they live in the site
+    settings and ride out in ``site-config`` (API.md §17).
     """
 
     __tablename__ = "pages"
