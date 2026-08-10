@@ -1080,7 +1080,7 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 | `GET` | `/public/content/promotions/{slug}/` | Aksiya tafsiloti |
 | `GET` | `/public/content/faq/` | `?category=` |
 | `GET` | `/public/content/contacts/` | Ofis va kontakt nuqtalari |
-| `GET` | `/public/content/pages/{slug}/` | Statik sahifa — **§41** |
+| `GET` | `/public/content/pages/{slug}/` | Statik sahifa — markdown tana (§30) |
 | `GET` | `/public/content/banners/` | `?placement=` |
 | `GET` | `/public/content/popular-directions/` | Bosh sahifadagi yo'nalishlar |
 | `GET` | `/public/content/feedbacks/` | Chop etilgan sharhlar |
@@ -1091,7 +1091,7 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
-| `POST` | `/public/leads/` | (✓) | Ariza qoldirish (`source` bo'yicha turli maydonlar) |
+| `POST` | `/public/leads/` | (✓) | Murojaat qoldirish — mavzu, xabar va aloqa ma'lumoti |
 | `POST` | `/public/feedbacks/` | ✓ | Sharh qoldirish — moderatsiyaga tushadi |
 | `GET` | `/public/feedbacks/my/` | ✓ | O'z sharhlarim va ularning holati |
 | `POST` | `/public/subscriptions/` | — | Yangiliklarga obuna |
@@ -1099,13 +1099,16 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 
 ```json
 POST /public/leads/
-{ "source": "corporate", "name": "Muzaffar",
-  "fields": { "phone": "998901234567", "company": "…" },
-  "comment": "…" }
+{ "topic": "payment", "name": "Muzaffar",
+  "contact": "+998901234567",
+  "message": "To'lov o'tdi, lekin buyurtma ko'rinmayapti" }
 ```
 
-`source` qiymatlari va har biriga tegishli `fields` sxemasi paneldan sozlanadi
-(§35, `/admin/leads/sources/`). Kelgan `fields` shu sxema bo'yicha tekshiriladi.
+`topic`, `contact` va `message` majburiy, `name` ixtiyoriy. Javob — `201` va
+`{ "id": …, "status": "new", "created_at": … }`. Token yuborilsa murojaat shu
+mijozga bog'lanadi; tokensiz ham qabul qilinadi. Operator mijoz bilan tashqi
+kanal orqali (telefon, email) bog'lanadi — ilova ichida suhbat yo'q. Spamga
+qarshi endpoint `auth` limiti ostida (§14).
 
 ---
 
@@ -1234,6 +1237,10 @@ bu o'rnatmada bunday resurs umuman mavjud emas.
 
 `promo_codes` ataylab `promo` deb atalmagan: `promotions` (CMS aksiyalari) yonida turadi
 va bir harfli farq noto'g'ri tugmani bosishga olib keladi.
+
+**Sahifalar (`content/pages/`) bayroq olmaydi.** `privacy-policy` va `terms` har bir
+o'rnatmada bo'lishi shart — ularni o'chiradigan tugma sozlash emas, buzish bo'lardi.
+Shu sabab sahifalar yadro yuzasiga kiradi (katalog bilan bir xil mulohaza).
 
 **Vertikallar bu ro'yxatga kirmaydi.** Aviachipta, poyezd, sug'urta, eSIM va transfer
 `settings/products/` bilan boshqariladi va u paneldan o'zgartirilmaydi — client nima
@@ -1458,9 +1465,9 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 |---|---|---|---|
 | Blog | `/admin/content/blogs/` | `admin` | CRUD; `?status=draft\|published`, `?category=` |
 | Aksiyalar | `/admin/content/promotions/` | `admin` | CRUD; `placement`, `starts_at`, `ends_at` |
-| FAQ | `/admin/content/faq/` | `admin` | CRUD; `?category=` |
+| FAQ | `/admin/content/faq/` | `admin` | CRUD; `question`/`answer` obyektlar, `category` — erkin kod; `?status=`, `?category=` |
 | Kontaktlar | `/admin/content/contacts/` | `admin` | CRUD — ofis nuqtalari, koordinatalar |
-| Sahifalar | `/admin/content/pages/` | `admin` | CRUD — statik sahifalar — **§41** |
+| Sahifalar | `/admin/content/pages/` | `admin` | CRUD; `slug`, `title` (obyekt), `body` (obyekt, markdown); `?status=` |
 | Bannerlar | `/admin/content/banners/` | `admin` | CRUD; `?placement=` |
 | Mashhur yo'nalishlar | `/admin/content/popular-directions/` | `admin` | CRUD |
 
@@ -1472,6 +1479,9 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 | `POST` | `/admin/content/{resource}/{id}/unpublish/` | Chop etishni to'xtatish |
 | `POST` | `/admin/content/{resource}/reorder/` | Tartibni o'zgartirish (`[{id, order}]`) |
 
+`reorder/` faqat tartiblangan resurslarga tegishli (faq, bannerlar, mashhur
+yo'nalishlar) — sahifalar tartiblanmaydi.
+
 Tarjima qilinadigan maydonlar obyekt sifatida keladi va shunday yuboriladi:
 
 ```json
@@ -1482,6 +1492,15 @@ PATCH /admin/content/blogs/{id}/
 ```
 
 Barcha tillar to'ldirilishi shart emas — bo'sh til uchun public API fallback qiladi (§7).
+
+### Sahifa tanasi
+
+Statik sahifaning `body` maydoni — har til bo'yicha **markdown** matn:
+`{ "uz": "# Sarlavha…", "ru": "…" }`. Konstruktor yo'q — render klient tomonda.
+`privacy-policy`, `terms`, `about` — konventsion sluglar, oldindan yaratilmaydi:
+admin sahifani o'zi ochadi, mavjud bo'lmagan yoki chop etilmagan slug public'da
+`404` qaytaradi. "Ilova haqida" sahifasi kompaniya matnini beradi; ijtimoiy tarmoq
+havolalari esa `site-config` dagi `site.social` dan olinadi (§17).
 
 ### Sharh moderatsiyasi
 
@@ -1569,15 +1588,15 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 
 | Metod | Yo'l | Rol | Izoh |
 |---|---|---|---|
-| `GET` | `/admin/leads/` | `admin` | `?source=`, `?status=` |
+| `GET` | `/admin/leads/` | `admin` | `?status=new\|in_progress\|done`; §6 qidiruv: `topic`, `name`, `contact` |
 | `GET` | `/admin/leads/{id}/` | `admin` | Tafsilot |
-| `PATCH` | `/admin/leads/{id}/` | `admin` | Holat, mas'ul, izoh |
-| CRUD | `/admin/leads/sources/` | `admin` | Lead manbalari: `code`, nomi va `fields` sxemasi |
+| `PATCH` | `/admin/leads/{id}/` | `admin` | `{status, note}` |
 | `GET` | `/admin/subscriptions/` | `admin` | Obunachi'lar ro'yxati |
 | `GET` | `/admin/subscriptions/export/` | `admin` | CSV eksport (async) |
 
-`leads/sources/` — §25 dagi `source` qiymatlari va har biriga tegishli `fields` sxemasi shu
-yerdan boshqariladi. Public `POST /public/leads/` kelgan `fields` ni shu sxema bo'yicha tekshiradi.
+Murojaatda mas'ul (assignee) maydoni yo'q — ikki rolli modelda (§5) u shovqin
+bo'lardi. Operator murojaatni o'qiydi, holatini belgilaydi, `note` ga izoh yozadi
+va mijoz bilan tashqi kanal orqali bog'lanadi.
 
 ---
 
@@ -1705,7 +1724,6 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 | Telefon + SMS OTP (`login`, `register/confirm`, `password/reset`) | MVP'da faqat email/SMTP (D6) | SMS xizmati ulanganda |
 | `/public/auth/devices/`, `/admin/orders/{id}/push/`, push broadcast | Push xizmati birinchi relizga kirmaydi | 6–7-bosqich |
 | `/admin/settings/menu/` | Menyu konstruktori modeli hali aniqlanmagan ([PROJECT.md](PROJECT.md) §16, 1-savol) | 5-bosqich |
-| `/admin/content/pages/`, `/public/content/pages/{slug}/` | Sahifa tanasi sxemasi hali aniqlanmagan (shu savol) | 5-bosqich |
 | `/admin/integrations/notifications/` — SMS va push qismi | Email/SMTP ✓, qolgani keyinroq | SMS/push ulanganda |
 | `features.loyalty` | Loyalty dasturi qamrovga kirmaydi ([PROJECT.md](PROJECT.md) §3) | — |
 
@@ -1716,6 +1734,10 @@ ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
 > endi ulanadi. D7 qayta ko'rib chiqildi — saqlangan kartalar talab qilingani uchun Payme va
 > Click'ning karta-token API'lari ishlatiladi ([PROJECT.md](PROJECT.md) §11, §13). Bu
 > yo'llar 2-fazada, to'lov moduli bilan birga keladi.
+
+> **Ro'yxatdan chiqqan:** `/admin/content/pages/` va `/public/content/pages/{slug}/`
+> ham ulanadi. §16 1-savolning sahifa yarmi yechildi — tana har til bo'yicha markdown
+> (§30, "Sahifa tanasi"); menyu yarmi ochiqligicha qoladi.
 
 > `404` ning **ikkita sababi** bor va ular boshqa-boshqa. Bu yerdagisi — relizga
 > kirmagan, ya'ni **har bir o'rnatmada** bir xil. Ikkinchisi — client bo'limni

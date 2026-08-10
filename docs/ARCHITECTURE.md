@@ -144,7 +144,7 @@ yupqa yig'uvchi.
 | `orders` | Lokal buyurtma yozuvlari, GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba |
 | `payments` | To'lovlar, tranzaksiyalar, qaytarishlar, **saqlangan kartalar va ularning provayder tokenlari**, provayder webhook'lari | D7 bo'yicha. Karta `/public/profile/cards/` yo'lida turadi, chunki kontrakt shunday deydi ([API.md](API.md) §19) — lekin **modul** tokenga, shifrlashga, OTP almashinuviga va to'lovga egalik qilganidir. `customers` da tursa, u to'lov paytida tokenni o'qish uchun `payments` modellarini import qilishga majbur bo'lardi — §4 taqiqlagan sikl. Tashqariga ikkita eshik: `service.create_payment()` va `service.forget_cards()` |
 | `promo` | Kodlar, qoidalar, to'lovga qo'llash, statistika | Chegirma **client marjasidan** ketadi, GTS to'liq tarifni oladi (§14 A4) |
-| `leads` | Lead'lar, **lead manbalari sxemasi**, obunalar | Manba sxemasi uchun admin endpoint qo'shildi — §14 G1 |
+| `leads` | Lead'lar (murojaatlar), obunalar | Manbalar sxemasi kontraktdan chiqarildi — §14 G1 |
 | `notifications` | Shablonlar, yuborish, ommaviy yuborish, qurilma reyestri | MVP'da faqat SMTP adapteri (D6) |
 | `reports` | Dashboard, sotuv agregatsiyasi, maydonlar katalogi, saqlangan ko'rinishlar, eksport | Eksport `jobs` orqali |
 | `audit` | Har bir admin mutatsiyasi va auth hodisalarining o'zgarmas jurnali | Har bir handler emas, **dependency** yozadi |
@@ -329,7 +329,7 @@ ko'tarilganda ishga tushadi.
 singletonlari, menu, integration configs) · *cms* (7 ta kontent jadvali, feedbacks) ·
 *commerce* (orders, order passengers, payments, transactions, refunds, customer cards,
 payment outbox, promo codes, promo usages) ·
-*engagement* (leads, lead sources, subscriptions, templates, broadcasts, devices, notifications) ·
+*engagement* (leads, subscriptions, templates, broadcasts, devices, notifications) ·
 *ops* (jobs, audit log, uploads).
 
 > Qidiruv uchun jadval **yo'q** — bu D2 ning bevosita natijasi.
@@ -450,9 +450,11 @@ Bular ishni to'xtatmaydi, lekin tasdiqlanishi kerak.
 | A8 | Yuklamalar va eksportlar lokal diskda, storage porti ortida | S3 talab qilinsa |
 | A9 | GTS `offers/` da sahifalash (`next_token`) va saralashni qo'llaydi | Qo'llamasa — [API.md](API.md) §20 kontrakti qisqartiriladi (`sort` olib tashlanadi) |
 
-**G1 (hujjatdagi bo'shliq, to'ldirildi):** lead `source` qiymatlari va ularning `fields` sxemasi
-paneldan sozlanishi aytilgan edi ([API.md](API.md) §25), lekin uni sozlaydigan endpoint yo'q edi.
-Shu sababli `/admin/leads/sources/` (CRUD) qo'shildi ([API.md](API.md) §35).
+**G1 (bekor qilindi):** lead `source` qiymatlari va dinamik `fields` sxemasi uchun
+`/admin/leads/sources/` (CRUD) qo'shilgan edi. Keyin butun manbalar mashinasi
+kontraktdan olib tashlandi — murojaat qat'iy `topic + message + contact` shakliga
+tushdi ([API.md](API.md) §25, §35): panel sozlaydigan sxema kichik jamoaga
+keraksiz murakkablik edi.
 
 **Keyinga qoldirilgan** — [PROJECT.md](PROJECT.md) §16 dagi ochiq savollar. Ularning hech biri
 hozir to'sqinlik qilmaydi.

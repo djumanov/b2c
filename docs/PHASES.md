@@ -63,8 +63,8 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
 | 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
 | 23 | Promokod | **2** | — | Shu hujjatdagi qaror (§2.3), `PROJECT.md` §15 ga yozib qo'yilgan |
-| 24 | Kontent (o'qish) | **4** | — | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `pages/{slug}/` → **5** |
-| 25 | Murojaat va aloqa | **4** | — | `leads` va `feedback` modullari bilan (§2.5) |
+| 24 | Kontent (o'qish) | **4** | ◐ | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `faq/` va `pages/{slug}/` oldinga tortildi (§2.14) |
+| 25 | Murojaat va aloqa | **4** | ◐ | `leads` va `feedback` modullari bilan (§2.5). `leads` soddalashib oldinga tortildi (§2.14) |
 | 26 | Kataloglar | **1** + **2** + **3** | ◐ | `document-types`, `countries` → 1 (proxy, §2.6); `places`, `airlines`, `currencies` → 2; `stations/` poyezd bilan → 3 |
 
 ### III qism — admin yuza
@@ -74,12 +74,12 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | 27 | Autentifikatsiya | **1** | ✅ | 7/7 |
 | 28 | Sayt sozlamalari | **1** | ✅ | 7/7. `settings/menu/` → **5** (§41) |
 | 29 | Integratsiyalar | **1** + **2** | ◐ | `PROJECT.md` §15 1-faza: "sozlamalar + shifrlangan credential'lar" (§2.1). GTS, SMTP, to'lov va social sozlamalari 1-fazada. Chetlanishlar: `gts/test/` va `payments/{code}/test/` → **2** (§2.13). SMS/push qismi → §41 |
-| 30 | Kontent | **4** | — | `PROJECT.md` §15 4-faza. `content/pages/` → **5** (§41) |
+| 30 | Kontent | **4** | ◐ | `PROJECT.md` §15 4-faza. `faq/` va `pages/` oldinga tortildi (§2.14) |
 | 31 | Buyurtmalar | **2** | — | `orders/{id}/push/` → **6** (§41) |
 | 32 | To'lovlar | **2** | — | `refund/` — `PROJECT.md` §16 3-savoli 2-faza oxirida kerak |
 | 33 | Promokodlar | **4** | — | CRUD, statistika, panel. Minimal model 2-fazada (§2.3) |
 | 34 | Mijozlar | **4** | — | `PROJECT.md` §15 4-faza |
-| 35 | Murojaatlar | **4** | — | `subscriptions/export/` → **7** (eksport mexanizmi bilan) |
+| 35 | Murojaatlar | **4** | ◐ | `leads/` oldinga tortildi (§2.14); `subscriptions/export/` → **7** (eksport mexanizmi bilan) |
 | 36 | Bildirishnomalar | **4** + **7** | — | Shablon CRUD va tarix → 4; `broadcast/` **ijrosi** → 7 (§2.9) |
 | 37 | Hisobotlar | **4** + **7** | — | `dashboard`, `sales`, `fields`, `views` → 4; `export/` → 7 (§2.9) |
 | 38 | Jamoa | **1** | ✅ | 4/4, hammasi `owner` |
@@ -133,11 +133,10 @@ va Click bilan cheklaydi, ikkalasi ham bo'lib to'lash bermaydi, provayder esa
 umuman nomlanmagan. `API.md` §41 ga ko'chirildi — endpoint kontraktda qoladi va
 `404 not_found` qaytaradi.
 
-**2.5 · §25 Public murojaat → 4-faza.** `POST /public/leads/` kelgan `fields`
-ni `admin/leads/sources/` dagi sxema bo'yicha tekshiradi
-([ARCHITECTURE.md](ARCHITECTURE.md) §14 G1), ya'ni **admin tomoni public
-tomonidan oldin** kerak. Ikkalasi ham `leads` modulida, 4-fazada. 5-fazada bu
-yuza faqat **iste'mol qilinadi**.
+**2.5 · §25 Public murojaat → 4-faza.** ~~`POST /public/leads/` kelgan `fields`
+ni `admin/leads/sources/` dagi sxema bo'yicha tekshiradi, ya'ni admin tomoni
+public tomonidan oldin kerak.~~ Manbalar mashinasi kontraktdan chiqarildi va
+`leads` oldinga tortildi — §2.14. 5-fazada bu yuza faqat **iste'mol qilinadi**.
 
 **2.6 · §26 Kataloglar bo'linadi.** `places`, `airlines`, `currencies`
 aviachipta qidiruv formasi uchun kerak → 2-faza. `stations/` faqat `railway`
@@ -233,6 +232,21 @@ uchun **seam** qoldiradi — 5-bo'lak GTS uchun (`service.active_credential`) va
 o'z adapteri bilan birga keladi va shu paytgacha `404` qaytaradi.
 
 `notifications/test/` bundan mustasno va ishlaydi: uning adapteri 5a da qurilgan.
+
+**2.14 · FAQ, sahifalar va murojaatlar oldinga tortildi.** Customer ilovasiga
+FAQ, maxfiylik siyosati, foydalanish shartlari, "ilova haqida" sahifasi va sodda
+qo'llab-quvvatlash hozir kerak bo'ldi. Uchta o'zgarish:
+
+- `cms` FAQ qismi (§24/§30) va soddalashgan `leads` (§25/§35) 4-fazadan oldinga
+  tortildi — 2.6 dagi kabi bu **taqsimot**, qamrov o'zgarishi emas
+  ([PROJECT.md](PROJECT.md) §15 tegilmadi).
+- `pages/` §41 dan chiqdi: [PROJECT.md](PROJECT.md) §16 1-savolning **sahifa
+  yarmi yechildi** — tana har til bo'yicha markdown (`API.md` §30 "Sahifa
+  tanasi"). Menyu yarmi ochiq, `settings/menu/` §41 da qoladi.
+- Leads'dagi manbalar mashinasi (`sources/` + dinamik `fields` sxemasi)
+  kontraktdan olib tashlandi — murojaat qat'iy `topic + message + contact`
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §14 G1). Bu bilan 6-bo'limdagi "fields
+  sxemasi formati" to'suvchi savoli ham o'z-o'zidan yopildi.
 
 ---
 
@@ -517,7 +531,7 @@ Modullar: `cms`, `feedback`, `promo` (to'liq), `leads`, `notifications`,
 | 1 | `cms` — 7 ta resurs, publish/unpublish/reorder | Tarjimali maydonlar JSONB; public o'qish alohida "yassilovchi" serializer orqali |
 | 2 | §24 public kontent yuzasi | Shu modulning o'qish tomoni — 5-fazada qayta qurilmaydi |
 | 3 | `feedback` — moderatsiya + `POST /public/feedbacks/` | `pending → accepted \| rejected` |
-| 4 | `leads` — `sources/` **avval**, keyin `POST /public/leads/` | §2.5 |
+| 4 | `leads` — sodda murojaat: `POST /public/leads/` + admin ro'yxat/holat | Manbalar mashinasi yo'q — §2.14. Oldinga tortilib qurildi |
 | 5 | `promo` to'liq — CRUD, activate/deactivate, stats, usages | Minimal model 2-fazadan |
 | 6 | `customers` admin tomoni | `DELETE` — **`owner`** (`API.md` §5 dagi yagona eskalatsiya) |
 | 7 | `notifications` — shablonlar, tarix, `profile/notifications/` | Kanal o'lchovi hozir loyihalanadi, garchi faqat email ketsa ham |
@@ -537,7 +551,7 @@ Modullar: `cms`, `feedback`, `promo` (to'liq), `leads`, `notifications`,
 |---|---|
 | `PROJECT.md` §16.4 — dashboard ko'rsatkichlari | 8-bo'lak. **`GET /admin/reports/dashboard/` javob tanasi `API.md` da umuman yo'q** — javob kelguncha bo'lak boshlanmaydi |
 | `PROJECT.md` §16.2 — buyurtmani paneldan tahrirlash | §31 da tahrirlash endpointi yo'q, ya'ni javob "yo'q"; savol rasman yopilsin |
-| `leads/sources/` dagi `fields` sxemasining **formati** | 4-bo'lak. `API.md` §25/§35 sxema borligini aytadi, shaklini aytmaydi |
+| ~~`leads/sources/` dagi `fields` sxemasining formati~~ | Yopildi — manbalar mashinasi kontraktdan chiqarildi (§2.14) |
 
 ---
 
@@ -546,8 +560,8 @@ Modullar: `cms`, `feedback`, `promo` (to'liq), `leads`, `notifications`,
 **Maqsad.** Web frontend `site-config` va public API ustida; backend tomonda
 yangi ish kam ([ARCHITECTURE.md](ARCHITECTURE.md) §15).
 
-**Qamrov (backend).** `API.md` §28 `settings/menu/` va §30/§24 `pages/` — ikkalasi
-ham §41 dan chiqadi; §17 ni yakunlash.
+**Qamrov (backend).** `API.md` §28 `settings/menu/` §41 dan chiqadi; §17 ni
+yakunlash. `pages/` bu yerdan chiqib ketdi — §2.14 bilan oldinga tortilib qurildi.
 
 **KIRMAYDI.** Public kontent yuzasining qolgani — u 4-fazada qurilgan va bu
 yerda faqat **iste'mol qilinadi**.
@@ -556,9 +570,9 @@ yerda faqat **iste'mol qilinadi**.
 
 **Bo'laklar — hali yozilmaydi.**
 
-> ⛔ **To'suvchi savol: `PROJECT.md` §16.1** — menyu va sahifalar modeli qat'iy
-> tuzilmami yoki erkin konstruktor? Sahifa tanasi sxemasi qanday — til bo'yicha
-> rich-text yoki bloklar konstruktori?
+> ⛔ **To'suvchi savol: `PROJECT.md` §16.1 (menyu yarmi)** — menyu modeli qat'iy
+> tuzilmami yoki erkin konstruktor? Sahifa yarmi yechildi: tana har til bo'yicha
+> markdown, `pages/` §2.14 bilan qurildi.
 >
 > Javob kelmaguncha bo'laklar yozilmaydi. Hozir o'ylab topilgan reja model
 > aniqlangach baribir qayta yoziladi — bu aynan `PROJECT.md` §17 dagi

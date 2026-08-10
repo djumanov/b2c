@@ -251,7 +251,7 @@ kundalik ishlatadi** (`admin`).
 |---|---|---|
 | **Brending** | Logo, ranglar, shrift, favicon, app ikonka va nomi | ✓ |
 | **Sayt sozlamalari** | Domen, tillar, valyutalar, yoqilgan bo'limlar | ✓ |
-| **Menyu va sahifalar** | Menyu elementlari, statik sahifalar | keyinroq (§16) |
+| **Menyu va sahifalar** | Statik sahifalar — ✓ (markdown, til bo'yicha, [API.md](API.md) §30); menyu — keyinroq (§16) | qisman |
 | **Integratsiyalar** | GTS ulanishi, to'lov provayderlari, email xizmati | ✓ |
 | **Kontent (CMS)** | Blog, aksiyalar, FAQ, kontaktlar, bannerlar, mashhur yo'nalishlar | ✓ |
 | **Sharhlar** | Moderatsiya: qabul qilish / rad etish | ✓ |
@@ -259,7 +259,7 @@ kundalik ishlatadi** (`admin`).
 | **To'lovlar** | Tranzaksiyalar, qaytarishlar, provayder holati | ✓ |
 | **Promokodlar** | Yaratish, sozlash, statistika | ✓ |
 | **Mijozlar** | Ro'yxatdan o'tgan foydalanuvchilar va ularning buyurtmalari | ✓ |
-| **Murojaatlar** | Lead'lar, manbalar sxemasi, obunalar | ✓ |
+| **Murojaatlar** | Lead'lar (mavzu + xabar + aloqa), obunalar | ✓ |
 | **Bildirishnomalar** | Shablonlar, ommaviy yuborish, push | qisman — email ✓, SMS/push keyinroq |
 | **Hisobotlar** | Dashboard, sotuv, Excel/CSV eksport (async) | ✓ |
 | **Jamoa** | Xodimlar va rollar | ✓ |
@@ -429,7 +429,7 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 
 | # | Savol | Nimaga ta'sir qiladi |
 |---|---|---|
-| 1 | **Menyu va sahifalar modeli** — qat'iy tuzilmami yoki erkin konstruktor? Sahifa tanasi sxemasi qanday (til bo'yicha rich-text yoki bloklar konstruktori)? | CMS moduli va sayt frontendi. Birinchi relizga kirmagani uchun 5-bosqichgacha kutadi |
+| 1 | **Menyu modeli** — qat'iy tuzilmami yoki erkin konstruktor? *(Savolning sahifa yarmi yechildi: sahifa tanasi — har til bo'yicha markdown, [API.md](API.md) §30 "Sahifa tanasi".)* | Menyu: sayt frontendi, 5-bosqichgacha kutadi |
 | 2 | **Buyurtmani tahrirlash** — panel yo'lovchi ma'lumotini o'zgartira oladimi yoki bu faqat GTS tomonda bo'ladimi? | Buyurtmalar moduli |
 | 3 | **Qaytarish siyosati** — qisman qaytarish qanday hisoblanadi, kim tasdiqlaydi? | To'lovlar moduli. Vaqtinchalik taxmin: `admin` boshlaydi, summa GTS `refund-check` dan olinadi |
 | 4 | **Dashboard ko'rsatkichlari** — aniq ro'yxat kerak (sotuv, konversiya, o'rtacha chek, …) | Hisobotlar moduli |
