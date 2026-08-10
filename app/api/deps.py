@@ -148,8 +148,23 @@ async def current_staff(request: Request, session: SessionDep) -> Staff:
     return principal
 
 
+async def current_customer_optional(
+    request: Request, session: SessionDep
+) -> Customer | None:
+    """``current_customer`` for a route that also serves the anonymous.
+
+    No ``Authorization`` header means anonymous, not refused. A header that is
+    *present* goes through the full check and a bad token is still 401 —
+    quietly ignoring it would hide a client bug behind an anonymous success.
+    """
+    if not request.headers.get("authorization"):
+        return None
+    return await current_customer(request, session)
+
+
 CurrentCustomer = Annotated[Customer, Depends(current_customer)]
 CurrentStaff = Annotated[Staff, Depends(current_staff)]
+OptionalCustomer = Annotated[Customer | None, Depends(current_customer_optional)]
 
 
 async def require_owner(staff: CurrentStaff) -> Staff:
@@ -348,6 +363,7 @@ __all__ = [
     "Customer",
     "LanguageContext",
     "LanguageDep",
+    "OptionalCustomer",
     "Pagination",
     "PaginationDep",
     "RateLimit",
@@ -355,6 +371,7 @@ __all__ = [
     "Staff",
     "client_ip",
     "current_customer",
+    "current_customer_optional",
     "current_staff",
     "require_owner",
 ]

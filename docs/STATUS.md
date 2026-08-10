@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/otp-email-html`
+**Oxirgi yangilanish:** 2026-08-10 · `feat/faq-pages-leads`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -17,11 +17,11 @@ takrorlamaydi.
 
 | | |
 |---|---|
-| Bosqich | **1 — Yadro**, 3 qabul mezonining **uchalasi ham** bajarilgan |
-| Endpointlar | 49 ta yo'l / 68 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 18 ta + `alembic_version` |
-| Migratsiyalar | 14 ta, bitta head (`2a9b860859f1`) |
-| Testlar | 629 ta — unit 20 fayl · contract 7 · integration 21 |
+| Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
+| Endpointlar | 67 ta yo'l / 95 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 22 ta + `alembic_version` |
+| Migratsiyalar | 19 ta, bitta head (`cdac5166fee1`) |
+| Testlar | 644 ta — unit 20 fayl · contract 7 · integration 24 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -73,8 +73,11 @@ kontrakt testlari.
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
+| `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
+| `cms` (sahifalar) | Slug + har til uchun **markdown** tana, publish/unpublish; public GET slug bo'yicha, draft ham yo'q slug ham bir xil `404`. Yadro — bayroqsiz (API.md §28) | 5 |
+| `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
 
-> Ustundagi son — **yo'llar** soni (11+1+1+7+1+3+2+2+1+2+9+4+1+2 = 48).
+> Ustundagi son — **yo'llar** soni (jami — §1 dagi 67).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
@@ -84,7 +87,8 @@ kontrakt testlari.
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
-`email_otps`, `passengers`, `payment_providers`, `social_credentials`.
+`email_otps`, `passengers`, `payment_providers`, `social_credentials`,
+`customer_cards`, `faqs`, `pages`, `leads`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -352,7 +356,7 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 | Qisman qaytarish siyosati | 2-bosqich oxiri, `payments` |
 | Buyurtmani paneldan tahrirlash | 4-bosqich, `orders` |
 | Dashboard ko'rsatkichlari | 4-bosqich, `reports` |
-| Menyu va sahifalar modeli | 5-bosqich |
+| Menyu modeli (sahifa yarmi yechildi — markdown, [PHASES.md](PHASES.md) §2.14) | 5-bosqich |
 | Saqlash muddatlari | 7-bosqich |
 | Kutilayotgan yuk | server o'lchami; D2 sababli har `offers/` GTS'ga boradi |
 | **GTS 2FA (D1)** | 2-bosqich. Kolleksiyadan aniqlandi: bu **akkaunt bayrog'i** (`two_factory`), ya'ni GTS tomonda o'chiriladi — kod masalasi emas ([GTS.md](GTS.md) §3). Yoniga ikkita band qo'shildi: `white_list` (client IP'si) va `is_single` |

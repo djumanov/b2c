@@ -26,6 +26,8 @@ from app.modules.cms import router_public as cms_public
 from app.modules.customers import router_profile as customers_profile
 from app.modules.customers import router_public as customers_public
 from app.modules.integrations import router_admin as integrations_admin
+from app.modules.leads import router_admin as leads_admin
+from app.modules.leads import router_public as leads_public
 from app.modules.payments import router_cards as payments_cards
 from app.modules.settings import router_admin as settings_admin
 from app.modules.settings import router_public as settings_public
@@ -58,6 +60,7 @@ public_router.include_router(customers_profile.passengers_router)
 public_router.include_router(payments_cards.router)
 public_router.include_router(cms_public.faq_router)
 public_router.include_router(cms_public.pages_router)
+public_router.include_router(leads_public.router)
 public_router.include_router(catalog_public.router)
 
 admin_router.include_router(staff_admin.auth_router)
@@ -68,6 +71,7 @@ admin_router.include_router(integrations_admin.social_router)
 admin_router.include_router(integrations_admin.notifications_router)
 admin_router.include_router(cms_admin.faq_router)
 admin_router.include_router(cms_admin.pages_router)
+admin_router.include_router(leads_admin.router)
 admin_router.include_router(staff_admin.router)
 admin_router.include_router(system_admin.router)
 admin_router.include_router(audit_admin.router)
