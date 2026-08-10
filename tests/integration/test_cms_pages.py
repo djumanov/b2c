@@ -1,67 +1,74 @@
-"""Static pages: markdown body per language, conventional slugs (API.md §24, §30)."""
+"""Static pages: each of the fixed three has its own routes (API.md §24, §30)."""
 
 from httpx import AsyncClient
 
+from app.modules.customers.models import Customer
 from app.modules.staff.models import Staff
-from tests.integration.conftest import headers_for
+from tests.integration.conftest import customer_headers_for, headers_for
 
-ADMIN_URL = "/api/v1/admin/content/pages/"
-PUBLIC_URL = "/api/v1/public/content/pages/"
+ADMIN_URL = "/api/v1/admin/content/"
+PUBLIC_URL = "/api/v1/public/content/"
 
 TITLE = {"uz": "Maxfiylik siyosati", "ru": "Политика конфиденциальности"}
 BODY = {"uz": "# Maxfiylik\n\nMa'lumotlaringiz...", "ru": "# Конфиденциальность"}
 
 
-async def _create(
+async def _put(
     api: AsyncClient,
     headers: dict[str, str],
     *,
-    slug: str = "privacy-policy",
+    page: str = "privacy-policy",
     title: dict[str, str] = TITLE,
     body: dict[str, str] = BODY,
 ) -> dict:
-    response = await api.post(
-        ADMIN_URL,
-        json={"slug": slug, "title": title, "body": body},
-        headers=headers,
+    response = await api.put(
+        f"{ADMIN_URL}{page}/", json={"title": title, "body": body}, headers=headers
     )
-    assert response.status_code == 201, response.text
+    assert response.status_code == 200, response.text
     return response.json()["data"]
 
 
-async def test_crud_and_publish_lifecycle(api: AsyncClient, admin: Staff) -> None:
+async def test_upsert_and_publish_lifecycle(api: AsyncClient, admin: Staff) -> None:
     headers = headers_for(admin)
-    created = await _create(api, headers)
+
+    # Never written: the panel sees 404, and so does the public surface.
+    assert (await api.get(f"{ADMIN_URL}terms/", headers=headers)).status_code == 404
+    assert (await api.get(f"{PUBLIC_URL}terms/")).status_code == 404
+
+    created = await _put(api, headers, page="terms")
     assert created["status"] == "draft"
+    assert created["slug"] == "terms"
 
-    # A draft slug is indistinguishable from a missing one.
-    assert (await api.get(f"{PUBLIC_URL}privacy-policy/")).status_code == 404
-    assert (await api.get(f"{PUBLIC_URL}no-such-page/")).status_code == 404
+    # A draft is publicly indistinguishable from a page never written.
+    assert (await api.get(f"{PUBLIC_URL}terms/")).status_code == 404
 
-    url = f"{ADMIN_URL}{created['id']}/"
-    published = await api.post(f"{url}publish/", headers=headers)
+    published = await api.post(f"{ADMIN_URL}terms/publish/", headers=headers)
     assert published.status_code == 200
     assert published.json()["data"]["status"] == "published"
 
-    public = await api.get(f"{PUBLIC_URL}privacy-policy/")
+    public = await api.get(f"{PUBLIC_URL}terms/")
     assert public.status_code == 200
     data = public.json()["data"]
     assert data["body"] == BODY["uz"]
     assert data["lang"] == "uz"
 
-    # PATCH merges one language into a translated field, keeping the others.
-    patched = await api.patch(url, json={"body": {"en": "# Privacy"}}, headers=headers)
-    assert patched.json()["data"]["body"] == {**BODY, "en": "# Privacy"}
+    # A later PUT merges one language into a translated field, keeping the
+    # others — and does not touch the published status.
+    merged = await api.put(
+        f"{ADMIN_URL}terms/", json={"body": {"en": "# Terms"}}, headers=headers
+    )
+    assert merged.json()["data"]["body"] == {**BODY, "en": "# Terms"}
+    assert merged.json()["data"]["status"] == "published"
 
-    unpublished = await api.post(f"{url}unpublish/", headers=headers)
+    unpublished = await api.post(f"{ADMIN_URL}terms/unpublish/", headers=headers)
     assert unpublished.json()["data"]["status"] == "draft"
-    assert (await api.get(f"{PUBLIC_URL}privacy-policy/")).status_code == 404
+    assert (await api.get(f"{PUBLIC_URL}terms/")).status_code == 404
 
 
 async def test_language_selection_and_fallback(api: AsyncClient, admin: Staff) -> None:
     headers = headers_for(admin)
-    created = await _create(api, headers)  # uz + ru, no en
-    await api.post(f"{ADMIN_URL}{created['id']}/publish/", headers=headers)
+    await _put(api, headers)  # uz + ru, no en
+    await api.post(f"{ADMIN_URL}privacy-policy/publish/", headers=headers)
 
     russian = await api.get(f"{PUBLIC_URL}privacy-policy/", params={"lang": "ru"})
     assert russian.json()["data"]["body"] == BODY["ru"]
@@ -73,32 +80,32 @@ async def test_language_selection_and_fallback(api: AsyncClient, admin: Staff) -
     assert english.json()["data"]["lang"] == "uz"
 
 
-async def test_a_live_slug_cannot_be_taken_twice(
-    api: AsyncClient, admin: Staff
-) -> None:
+async def test_a_first_put_needs_some_content(api: AsyncClient, admin: Staff) -> None:
     headers = headers_for(admin)
-    created = await _create(api, headers, slug="terms")
 
-    duplicate = await api.post(
-        ADMIN_URL,
-        json={"slug": "terms", "title": TITLE, "body": BODY},
-        headers=headers,
+    # Nothing at all, and nothing readable in any language, both refuse.
+    empty = await api.put(f"{ADMIN_URL}about/", json={}, headers=headers)
+    assert empty.status_code == 422
+    blank = await api.put(
+        f"{ADMIN_URL}about/", json={"title": {"uz": "  "}}, headers=headers
     )
-    assert duplicate.status_code == 422
-    assert duplicate.json()["errors"][0]["field"] == "slug"
+    assert blank.status_code == 422
 
-    # Deleting frees the slug — the unique index only covers live rows.
-    await api.delete(f"{ADMIN_URL}{created['id']}/", headers=headers)
-    await _create(api, headers, slug="terms")
+    # Publishing a page never written is the ordinary 404, not a blank create.
+    assert (
+        await api.post(f"{ADMIN_URL}about/publish/", headers=headers)
+    ).status_code == 404
 
 
-async def test_an_ugly_slug_is_refused(api: AsyncClient, admin: Staff) -> None:
-    response = await api.post(
-        ADMIN_URL,
-        json={"slug": "Not A Slug!", "title": TITLE, "body": BODY},
-        headers=headers_for(admin),
-    )
-    assert response.status_code == 422
+async def test_admin_routes_refuse_a_customer_token(
+    api: AsyncClient, customer: Customer
+) -> None:
+    headers = customer_headers_for(customer)
+    # The wrong audience is a 403 — recognised, but not staff (API.md §4).
+    assert (await api.get(f"{ADMIN_URL}terms/", headers=headers)).status_code == 403
+    assert (
+        await api.put(f"{ADMIN_URL}terms/", json={"title": TITLE}, headers=headers)
+    ).status_code == 403
 
 
 async def test_pages_ignore_feature_flags(
@@ -106,8 +113,8 @@ async def test_pages_ignore_feature_flags(
 ) -> None:
     """Pages are core — no switch may remove the privacy policy (API.md §28)."""
     headers = headers_for(admin)
-    created = await _create(api, headers, slug="about")
-    await api.post(f"{ADMIN_URL}{created['id']}/publish/", headers=headers)
+    await _put(api, headers, page="about")
+    await api.post(f"{ADMIN_URL}about/publish/", headers=headers)
 
     # Switch off every switchable section, rebuild the cached document…
     flags = (await api.get("/api/v1/admin/settings/features/", headers=headers)).json()[
@@ -123,4 +130,4 @@ async def test_pages_ignore_feature_flags(
 
     # …and the pages are still there on both surfaces.
     assert (await api.get(f"{PUBLIC_URL}about/")).status_code == 200
-    assert (await api.get(ADMIN_URL, headers=headers)).status_code == 200
+    assert (await api.get(f"{ADMIN_URL}about/", headers=headers)).status_code == 200

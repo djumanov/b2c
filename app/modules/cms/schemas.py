@@ -14,9 +14,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.i18n import SUPPORTED_LANGUAGES, Translated
 
-#: Lowercase, hyphenated — the shape of ``privacy-policy``, ``terms``, ``about``.
-SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
-
 
 def _check_translated(value: Translated) -> Translated:
     filtered = {
@@ -81,21 +78,11 @@ class FaqPublicOut(BaseModel):
 # --- pages -----------------------------------------------------------------------
 
 
-class PageIn(BaseModel):
-    slug: Annotated[str, Field(max_length=160, pattern=SLUG_PATTERN)]
-    title: Translated
-    #: Markdown per language.
-    body: Translated
+class FixedPageIn(BaseModel):
+    """The ``PUT`` body of a fixed page — the slug lives in the path."""
 
-    @field_validator("title", "body")
-    @classmethod
-    def _known_languages(cls, value: Translated) -> Translated:
-        return _check_translated(value)
-
-
-class PageUpdateIn(BaseModel):
-    slug: Annotated[str, Field(max_length=160, pattern=SLUG_PATTERN)] | None = None
     title: Translated | None = None
+    #: Markdown per language.
     body: Translated | None = None
 
     @field_validator("title", "body")
@@ -135,14 +122,12 @@ class ReorderItemIn(BaseModel):
 
 
 __all__ = [
-    "SLUG_PATTERN",
     "FaqAdminOut",
     "FaqIn",
     "FaqPublicOut",
     "FaqUpdateIn",
+    "FixedPageIn",
     "PageAdminOut",
-    "PageIn",
     "PagePublicOut",
-    "PageUpdateIn",
     "ReorderItemIn",
 ]

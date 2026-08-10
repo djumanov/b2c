@@ -54,9 +54,14 @@ CORE_PREFIXES: tuple[str, ...] = (
     f"{API_PREFIX}/public/catalog/",
     # Static pages, the same reasoning: privacy-policy and terms must exist on
     # every installation (API.md §28), so there is no flag that could remove
-    # them. Precise prefixes — FAQ under /content/ stays behind its own flag.
-    f"{API_PREFIX}/admin/content/pages/",
-    f"{API_PREFIX}/public/content/pages/",
+    # them. Each fixed page is its own route on both surfaces — precise
+    # prefixes, so FAQ under /content/ stays behind its own flag.
+    f"{API_PREFIX}/admin/content/privacy-policy/",
+    f"{API_PREFIX}/admin/content/terms/",
+    f"{API_PREFIX}/admin/content/about/",
+    f"{API_PREFIX}/public/content/privacy-policy/",
+    f"{API_PREFIX}/public/content/terms/",
+    f"{API_PREFIX}/public/content/about/",
 )
 
 

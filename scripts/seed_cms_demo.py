@@ -25,7 +25,7 @@ from app.db.session import dispose_engine, get_sessionmaker
 from app.modules.cms import service as cms_service
 from app.modules.cms.models import ContentStatus, Faq
 from app.modules.cms.models import Page as PageModel
-from app.modules.cms.schemas import FaqIn, PageIn
+from app.modules.cms.schemas import FaqIn, FixedPageIn
 
 # --- pages -----------------------------------------------------------------------
 
@@ -324,12 +324,16 @@ FAQS: list[dict] = [
 
 async def seed_pages(session: AsyncSession) -> None:
     for spec in PAGES:
-        if await exists_live(session, PageModel, PageModel.slug == spec["slug"]):
-            print(f"page {spec['slug']!r}: already exists, skipped")
+        slug = spec["slug"]
+        # Skip rather than upsert: a rerun must never clobber edited text.
+        if await exists_live(session, PageModel, PageModel.slug == slug):
+            print(f"page {slug!r}: already exists, skipped")
             continue
-        created = await cms_service.create_page(session, PageIn(**spec))
-        await cms_service.set_page_status(session, created.id, ContentStatus.PUBLISHED)
-        print(f"page {spec['slug']!r}: created and published")
+        await cms_service.upsert_fixed_page(
+            session, slug, FixedPageIn(title=spec["title"], body=spec["body"])
+        )
+        await cms_service.set_fixed_page_status(session, slug, ContentStatus.PUBLISHED)
+        print(f"page {slug!r}: created and published")
 
 
 async def seed_faqs(session: AsyncSession) -> None:

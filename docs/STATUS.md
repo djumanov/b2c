@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/faq-pages-leads`
+**Oxirgi yangilanish:** 2026-08-10 · `feat/cms-fixed-page-endpoints`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,7 +18,7 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
-| Endpointlar | 67 ta yo'l / 95 operatsiya (API.md dagi ~150 dan) |
+| Endpointlar | 74 ta yo'l / 102 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 22 ta + `alembic_version` |
 | Migratsiyalar | 19 ta, bitta head (`cdac5166fee1`) |
 | Testlar | 644 ta — unit 20 fayl · contract 7 · integration 24 |
@@ -74,10 +74,10 @@ kontrakt testlari.
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
-| `cms` (sahifalar) | Slug + har til uchun **markdown** tana, publish/unpublish; public GET slug bo'yicha, draft ham yo'q slug ham bir xil `404`. Yadro — bayroqsiz (API.md §28) | 5 |
+| `cms` (sahifalar) | Qat'iy uchlik — `privacy-policy`, `terms`, `about` — har biri o'z endpointi bilan (Swagger'da frontend/mobil ko'radi): admin `GET`/`PUT` (upsert, tillarni birlashtiradi) + publish/unpublish, public `GET`; draft ham yozilmagan ham bir xil `404`. Umumiy `pages/{slug}` CRUD olib tashlandi. Yadro — bayroqsiz (API.md §28) | 12 |
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
 
-> Ustundagi son — **yo'llar** soni (jami — §1 dagi 67).
+> Ustundagi son — **yo'llar** soni (jami — §1 dagi 74).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning

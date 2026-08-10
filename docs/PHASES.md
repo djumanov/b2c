@@ -63,7 +63,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
 | 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
 | 23 | Promokod | **2** | — | Shu hujjatdagi qaror (§2.3), `PROJECT.md` §15 ga yozib qo'yilgan |
-| 24 | Kontent (o'qish) | **4** | ◐ | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `faq/` va `pages/{slug}/` oldinga tortildi (§2.14) |
+| 24 | Kontent (o'qish) | **4** | ◐ | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `faq/` va statik sahifalar (`privacy-policy/`, `terms/`, `about/`) oldinga tortildi (§2.14) |
 | 25 | Murojaat va aloqa | **4** | ◐ | `leads` va `feedback` modullari bilan (§2.5). `leads` soddalashib oldinga tortildi (§2.14) |
 | 26 | Kataloglar | **1** + **2** + **3** | ◐ | `document-types`, `countries` → 1 (proxy, §2.6); `places`, `airlines`, `currencies` → 2; `stations/` poyezd bilan → 3 |
 
@@ -515,7 +515,7 @@ Modullar: `cms`, `feedback`, `promo` (to'liq), `leads`, `notifications`,
 
 | Nima | Qayerda |
 |---|---|
-| `content/pages/`, `public/content/pages/{slug}/` | 5-faza (§41) |
+| Statik sahifalar (`admin` va `public` sirtlarida `content/privacy-policy/`, `terms/`, `about/`) | Oldinga tortilgan — §2.14 |
 | `reports/export/`, `subscriptions/export/` | 7-faza (§2.9) |
 | `notifications/broadcast/` **ijrosi** | 7-faza (§2.9) |
 | SMS va push kanallari | §41 |
