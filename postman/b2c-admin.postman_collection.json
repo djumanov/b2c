@@ -1,0 +1,2236 @@
+{
+  "info": {
+    "_postman_id": "5f2a1c7e-8d43-4b91-9e6a-3c0f7b21d4aa",
+    "name": "B2C Admin API (phase 1)",
+    "description": "Every endpoint that exists in the code today — 66 operations across `/api/v1/public/*`, `/api/v1/admin/*` and the three un-enveloped file routes.\n\n**Scope.** `docs/API.md` specifies roughly 150 operations; this collection carries only the ones phase 1 actually implements. Deliberately absent, because they answer 404 today: the whole `/api/v1/webhooks/*` tree (no routes registered), the five product verticals, orders, payments, promo codes, content, leads, catalogs, reports, notification templates, `settings/menu/`, `profile/cards/`, `profile/notifications/`, `integrations/gts/test/`, `integrations/payments/{code}/test/` and `auth/devices/`. `docs/API.md` remains the full contract.\n\n**Before you start.** Run the stack (`docker compose up -d`, or `uv run uvicorn app.main:app --reload --port 8000`), then open the collection's *Variables* tab and set `origin` if you are not on `http://localhost:8000`.\n\n**Tokens are automatic.** `Admin ▸ Auth ▸ login` writes `adminAccessToken`/`adminRefreshToken`; `Public ▸ Auth ▸ login` (and `register/confirm`, `social`, `refresh`) writes `accessToken`/`refreshToken`. Folders inherit the right bearer token, so nothing has to be pasted by hand.\n\n**Three things that bite.**\n1. Every path ends in a slash. The app runs with `redirect_slashes=False`, so dropping it is a hard 404, never a redirect.\n2. The login body field is `login`, not `email` — on both surfaces.\n3. The auth folders are rate limited to 5 requests per minute per IP, enforced in Redis and surviving a restart. A 429 carries `Retry-After`.\n\n**Envelope.** Every `/api/v1/*` response is `{status, data, errors, meta}`. List endpoints put the rows in `data` and `{page, page_size, total, total_pages}` in `meta`. The `/healthz` and `/uploads/*` routes are outside it.\n\n**Audiences.** A customer token on `/admin/*` is a **403**, not a 401 — the token is valid, it is just for the other surface.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "origin",
+      "value": "http://localhost:8000",
+      "type": "string",
+      "description": "Scheme and host only. The app declares no host/port itself — this is whatever uvicorn or docker-compose published."
+    },
+    {
+      "key": "baseUrl",
+      "value": "{{origin}}/api/v1",
+      "type": "string",
+      "description": "The API root. The `/api/v1` prefix is hard-coded in app/api/v1/router.py."
+    },
+    {
+      "key": "ownerEmail",
+      "value": "owner@example.com",
+      "type": "string",
+      "description": "FIRST_OWNER_EMAIL from .env — the account docker/bootstrap.py creates on first boot."
+    },
+    {
+      "key": "ownerPassword",
+      "value": "change-me",
+      "type": "string"
+    },
+    {
+      "key": "customerEmail",
+      "value": "customer@example.com",
+      "type": "string"
+    },
+    {
+      "key": "customerPassword",
+      "value": "Passw0rd123",
+      "type": "string",
+      "description": "At least 8 characters, at most 128."
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string",
+      "description": "Customer access token (aud: public), 30 min. Written by the Public ▸ Auth scripts."
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string",
+      "description": "Customer refresh token, 30 days, rotated on every refresh."
+    },
+    {
+      "key": "adminAccessToken",
+      "value": "",
+      "type": "string",
+      "description": "Staff access token (aud: admin), 15 min. Written by the Admin ▸ Auth scripts."
+    },
+    {
+      "key": "adminRefreshToken",
+      "value": "",
+      "type": "string",
+      "description": "Staff refresh token, 12 hours, rotated on every refresh."
+    },
+    {
+      "key": "otpCode",
+      "value": "0000",
+      "type": "string",
+      "description": "The 4-digit code from the email. A string, because leading zeros are part of it."
+    },
+    {
+      "key": "resetToken",
+      "value": "",
+      "type": "string",
+      "description": "Written by Public ▸ Auth ▸ password/reset/verify. Single use, 15 min."
+    },
+    {
+      "key": "passengerId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "staffId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "gtsCredentialId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "uploadId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "uploadKey",
+      "value": "",
+      "type": "string",
+      "description": "The storage key inside an upload's `url` — the tail after /uploads/."
+    }
+  ],
+  "item": [
+    {
+      "name": "Public",
+      "description": "`/api/v1/public/*` — the website and the Flutter app. Subject `aud: public`. Rate limited to 120 requests per minute, except the auth folder which is far tighter.",
+      "item": [
+        {
+          "name": "Site config",
+          "description": "API.md §17. The first call a cold client makes, and the only one it cannot start without.",
+          "item": [
+            {
+              "name": "GET site-config",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept-Language",
+                    "value": "uz",
+                    "disabled": true,
+                    "description": "Used when ?lang= is absent."
+                  },
+                  {
+                    "key": "If-None-Match",
+                    "value": "",
+                    "disabled": true,
+                    "description": "Paste the ETag from a previous response to get a 304 with no body."
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/public/site-config/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "site-config", ""],
+                  "query": [
+                    {
+                      "key": "lang",
+                      "value": "uz",
+                      "disabled": true,
+                      "description": "uz | ru | en. Beats Accept-Language. The response echoes the language actually served in `data.lang`."
+                    }
+                  ]
+                },
+                "description": "Branding, languages, currencies, products, enabled payment methods, menu and feature flags in one document.\n\nNo auth. Answers with `ETag` and `Cache-Control: public, max-age=300`; the cache is dropped by any settings write, which is what makes a colour change visible without a deploy."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Auth",
+          "description": "API.md §18. **Rate limited to 5 requests per minute per IP** — the limit lives on the router, so registration and resend share it with login. A 429 carries `Retry-After`.\n\nOTP rules: 4 digits, 10-minute TTL, 5 wrong attempts burn the code, a new code instantly burns the previous one, and resend is silently throttled to one per 60 seconds.\n\nLocal SMTP swallows the mail — read the code out of the application log.",
+          "auth": {
+            "type": "noauth"
+          },
+          "item": [
+            {
+              "name": "POST register",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"phone\": \"+998901234567\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/register/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "register", ""]
+                },
+                "description": "Only `email` and `password` are required; `first_name`, `last_name` and `phone` are optional and may be omitted entirely.\n\n**Always 204**, even when the address is already taken — otherwise this endpoint would tell an anonymous caller who has an account here. Sends the 4-digit code by email."
+              },
+              "response": []
+            },
+            {
+              "name": "POST register/confirm",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('accessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('refreshToken', body.data.refresh_token);",
+                      "  console.log('customer tokens saved, access expires in ' + body.data.expires_in + 's');",
+                      "} else {",
+                      "  console.log('no tokens saved (HTTP ' + pm.response.code + ') — existing ones left alone');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/register/confirm/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "register", "confirm", ""]
+                },
+                "description": "Exchanges the emailed code for an access + refresh pair, and confirms the account.\n\n`code` is a **string** of exactly 4 characters. Set `otpCode` in the collection variables first."
+              },
+              "response": []
+            },
+            {
+              "name": "POST register/resend",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/register/resend/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "register", "resend", ""]
+                },
+                "description": "204 either way. The 60-second gap between codes is enforced silently — a call inside it still answers 204 and simply sends nothing."
+              },
+              "response": []
+            },
+            {
+              "name": "POST login",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('accessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('refreshToken', body.data.refresh_token);",
+                      "  console.log('customer tokens saved, access expires in ' + body.data.expires_in + 's');",
+                      "} else {",
+                      "  console.log('no tokens saved (HTTP ' + pm.response.code + ') — existing ones left alone');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"login\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/login/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "login", ""]
+                },
+                "description": "The field is **`login`**, not `email` — though in this release it is validated as an email address; phone + SMS comes later.\n\nReturns `{access_token, refresh_token, expires_in}`, where `expires_in` describes the **access** token in seconds. The test script stores both tokens."
+              },
+              "response": []
+            },
+            {
+              "name": "POST refresh",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('accessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('refreshToken', body.data.refresh_token);",
+                      "  console.log('customer tokens rotated');",
+                      "} else {",
+                      "  console.log('no rotation (HTTP ' + pm.response.code + ') — existing tokens left alone');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/refresh/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "refresh", ""]
+                },
+                "description": "Rotation, not renewal: the old refresh token is revoked as the new pair is issued.\n\nReplaying an already-revoked refresh token is read as theft and **kills every session of that customer**. So do not run this twice from the same stored value."
+              },
+              "response": []
+            },
+            {
+              "name": "POST social/{provider}",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('accessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('refreshToken', body.data.refresh_token);",
+                      "  console.log('customer tokens saved via social sign-in');",
+                      "} else {",
+                      "  console.log('no tokens saved (HTTP ' + pm.response.code + ')');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"id_token\": \"eyJhbGciOiJSUzI1NiIsImtpZCI6...\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/social/google/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "social", "google", ""]
+                },
+                "description": "`google` is the only provider this release resolves. Any other name — and a provider switched off in the panel — is a **404**, on purpose: an anonymous caller learns nothing about which providers exist.\n\n`id_token` is the identity token Google handed the browser. Requires `client_id` to be set under Admin ▸ Integrations ▸ Social and the provider enabled."
+              },
+              "response": []
+            },
+            {
+              "name": "POST logout",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{accessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/logout/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "logout", ""]
+                },
+                "description": "The one authenticated endpoint in this folder: the caller proves the session is theirs before it ends, so a leaked refresh token is not also a way to sign somebody out.\n\n204."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/reset/request",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/password/reset/request/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "password", "reset", "request", ""]
+                },
+                "description": "204 whether or not the address is known. Sends a 4-digit code."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/reset/verify",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.reset_token) {",
+                      "  pm.collectionVariables.set('resetToken', body.data.reset_token);",
+                      "  console.log('reset token saved, valid for ' + body.data.expires_in + 's');",
+                      "} else {",
+                      "  console.log('no reset token saved (HTTP ' + pm.response.code + ')');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/password/reset/verify/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "password", "reset", "verify", ""]
+                },
+                "description": "Exchanges the code for a single-use `reset_token` (15 minutes). The test script stores it as `resetToken`."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/reset/confirm",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"reset_token\": \"{{resetToken}}\",\n  \"new_password\": \"NewPassw0rd123\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/auth/password/reset/confirm/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "auth", "password", "reset", "confirm", ""]
+                },
+                "description": "The field is **`reset_token`** here. (The admin surface calls the same field `token` — the two are not interchangeable.)\n\n`new_password` is 8–128 characters. 204, and every session of that customer is killed."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Profile",
+          "description": "API.md §19. The whole folder needs a customer token — the guard sits on the router, not on individual handlers, so a blocked, unconfirmed or deleted account is refused before any handler runs.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{accessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET profile",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", ""]
+                },
+                "description": "Returns `id, email, first_name, last_name, phone, birth_date, avatar_id, avatar_url, created_at`.\n\nNo `is_blocked`: a blocked account cannot reach this endpoint at all, so the field could only ever read `false`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH profile",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"phone\": \"+998901234567\",\n  \"birth_date\": \"1995-03-14\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", ""]
+                },
+                "description": "**These four fields and nothing else.** The model is `extra=\"forbid\"`, so sending `email` — or any other key — is a 422 naming the field. The address is what the OTP proved and what password reset trusts, so it cannot be changed here.\n\nPartial: only the keys present change."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE profile",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"password\": \"{{customerPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", ""]
+                },
+                "description": "**A DELETE with a request body.** This is the one irreversible thing a customer token can do, so holding the token is not enough — the password is asked for again.\n\n204. Some HTTP clients drop bodies on DELETE; Postman does not."
+              },
+              "response": []
+            },
+            {
+              "name": "POST profile/password",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"current_password\": \"{{customerPassword}}\",\n  \"new_password\": \"NewPassw0rd123\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/password/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "password", ""]
+                },
+                "description": "204, and **every session is killed** — including the token this request used. Sign in again afterwards."
+              },
+              "response": []
+            },
+            {
+              "name": "POST profile/avatar",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": [],
+                      "description": "png, jpeg or webp. Max 1 MB. No SVG — raster only."
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/avatar/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "avatar", ""]
+                },
+                "description": "`multipart/form-data` with a single `file` part — no `purpose` field, unlike `/admin/uploads/`, because on this route it could only ever be `avatar`.\n\nPick a file in the Body tab before sending. The bytes are magic-sniffed; the `Content-Type` the client claims is not trusted. Returns the updated profile.\n\nDo not set `Content-Type` by hand — Postman writes the multipart boundary itself."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE profile/avatar",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/avatar/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "avatar", ""]
+                },
+                "description": "204."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Passengers",
+          "description": "API.md §19 — saved passengers, the standard CRUD shape. Another customer's passenger is a **404**, not a 403: the caller learns nothing about rows that are not theirs.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{accessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET passengers",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/passengers/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "passengers", ""],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1",
+                      "disabled": true
+                    },
+                    {
+                      "key": "page_size",
+                      "value": "20",
+                      "disabled": true,
+                      "description": "1–100."
+                    },
+                    {
+                      "key": "search",
+                      "value": "Aziz",
+                      "disabled": true,
+                      "description": "Case-insensitive substring over first_name and last_name."
+                    },
+                    {
+                      "key": "ordering",
+                      "value": "-created_at",
+                      "disabled": true,
+                      "description": "first_name | last_name | birth_date | created_at, optionally with a leading '-'. Default -created_at. Anything else is a 422 on the `ordering` field."
+                    },
+                    {
+                      "key": "created_from",
+                      "value": "2026-01-01T00:00:00Z",
+                      "disabled": true,
+                      "description": "Inclusive. A datetime sent without an offset is read as UTC."
+                    },
+                    {
+                      "key": "created_to",
+                      "value": "2026-12-31T23:59:59Z",
+                      "disabled": true,
+                      "description": "Inclusive."
+                    }
+                  ]
+                },
+                "description": "Paginated: rows in `data`, `{page, page_size, total, total_pages}` in `meta`."
+              },
+              "response": []
+            },
+            {
+              "name": "POST passengers",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 201 && body && body.data && body.data.id) {",
+                      "  pm.collectionVariables.set('passengerId', body.data.id);",
+                      "  console.log('passengerId = ' + body.data.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"birth_date\": \"1995-03-14\",\n  \"document_type\": \"passport\",\n  \"document_number\": \"AA1234567\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/passengers/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "passengers", ""]
+                },
+                "description": "Only `first_name` and `last_name` are required. `document_type` is free text (max 32) — the catalogue of document types is GTS's and has no endpoint yet.\n\n201. The test script stores the new id as `passengerId`."
+              },
+              "response": []
+            },
+            {
+              "name": "GET passengers/{id}",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/passengers/{{passengerId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "passengers", "{{passengerId}}", ""]
+                },
+                "description": "`id` is a UUID; a malformed one is a 422, a valid one belonging to somebody else is a 404."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH passengers/{id}",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"document_number\": \"AA7654321\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/passengers/{{passengerId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "passengers", "{{passengerId}}", ""]
+                },
+                "description": "Partial, and `extra=\"forbid\"` — an unknown key is a 422. Settable: `first_name`, `last_name`, `birth_date`, `document_type`, `document_number`."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE passengers/{id}",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/public/profile/passengers/{{passengerId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "profile", "passengers", "{{passengerId}}", ""]
+                },
+                "description": "204."
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "`/api/v1/admin/*` — the React panel. Subject `aud: admin`, rate limited to 300 requests per minute per staff member.\n\nTwo roles only, `owner ⊃ admin`. Requests marked **[owner]** answer 403 to an `admin` token. A *customer* token anywhere in this tree is also a 403 — the token is valid, it is just for the other surface.\n\nBoth principals are re-read from the database on every request, so blocking or deleting somebody takes effect immediately.",
+      "item": [
+        {
+          "name": "Auth",
+          "description": "API.md §27. **Rate limited to 5 requests per minute per IP.**\n\nAdmin tokens are short: access 15 minutes, refresh 12 hours.",
+          "item": [
+            {
+              "name": "POST login",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('adminAccessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('adminRefreshToken', body.data.refresh_token);",
+                      "  console.log('staff tokens saved, access expires in ' + body.data.expires_in + 's');",
+                      "} else {",
+                      "  console.log('no tokens saved (HTTP ' + pm.response.code + ') — existing ones left alone');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"login\": \"{{ownerEmail}}\",\n  \"password\": \"{{ownerPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/login/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "login", ""]
+                },
+                "description": "**Start here.** The field is `login`, not `email`.\n\nThe defaults are `FIRST_OWNER_EMAIL` / `FIRST_OWNER_PASSWORD` from `.env` — the owner account `docker/bootstrap.py` creates on first boot. The test script stores the pair as `adminAccessToken` / `adminRefreshToken`, which every other Admin folder uses."
+              },
+              "response": []
+            },
+            {
+              "name": "POST refresh",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 200 && body && body.data && body.data.access_token) {",
+                      "  pm.collectionVariables.set('adminAccessToken', body.data.access_token);",
+                      "  pm.collectionVariables.set('adminRefreshToken', body.data.refresh_token);",
+                      "  console.log('staff tokens rotated');",
+                      "} else {",
+                      "  console.log('no rotation (HTTP ' + pm.response.code + ') — existing tokens left alone');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"refresh_token\": \"{{adminRefreshToken}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/refresh/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "refresh", ""]
+                },
+                "description": "Rotating: the old refresh token is revoked. Replaying a revoked one is treated as theft and kills every session of that staff member."
+              },
+              "response": []
+            },
+            {
+              "name": "POST logout",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{adminAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"refresh_token\": \"{{adminRefreshToken}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/logout/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "logout", ""]
+                },
+                "description": "204."
+              },
+              "response": []
+            },
+            {
+              "name": "GET me",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{adminAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/me/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "me", ""]
+                },
+                "description": "`{id, name, email, role}`. The panel builds its menu from `role`, which comes from the database row, not from the JWT claim."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/change",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{adminAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"current_password\": \"{{ownerPassword}}\",\n  \"new_password\": \"NewOwnerPass123\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/password/change/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "password", "change", ""]
+                },
+                "description": "204, and every session of that staff member is killed — including this one. Update `ownerPassword` afterwards."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/reset/request",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{ownerEmail}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/password/reset/request/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "password", "reset", "request", ""]
+                },
+                "description": "204 whether or not the address is known. Emails a reset link — staff get a link, customers get a 4-digit code."
+              },
+              "response": []
+            },
+            {
+              "name": "POST password/reset/confirm",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"token\": \"\",\n  \"new_password\": \"NewOwnerPass123\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/auth/password/reset/confirm/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "auth", "password", "reset", "confirm", ""]
+                },
+                "description": "The field is **`token`** here, not `reset_token` — that is the public surface's name for the equivalent field. Paste the value from the emailed link.\n\n204."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Settings",
+          "description": "API.md §28. Both roles write here — changing a colour is day-to-day work, not administration of the installation. The one exception is `PATCH features/`.\n\nEvery PATCH is partial: a field left out is left alone, so an explicit `null` cannot be used to clear something. Any write here drops the cached `site-config`.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET branding",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/branding/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "branding", ""]
+                },
+                "description": "Colours, font, logo/favicon/app-icon ids, and the resolved `*_url` fields so the panel does not have to build them."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH branding",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"colors\": {\n    \"primary\": \"#0A5CFF\",\n    \"accent\": \"#FF7A00\",\n    \"background\": \"#FFFFFF\"\n  },\n  \"font_family\": \"Inter\",\n  \"app_name\": \"Travel\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/branding/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "branding", ""]
+                },
+                "description": "`colors` accepts exactly three keys — `primary`, `accent`, `background` — and each value must be a hex colour (`#RGB` or `#RRGGBB`). Any other key is a 422: the site binds these three to CSS variables, so an extra one would be stored and never rendered.\n\n`font_family` is a closed list: `Inter`, `Roboto`, `Open Sans`, `Montserrat`, `Manrope`. The site ships the faces, so free text would name one the browser cannot load.\n\n`logo_id`, `favicon_id`, `app_icon_id` are UUIDs from Admin ▸ Uploads. `app_name` is max 64 characters."
+              },
+              "response": []
+            },
+            {
+              "name": "GET site",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/site/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "site", ""]
+                },
+                "description": "Name, domain, support contacts, social links. `name` comes back as a translated object."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH site",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": {\n    \"uz\": \"Sayohat\",\n    \"ru\": \"Путешествие\",\n    \"en\": \"Travel\"\n  },\n  \"domain\": \"example.uz\",\n  \"support_phone\": \"+998712000000\",\n  \"support_email\": \"support@example.uz\",\n  \"social\": {\n    \"telegram\": \"https://t.me/example\",\n    \"instagram\": \"https://instagram.com/example\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/site/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "site", ""]
+                },
+                "description": "`name` is translated: keys are language codes. An unsupported code is **silently dropped**, not rejected.\n\n`domain` drives CORS — the middleware resolves the allowed origins per request from this value (`https://<domain>` and `https://www.<domain>` only). Which is why a browser-based client on `http://localhost` will be refused; use Postman or another non-browser client."
+              },
+              "response": []
+            },
+            {
+              "name": "GET languages",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/languages/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "languages", ""]
+                },
+                "description": "`{default, available}`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH languages",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"default\": \"uz\",\n  \"available\": [\"uz\", \"ru\", \"en\"]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/languages/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "languages", ""]
+                },
+                "description": "This release serves `uz`, `ru`, `en` — anything else is a 422 naming the unsupported codes. `available` must be non-empty; duplicates are removed, order is kept."
+              },
+              "response": []
+            },
+            {
+              "name": "GET currencies",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/currencies/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "currencies", ""]
+                },
+                "description": "`{default, available}`. Defaults to UZS."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH currencies",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"default\": \"UZS\",\n  \"available\": [\"UZS\", \"USD\"]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/currencies/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "currencies", ""]
+                },
+                "description": "Three-letter ISO 4217 codes, upper-cased server-side. `available` must be non-empty."
+              },
+              "response": []
+            },
+            {
+              "name": "GET features",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/features/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "features", ""]
+                },
+                "description": "`{flags: {...}}`. Includes `loyalty`, which is always `false` and cannot be set."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH features [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"flags\": {\n    \"blog\": true,\n    \"promotions\": true,\n    \"faq\": true,\n    \"contacts\": true,\n    \"banners\": true,\n    \"popular_directions\": true,\n    \"feedbacks\": true,\n    \"promo_codes\": true,\n    \"leads\": true,\n    \"reports\": true,\n    \"broadcast\": true\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/features/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "features", ""]
+                },
+                "description": "**Owner only** — stricter than the rest of this folder, because switching a section off removes it from the client's own site *and* panel.\n\n`flags` is required. The eleven keys above are the complete settable set; `loyalty` is locked and including it is a 422.\n\nA flag set to `false` turns the matching routes into 404 on both surfaces. The data is preserved."
+              },
+              "response": []
+            },
+            {
+              "name": "GET products",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/products/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "products", ""]
+                },
+                "description": "Which verticals are on sale — `[{code, enabled}]`, a bare list with no pagination.\n\n**Read-only by contract:** what an installation may sell follows from its GTS agreement, not from a switch in the panel. There is no PATCH."
+              },
+              "response": []
+            },
+            {
+              "name": "POST cache/purge",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings/cache/purge/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings", "cache", "purge", ""]
+                },
+                "description": "Drops the cached `site-config`. **No request body.** 204.\n\nNormally unnecessary — every settings write purges it already."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Integrations — GTS credentials",
+          "description": "API.md §29. Reads are open to both roles, writes are **owner only** — the guard is per route, because a router-level `require_owner` would take the reads away from `admin` and a router-level `current_staff` alone would hand `admin` the client's GTS password.\n\nPasswords always come back masked; `CredentialOut` has no field that could carry the real value.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET credentials",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "gts", "credentials", ""]
+                },
+                "description": "A bare list, no pagination and no query parameters."
+              },
+              "response": []
+            },
+            {
+              "name": "POST credentials [owner]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 201 && body && body.data && body.data.id) {",
+                      "  pm.collectionVariables.set('gtsCredentialId', body.data.id);",
+                      "  console.log('gtsCredentialId = ' + body.data.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"label\": \"Production\",\n  \"email\": \"agent@example.uz\",\n  \"password\": \"gts-account-password\",\n  \"base_url\": \"https://api2.globaltravel.space\",\n  \"agent_uid\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "gts", "credentials", ""]
+                },
+                "description": "`label`, `email` and `password` are required; `base_url` defaults to `https://api2.globaltravel.space` and is stored without a trailing slash. A duplicate `label` is a 422.\n\n**The first credential created becomes the active one.** 201; the test script stores the id."
+              },
+              "response": []
+            },
+            {
+              "name": "GET credentials/{id}",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/{{gtsCredentialId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": [
+                    "admin",
+                    "integrations",
+                    "gts",
+                    "credentials",
+                    "{{gtsCredentialId}}",
+                    ""
+                  ]
+                },
+                "description": "Password masked."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH credentials/{id} [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"label\": \"Production (main)\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/{{gtsCredentialId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": [
+                    "admin",
+                    "integrations",
+                    "gts",
+                    "credentials",
+                    "{{gtsCredentialId}}",
+                    ""
+                  ]
+                },
+                "description": "Partial. Sending a `password` replaces it; omitting it keeps the stored one. It cannot be cleared — an account with no password is not a state worth reaching."
+              },
+              "response": []
+            },
+            {
+              "name": "POST credentials/{id}/activate [owner]",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/{{gtsCredentialId}}/activate/",
+                  "host": ["{{baseUrl}}"],
+                  "path": [
+                    "admin",
+                    "integrations",
+                    "gts",
+                    "credentials",
+                    "{{gtsCredentialId}}",
+                    "activate",
+                    ""
+                  ]
+                },
+                "description": "Every GTS call from now on uses this account. No request body; returns the credential."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE credentials/{id} [owner]",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/gts/credentials/{{gtsCredentialId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": [
+                    "admin",
+                    "integrations",
+                    "gts",
+                    "credentials",
+                    "{{gtsCredentialId}}",
+                    ""
+                  ]
+                },
+                "description": "204. Deleting the **active** credential while others exist is a 409 — activate another one first."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Integrations — SMTP",
+          "description": "API.md §29. A singleton: no `{id}` and no collection, because an installation sends its mail through one relay.\n\nTransactional mail — OTP codes, password resets — goes through here and is core; it does not hang off the `broadcast` feature flag.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET notifications",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/notifications/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "notifications", ""]
+                },
+                "description": "`password` is masked when one is stored and `null` when none is — the panel shows those two states differently.\n\nAlso returns `last_tested_at`, `last_test_ok`, `last_test_error`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH notifications [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"enabled\": true,\n  \"host\": \"smtp.example.uz\",\n  \"port\": 587,\n  \"tls\": \"starttls\",\n  \"username\": \"no-reply@example.uz\",\n  \"password\": \"smtp-password\",\n  \"from_address\": \"no-reply@example.uz\",\n  \"from_name\": \"Travel\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/notifications/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "notifications", ""]
+                },
+                "description": "Partial. `tls` is `starttls`, `ssl` or `none`. `enabled: true` requires `host` and `from_address` to be set — otherwise 422.\n\n`username` and `from_name` are cleared with an **empty string**, not `null`: a relay that needs no authentication is a real configuration, so it has to be reachable from one that did."
+              },
+              "response": []
+            },
+            {
+              "name": "POST notifications/test [owner]",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"to\": null\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/notifications/test/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "notifications", "test", ""]
+                },
+                "description": "Actually sends a message with the stored settings. `to` defaults to the address of whoever pressed the button, so `{}` is a valid body.\n\nReturns the outcome of *trying*, not of the request: a relay that refuses the password answers **200** with `{ok: false, detail, tested_at}`. SMTP switched off or unconfigured is a 409.\n\nThis is the only integration probe that works — the GTS and payment provider ones arrive with their adapters in phase 2 and 404 until then."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Integrations — Payments",
+          "description": "API.md §29. A registry, not a CRUD resource: every code the release supports has a row whether the client uses it or not, created disabled on first read. There is no POST and no DELETE — adding a provider means shipping an adapter.\n\n`{code}` is `payme` or `click`; anything else is a 422.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET payments",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/payments/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "payments", ""]
+                },
+                "description": "A bare list, credentials masked."
+              },
+              "response": []
+            },
+            {
+              "name": "GET payments/{code}",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/payments/payme/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "payments", "payme", ""]
+                },
+                "description": "Swap `payme` for `click` in the URL. Returns `{code, enabled, title, logo_id, logo_url, sort_order, credentials, last_tested_at, last_test_ok, last_test_error, created_at, updated_at}`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH payments/{code} [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"enabled\": true,\n  \"title\": \"Payme\",\n  \"sort_order\": 10,\n  \"credentials\": {\n    \"merchant_id\": \"6xxxxxxxxxxxxxxxxxxxxxx\",\n    \"key\": \"secret-key\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/payments/payme/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "payments", "payme", ""]
+                },
+                "description": "**`credentials` merges into what is stored, it does not replace it.** The panel only ever receives them masked, so it could not resend the keys it is not editing. Send `null` as a value to delete that key. At most 20 keys.\n\nA value containing `•` anywhere is treated as a mask and ignored — that is how a masked value read back and sent unchanged does no damage.\n\nWhich keys a provider wants comes from that provider's documentation and is **not validated here**; the ones above are illustrative. `enabled: true` requires non-empty credentials. `sort_order` is 0–9999 and decides the order on the site."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Integrations — Social",
+          "description": "API.md §29. `{provider}` is `google` only in this release.\n\n`client_id` comes back in full while `client_secret` is masked — not an oversight: the client id is handed to every browser that renders the sign-in button, so hiding it would cost the operator the one value they need to compare against the Google console.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET social",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/social/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "social", ""]
+                },
+                "description": "A bare list of `{provider, enabled, client_id, client_secret, created_at, updated_at}`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH social/{provider} [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"enabled\": true,\n  \"client_id\": \"123456789-abc.apps.googleusercontent.com\",\n  \"client_secret\": \"GOCSPX-xxxxxxxxxxxxxxxx\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/integrations/social/google/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "integrations", "social", "google", ""]
+                },
+                "description": "Partial. `enabled: true` requires a `client_id`. An empty string clears a field — the same convention as the SMTP username.\n\nWith this off, `POST /public/auth/social/google/` is a 404."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Staff",
+          "description": "API.md §38. **The entire resource is owner-only** — `admin` does not appear in the *Jamoa* row of the permission table at all, so it gets a 403 here rather than a filtered view. The guard sits on the router, so no handler can forget it.\n\nRoles are fixed in code: `owner` and `admin`. Anything else is a 422; the panel cannot invent a third.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET staff [owner]",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", ""],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1",
+                      "disabled": true
+                    },
+                    {
+                      "key": "page_size",
+                      "value": "20",
+                      "disabled": true,
+                      "description": "1–100."
+                    },
+                    {
+                      "key": "search",
+                      "value": "aziz",
+                      "disabled": true,
+                      "description": "Case-insensitive substring over name and email."
+                    },
+                    {
+                      "key": "ordering",
+                      "value": "-created_at",
+                      "disabled": true,
+                      "description": "name | email | role | created_at | last_login_at, optionally with a leading '-'. Default -created_at."
+                    },
+                    {
+                      "key": "created_from",
+                      "value": "2026-01-01T00:00:00Z",
+                      "disabled": true
+                    },
+                    {
+                      "key": "created_to",
+                      "value": "2026-12-31T23:59:59Z",
+                      "disabled": true
+                    }
+                  ]
+                },
+                "description": "Paginated."
+              },
+              "response": []
+            },
+            {
+              "name": "POST staff [owner]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 201 && body && body.data && body.data.id) {",
+                      "  pm.collectionVariables.set('staffId', body.data.id);",
+                      "  console.log('staffId = ' + body.data.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"manager@example.uz\",\n  \"name\": \"Dilnoza Rasulova\",\n  \"role\": \"admin\",\n  \"password\": \"StaffPass123\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", ""]
+                },
+                "description": "All four fields required. `role` is `owner` or `admin`; `password` is 8–128 characters. 201, and the test script stores the id."
+              },
+              "response": []
+            },
+            {
+              "name": "GET staff/{id} [owner]",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/{{staffId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", "{{staffId}}", ""]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH staff/{id} [owner]",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Dilnoza Rasulova\",\n  \"role\": \"admin\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/{{staffId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", "{{staffId}}", ""]
+                },
+                "description": "Partial: `email`, `name`, `role`. The password is not changed here."
+              },
+              "response": []
+            },
+            {
+              "name": "POST staff/{id}/block [owner]",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/{{staffId}}/block/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", "{{staffId}}", "block", ""]
+                },
+                "description": "**No request body.** Returns the employee. Takes effect on their very next request — the row is re-read every time, not trusted from the token."
+              },
+              "response": []
+            },
+            {
+              "name": "POST staff/{id}/reset-password [owner]",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/{{staffId}}/reset-password/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", "{{staffId}}", "reset-password", ""]
+                },
+                "description": "Emails that employee a reset link. **No request body.** 204."
+              },
+              "response": []
+            },
+            {
+              "name": "DELETE staff/{id} [owner]",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/staff/{{staffId}}/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "staff", "{{staffId}}", ""]
+                },
+                "description": "204."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "System",
+          "description": "API.md §39. Read-only, and readable by **both** roles.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "GET health",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/system/health/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "system", "health", ""]
+                },
+                "description": "Database, Redis, GTS and payment provider status. Authenticated — for an unauthenticated liveness probe use `GET /healthz` (see the *Un-enveloped* folder)."
+              },
+              "response": []
+            },
+            {
+              "name": "GET version",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/system/version/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "system", "version", ""]
+                },
+                "description": "Backend and panel version. Comes from `APP_VERSION`."
+              },
+              "response": []
+            },
+            {
+              "name": "GET audit",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/system/audit/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "system", "audit", ""],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1",
+                      "disabled": true
+                    },
+                    {
+                      "key": "page_size",
+                      "value": "20",
+                      "disabled": true,
+                      "description": "1–100."
+                    },
+                    {
+                      "key": "search",
+                      "value": "",
+                      "disabled": true,
+                      "description": "Case-insensitive substring over actor_email and path."
+                    },
+                    {
+                      "key": "ordering",
+                      "value": "-created_at",
+                      "disabled": true,
+                      "description": "created_at | resource | action, optionally with a leading '-'. Default -created_at."
+                    },
+                    {
+                      "key": "created_from",
+                      "value": "2026-01-01T00:00:00Z",
+                      "disabled": true
+                    },
+                    {
+                      "key": "created_to",
+                      "value": "2026-12-31T23:59:59Z",
+                      "disabled": true
+                    },
+                    {
+                      "key": "actor",
+                      "value": "{{staffId}}",
+                      "disabled": true,
+                      "description": "UUID of the staff member."
+                    },
+                    {
+                      "key": "resource",
+                      "value": "integrations.gts.credentials",
+                      "disabled": true
+                    },
+                    {
+                      "key": "action",
+                      "value": "create",
+                      "disabled": true
+                    }
+                  ]
+                },
+                "description": "Who changed what, and when. Paginated.\n\nAppend-only: nothing writes here except the audit middleware, so there is no POST and there will not be one. The path sits under `system/` because the contract puts it there, even though the module is `audit`."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Uploads",
+          "description": "API.md §11 and §39. A file is uploaded on its own and its `id` is attached to a resource afterwards — which is why this is one endpoint rather than a field on seven others.\n\nBoth roles may upload, because both roles edit content. Files that never get attached to anything are swept after 24 hours.",
+          "auth": {
+            "type": "bearer",
+            "bearer": [
+              {
+                "key": "token",
+                "value": "{{adminAccessToken}}",
+                "type": "string"
+              }
+            ]
+          },
+          "item": [
+            {
+              "name": "POST uploads",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "let body = null;",
+                      "try { body = pm.response.json(); } catch (e) { body = null; }",
+                      "",
+                      "if (pm.response.code === 201 && body && body.data && body.data.id) {",
+                      "  pm.collectionVariables.set('uploadId', body.data.id);",
+                      "  const url = body.data.url || '';",
+                      "  const marker = '/uploads/';",
+                      "  const at = url.indexOf(marker);",
+                      "  if (at !== -1) {",
+                      "    pm.collectionVariables.set('uploadKey', url.slice(at + marker.length));",
+                      "  }",
+                      "  console.log('uploadId = ' + body.data.id + ', url = ' + url);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": [],
+                      "description": "The bytes are magic-sniffed; the Content-Type the client claims is not trusted."
+                    },
+                    {
+                      "key": "purpose",
+                      "value": "logo",
+                      "type": "text",
+                      "description": "logo | favicon | app_icon | blog_cover | promo_banner | banner | document | avatar | payment_logo"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/uploads/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "uploads", ""]
+                },
+                "description": "`multipart/form-data` with `file` and `purpose`. Pick a file in the Body tab before sending.\n\nThe purpose decides the allowed MIME types and the size cap: logo and app_icon 2 MB, favicon 1 MB, blog_cover / promo_banner / banner 5 MB, avatar 1 MB (raster only, no SVG), payment_logo 1 MB, document 10 MB. `export` exists as a purpose but cannot be uploaded to.\n\n201 with `{id, url, mime, size}`. The test script stores `uploadId` and derives `uploadKey` from the URL for the file-serving requests.\n\nDo not set `Content-Type` by hand — Postman writes the multipart boundary itself."
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Un-enveloped",
+      "description": "Outside `/api/v1`, outside the envelope and outside the OpenAPI schema. These serve bytes and a liveness signal, neither of which can be wrapped in `{status, data, errors, meta}`.\n\nNote these use `{{origin}}`, not `{{baseUrl}}`.",
+      "item": [
+        {
+          "name": "GET /healthz",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{origin}}/healthz",
+              "host": ["{{origin}}"],
+              "path": ["healthz"]
+            },
+            "description": "The container healthcheck. Answers `{\"status\": \"ok\"}` with no envelope, no auth and **no trailing slash** — it is deliberately outside the contract, so the API.md slash rule does not apply.\n\nFor the real dependency check use `GET /admin/system/health/`."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /uploads/{key}",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{origin}}/uploads/{{uploadKey}}",
+              "host": ["{{origin}}"],
+              "path": ["uploads", "{{uploadKey}}"]
+            },
+            "description": "Serves the bytes behind an upload's `url`. Public — a logo is fetched by anonymous visitors.\n\n`uploadKey` is filled in by the Admin ▸ Uploads script. The key may contain slashes."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /uploads/private/{key}",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{origin}}/uploads/private/{{uploadKey}}",
+              "host": ["{{origin}}"],
+              "path": ["uploads", "private", "{{uploadKey}}"]
+            },
+            "description": "The same thing for objects stored private — an export is never fetched anonymously. Requires a staff token.\n\nPrivate is a property of the stored object, not of the caller: the local storage adapter points private URLs at this route, an S3 adapter would sign them instead."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
