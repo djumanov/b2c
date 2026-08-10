@@ -21,7 +21,7 @@ takrorlamaydi.
 | Endpointlar | 49 ta yo'l / 68 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 18 ta + `alembic_version` |
 | Migratsiyalar | 14 ta, bitta head (`2a9b860859f1`) |
-| Testlar | 574 ta — unit 18 fayl · contract 7 · integration 19 |
+| Testlar | 629 ta — unit 20 fayl · contract 7 · integration 21 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):

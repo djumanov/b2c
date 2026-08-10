@@ -13,6 +13,9 @@ def test_documented_limits() -> None:
     assert RATE_LIMITS == {
         "auth": (5, 60),
         "search": (30, 60),
+        # Tighter than the rest of the public surface: each request behind it
+        # spends the installation's merchant credentials at the provider.
+        "payment": (10, 60),
         "public": (120, 60),
         "admin": (300, 60),
     }

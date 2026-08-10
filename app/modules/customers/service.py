@@ -100,6 +100,7 @@ from app.modules.customers.schemas import (
     TokenPairOut,
 )
 from app.modules.integrations import service as integrations_service
+from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
 from app.modules.uploads import service as uploads_service
 from app.providers.notifications import html as mail_html
@@ -919,6 +920,10 @@ async def delete_account(
         customer.avatar_id = None
     for passenger in await repository.live_passengers_for(session, customer.id):
         passenger.soft_delete()
+    # A service call, not a cascade: ``customer_cards`` belongs to ``payments``
+    # and carries no foreign key back here (ARCHITECTURE.md §4, §5). It also has
+    # to reach the provider, which no database constraint could do.
+    await payments_service.forget_cards(session, customer.id)
 
     customer.email = f"deleted-{customer.id}@invalid"
     customer.first_name = _REDACTED

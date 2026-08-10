@@ -43,7 +43,7 @@ sub'ekti** bilan.
 | **D4** | Xarid uchun **akkaunt majburiy** | Har bir buyurtmada `customer_id` bo'sh bo'lmaydi. Mehmon sifatida xarid yo'q |
 | **D5** | Auth — **email + parol**, qo'shimcha **Google** | Apple/Facebook/VK yo'q. ⚠ Apple qoidalari bo'yicha iOS ilovada uchinchi tomon social login bo'lsa **Sign in with Apple majburiy** — ya'ni Google 6-bosqichda Apple'ni ham talab qiladi. Shuning uchun provayderlar registry sifatida quriladi |
 | **D6** | MVP'da OTP va parol tiklash — **faqat email/SMTP** | Telefon + SMS keyingi bosqichda; `login` maydoni relizda faqat email qabul qiladi ([API.md](API.md) §41) |
-| **D7** | To'lov provayderlari — **Payme + Click** | Ikkalasi ham redirect + webhook. **Karta+OTP oqimi yo'q → karta raqami serverimizdan o'tmaydi → PCI qamrovi yo'q.** `transactions/{id}/card\|confirm\|resend-otp/` kontraktda qoladi, lekin ulanmaydi |
+| **D7** | To'lov provayderlari — **Payme + Click**, redirect **va** karta-token oqimi | Ikkala provayder ham redirect + webhook beradi, ustiga karta-token API'si bor (Payme Subscribe, Click Card Token) — saqlangan kartalar shundan quriladi. **Karta raqami serverdan o'tadi, lekin hech qachon saqlanmaydi → o'rnatma SAQ D qamrovida** ([PROJECT.md](PROJECT.md) §13). `transactions/{id}/card\|confirm\|resend-otp/` endi ulanadi. Karta metodlari alohida `CardTokenProvider` portida (§12) — provayderda bunday API bo'lmasligi mumkin, va PAN'ga tegadigan hamma narsa bitta joyda tursin |
 | **D8** | Tillar — **uz + ru + en** | Bo'sh qolgan tarjima [API.md](API.md) §7 fallback zanjiriga tushadi. Tarjima jadvali emas, `JSONB` (§10) |
 | **D9** | **Beshta vertikal ham birinchi relizda** | `ProductAdapter` porti (§6) spekulyativ emas — birinchi kundanoq beshta turli oqim bilan sinovdan o'tadi |
 | **D10** | O'rnatish, yangilash va zaxira — **clientning zimmasida** | Migratsiya biz nazorat qilmaydigan vaqtda ishga tushadi → **oldinga mos** bo'lishi va bir necha versiya sakrashni ko'tarishi shart (§12) |
@@ -102,12 +102,12 @@ app/
     cms/                   # blog, aksiya, faq, sahifa, kontakt, banner, yo'nalishlar
     feedback/              # sharhlar va moderatsiya
     catalog/               # shahar, stansiya, davlat, aviakompaniya, valyuta
-    customers/             # akkaunt, profil, yo'lovchilar, kartalar, qurilmalar
+    customers/             # akkaunt, profil, yo'lovchilar, qurilmalar
     staff/                 # xodimlar va ularning roli
     products/              # qidiruv oqimi routerlari + ProductAdapter registry (stateless)
     booking/               # verify → bron → to'lov/chipta sagasi
     orders/                # buyurtmalar, status xaritasi, sync, available_actions
-    payments/              # to'lovlar, tranzaksiyalar, qaytarishlar, webhook
+    payments/              # to'lovlar, tranzaksiyalar, qaytarishlar, kartalar, webhook
     promo/  leads/  notifications/  reports/  audit/  jobs/  uploads/
   providers/               # portlar va adapterlar — tashqi dunyoga yagona chiqish
     gts/                   # klient, sessiya auth, xato+status xaritasi, vertikal adapterlar
@@ -137,12 +137,12 @@ yupqa yig'uvchi.
 | `cms` | 7 ta kontent resursi + publish/unpublish/reorder | Tarjimali maydonlar JSONB; public o'qish alohida "yassilovchi" serializer orqali |
 | `feedback` | Sharhlar va moderatsiya holati | `pending → accepted \| rejected` |
 | `catalog` | Shaharlar, stansiyalar, davlatlar, aviakompaniyalar, valyutalar, hujjat turlari | **Manzil** — GTS static servisidan beat vazifa bilan sinxronlanadi, uzoq Redis TTL, ikkala yuzaga ham faqat o'qish. **Bugun** — `document-types/` va `countries/` uchun keshlangan passthrough: modul jadvalga egalik qilmaydi, migratsiya yo'q, TTL yagona invalidatsiya. Beat kelganda router va service saqlanadi, faqat ma'lumot manbai ko'chadi |
-| `customers` | Akkaunt, auth, profil, saqlangan yo'lovchi/karta, qurilma, ichki bildirishnomalar | `aud: public` tokenlari |
+| `customers` | Akkaunt, auth, profil, saqlangan yo'lovchi, qurilma, ichki bildirishnomalar | `aud: public` tokenlari. **Karta bu yerda emas** — pastga qarang |
 | `staff` | Xodimlar va ularning roli — `owner` yoki `admin`, kodda qat'iy belgilangan | `aud: admin` tokenlari |
 | `products` | Qidiruv oqimi routerlari (`search`/`offers`/`verify`/`upsell`) va `ProductAdapter` registry | **Holatsiz** (D2): hech narsa saqlamaydi, GTS'ga uzatadi va javobni normallashtiradi |
 | `booking` | `verify` dan keyingi bron va buyurtmani chiptagacha yoki qaytarishgacha olib boruvchi **saga** | D3 bo'yicha — **eng yuqori xavfli modul** |
 | `orders` | Lokal buyurtma yozuvlari, GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba |
-| `payments` | To'lovlar, tranzaksiyalar, qaytarishlar, provayder webhook'lari | D7 bo'yicha |
+| `payments` | To'lovlar, tranzaksiyalar, qaytarishlar, **saqlangan kartalar va ularning provayder tokenlari**, provayder webhook'lari | D7 bo'yicha. Karta `/public/profile/cards/` yo'lida turadi, chunki kontrakt shunday deydi ([API.md](API.md) §19) — lekin **modul** tokenga, shifrlashga, OTP almashinuviga va to'lovga egalik qilganidir. `customers` da tursa, u to'lov paytida tokenni o'qish uchun `payments` modellarini import qilishga majbur bo'lardi — §4 taqiqlagan sikl. Tashqariga ikkita eshik: `service.create_payment()` va `service.forget_cards()` |
 | `promo` | Kodlar, qoidalar, to'lovga qo'llash, statistika | Chegirma **client marjasidan** ketadi, GTS to'liq tarifni oladi (§14 A4) |
 | `leads` | Lead'lar, **lead manbalari sxemasi**, obunalar | Manba sxemasi uchun admin endpoint qo'shildi — §14 G1 |
 | `notifications` | Shablonlar, yuborish, ommaviy yuborish, qurilma reyestri | MVP'da faqat SMTP adapteri (D6) |
@@ -223,6 +223,9 @@ verify → bron (GTS hold, buyurtma=booked) → to'lov yaratiladi → mijoz to'l
                                                           ↘ xato → avto-qaytarish → refunded
                                                                  ↘ qaytarish ham xato →
                                                                    needs_attention
+
+saqlangan karta bilan (flow: card_token) — mijoz hech qayerga ketmaydi:
+       to'lov yaratiladi → charge_card() so'rov ichida → to'lov=paid → o'sha outbox qatori
 ```
 
 **Transactional outbox + Celery vazifalari** ustida quriladi, saga framework'isiz:
@@ -238,6 +241,13 @@ verify → bron (GTS hold, buyurtma=booked) → to'lov yaratiladi → mijoz to'l
   ko'rinadi. **Pul hech qachon jimgina yo'qolmaydi.**
 - `Idempotency-Key` ([API.md](API.md) §10) Redis'da 24 soat: so'rov barmoq izi → keshlangan javob.
   Pul endpointida kalitsiz so'rov — `422`.
+- **Saqlangan karta oqimi sinxron**, lekin sagadan chetda qolmaydi: `charge_card()` javobi
+  o'sha holat mashinasiga, o'sha outbox qatoriga tushadi. Tranzaksiya qatori tarmoq
+  chaqiruvidan **oldin** commit qilinadi — jarayon o'rtada o'lsa, `provider_ref` siz qolgan
+  qator solishtirish vazifasi uchun dalil bo'ladi; hech nima yozilmasa, hech kim topa
+  olmaydigan to'lov qoladi. Webhook baribir kerak: Payme protokoli chek qanday to'langanidan
+  qat'i nazar `CreateTransaction`/`PerformTransaction` chaqiradi, va "provayder yechdi" bilan
+  "biz commit qildik" orasidagi oynani boshqa hech narsa yopmaydi.
 
 > Saga **bron qilingandan keyin** boshlanadi. Undan oldingi qism (qidiruv va takliflar) holatsiz
 > (§9), shuning uchun tiklash mantiqi faqat pul yo'lida kerak — u yerda esa majburiy.
@@ -289,7 +299,14 @@ ko'tarilganda ishga tushadi.
 - **Sirlar** shifrlangan qiymat + `key_version` ustuni bilan saqlanadi. Shunda shifrlash
   kalitini **almashtirish** uchun barcha credential'larni qayta kiritish shart emas
   ([PROJECT.md](PROJECT.md) §17 dagi risk): eski kalit halqada qolgani uchun qatorlar
-  o'qiladi va keyingi yozuvda yangi kalitga o'tadi.
+  o'qiladi va keyingi yozuvda yangi kalitga o'tadi. Integratsiya credential'idan keyin
+  bu naqlning ikkinchi iste'molchisi — **saqlangan kartaning provayder tokeni**.
+- **`customer_cards` — karta raqami yo'q, hech qanday shaklda.** Ustunlar: shifrlangan token,
+  maskalangan raqam, oxirgi to'rt raqam, BIN, brend, amal muddati. Takrorlanishni to'sadigan
+  unique index ham **maskalangan** raqam bo'yicha, PAN xeshi bo'yicha emas: PAN xeshi ham
+  PAN'dan olingan ma'lumot va jadvalni endigina qutulgan nazorat rejimiga qaytarardi.
+  "Aynan bitta asosiy karta" — `gts_credentials` dagi kabi partial unique index
+  (`UNIQUE (customer_id) WHERE is_default AND deleted_at IS NULL`), konvensiya emas.
 - **GTS akkauntlari — `gts_credentials`**, bir nechta qator, ulardan bittasi `is_active`.
   "Aynan bittasi" — **partial unique index** (`UNIQUE (is_active) WHERE is_active`), konvensiya
   emas: ikki worker ikkita qatorni bir lahzada aktivlashtirishi mumkin va buni servis ko'ra
@@ -310,7 +327,8 @@ ko'tarilganda ishga tushadi.
 
 **Jadval guruhlari:** *identity* (customers, staff, refresh tokens) · *config* (sozlama
 singletonlari, menu, integration configs) · *cms* (7 ta kontent jadvali, feedbacks) ·
-*commerce* (orders, order passengers, payments, transactions, refunds, promo codes, promo usages) ·
+*commerce* (orders, order passengers, payments, transactions, refunds, customer cards,
+payment outbox, promo codes, promo usages) ·
 *engagement* (leads, lead sources, subscriptions, templates, broadcasts, devices, notifications) ·
 *ops* (jobs, audit log, uploads).
 
@@ -366,7 +384,7 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 | Stek | Python 3.13, FastAPI, SQLAlchemy 2.0 async + asyncpg, Alembic, Pydantic v2, httpx, argon2, structlog, `uv`, ruff + mypy strict | [GTS.md](GTS.md) §11 dagi tashkilot standartiga mos — jamoa buni allaqachon ishlatadi |
 | Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash va katalog yangilash uchun beat kerak |
 | Kesh / broker | Redis | `site-config`, statik kataloglar, idempotency, GTS sessiyasi, rate limit, Celery brokeri. **Qidiruv uchun emas** (D2, §9) |
-| To'lov | `PaymentProvider` porti + Payme, Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Keyinchalik Paygine = bitta adapter va karta/OTP yo'llarini ulash |
+| To'lov | `PaymentProvider` porti + ixtiyoriy `CardTokenProvider` porti, Payme va Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Karta metodlari (`register_card`, `verify_card`, `charge_card`, …) **alohida portda**, chunki har provayderda karta API'si bo'lavermaydi — u yo'q adapter uni implement qilmaydi va karta so'rovi `404` oladi, `ProductAdapter.supports()` bilan bir xil naql (§6). Registry kod → **factory** saqlaydi, instance emas: adapter dekriptlangan credential'ni ko'taradi, egasi uni paneldan almashtiradi va worker jarayonlari kelishmovchilikda qolmasligi kerak |
 | Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi. **Qaysi adapter ishlatilishini `integrations.service.notifier(session)` hal qiladi** — sozlama DB'da, ya'ni javob modulniki, provayderniki emas (§4). `providers/notifications` da faqat `set_notifier` override'i va `html.render` qobig'i qoladi. Portning `send` metodi `html` ni ham oladi: email uni matn bilan yonma-yon (`multipart/alternative`) yuboradi, SMS/push esa tashlab yuboradi — shuning uchun u ikkinchi metod emas, ixtiyoriy argument. Brend qiymatlari `settings.service.mail_brand()` dan **argument sifatida** beriladi, chunki provayder modulni import qilmaydi (§4) |
 | Fayl saqlash | `Storage` porti + lokal disk adapteri | Bitta serverli o'rnatma; Docker volume — zaxira birligi. Client xohlasa S3 shunchaki adapter almashtirish |
 | **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa ikkita va [API.md](API.md) §5 da qat'iy belgilangan |
@@ -379,7 +397,9 @@ qoidasi). Postgres va yuklangan fayllar uchun volume.
 
 **Beat jadvali:** ochiq buyurtmalar statusini GTS'dan sinxronlash · bog'lanmagan fayllarni tozalash
 (24 soat, [API.md](API.md) §11) · idempotency kalitlarini tozalash · katalog yangilash ·
-valyuta kurslarini yangilash.
+valyuta kurslarini yangilash · **outbox'ni yuborish** · **yakunlanmagan tranzaksiyalarni
+provayder bilan solishtirish** · **tasdiqlanmay qolgan kartalarni provayder tomondan ham
+o'chirish** (30 daqiqa — token bizda qolib, provayderda osilib turmasin).
 
 > Buyurtma sinxronizatsiyasi ataylab **polling** sifatida quriladi: [GTS.md](GTS.md) §12 faqat
 > B2C→GTS yo'nalishini hujjatlashtirgan, ya'ni GTS bizga o'zi qo'ng'iroq qilishiga tayanib
@@ -447,7 +467,7 @@ nazaridan qisqacha:
 | Bosqich | Backend ishi |
 |---|---|
 | **1. Yadro** | Ilova skeleti, envelope + xato katalogi, ikki sub'ektli auth, ikki rolli RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health |
-| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va ACL (§7), `ProductAdapter` porti (§6), `flight` adapteri, holatsiz qidiruv oqimi (§9), verify/bron, Payme + Click adapterlari, **saga** (§8), buyurtmalar |
+| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va ACL (§7), `ProductAdapter` porti (§6), `flight` adapteri, holatsiz qidiruv oqimi (§9), verify/bron, Payme + Click adapterlari, **saqlangan kartalar va karta-token oqimi** (D7), **saga** (§8), buyurtmalar |
 | **3. Qolgan vertikallar** | `railway`, `insurance`, `esim`, `transfer` adapterlari. **Oqim va saga kodi o'zgarmasligi shart** — port shu bilan sinovdan o'tadi |
 | **4. Panel** | Admin yuzasining qolgan qismi: kontent, mijozlar, promokodlar, murojaatlar, hisobot asoslari |
 | **5. Sayt** | Backend tomonda yangi ish kam; `site-config` va public kontent yuzasini yakunlash |

@@ -32,6 +32,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     configure_logging()
 
+    if settings.payments_demo_adapter:
+        # Development only, and refused at import unless ``debug`` is on
+        # (``core/config.py``). Registered here rather than at import of the
+        # provider package so that the one place it can switch on is greppable.
+        from app.providers.payments import demo as demo_payments
+
+        demo_payments.register()
+
     application = FastAPI(
         title="B2C Platform API",
         version=settings.app_version,

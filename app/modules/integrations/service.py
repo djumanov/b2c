@@ -50,10 +50,13 @@ from app.modules.integrations.schemas import (
 )
 from app.modules.uploads import service as uploads_service
 from app.providers import notifications, social
+from app.providers import payments as payments_provider
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
+from app.providers.payments.base import PaymentProvider as PaymentProviderPort
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.payments.base import registry as payments_registry
 from app.providers.social.base import SocialProviderCode, SocialVerifier
 from app.providers.social.google import GoogleVerifier
 from app.providers.storage.base import UploadPurpose
@@ -733,6 +736,10 @@ async def enabled_payment_methods(session: AsyncSession) -> list[dict[str, Any]]
             "code": row.code.value,
             "title": row.title,
             "logo_url": await uploads_service.url_for(session, row.logo_id),
+            # A capability of the adapter, not a setting: whether a provider has
+            # a card-token API is something the code knows and the panel does
+            # not (API.md §17).
+            "supports_saved_cards": payments_registry.supports_cards(row.code.value),
         }
         for row in await repository.payment_providers(session)
         if row.enabled
@@ -758,6 +765,34 @@ async def payment_providers(
         for row in await repository.payment_providers(session)
         if row.enabled and row.credentials
     ]
+
+
+async def payment_provider_adapter(
+    session: AsyncSession, code: PaymentProviderCode
+) -> PaymentProviderPort | None:
+    """The configured adapter for one provider, or ``None``.
+
+    The payment counterpart of ``notifier()``, and built per call for the same
+    reason: the credentials behind it are edited from the panel and there are
+    several worker processes, so an adapter cached at import would be both stale
+    and inconsistent between them.
+
+    ``None`` covers three cases the caller must not tell apart — no adapter
+    registered for the code, the provider switched off, or no credentials
+    entered. All three mean "this installation cannot charge through it", and
+    which one it is says something about the installation that a customer has
+    no business learning.
+    """
+    override = payments_provider.get_override(code)
+    if override is not None:
+        return override
+
+    row = await repository.payment_provider(session, code)
+    if session.in_transaction():
+        await session.commit()
+    if row is None or not row.enabled or not row.credentials:
+        return None
+    return payments_registry.build(code.value, _decode_credentials(row))
 
 
 async def any_payment_provider_ready(session: AsyncSession) -> bool:

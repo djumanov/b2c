@@ -37,23 +37,40 @@ SEED_FIELDS = {
     "smtp_from_name",
 }
 
+#: Development-mode switches. Not client configuration and never on for one:
+#: the rule PROJECT.md §7 states asks "could two clients want different values?"
+#: and the answer here is no — no client wants a payment provider that only
+#: pretends to charge. ``Settings`` refuses to load this one without ``debug``,
+#: so it cannot reach a live server by accident.
+#:
+#: Listed separately from ``ALLOWED_FIELDS`` for the reason ``SEED_FIELDS`` is:
+#: adding to this set should be a visible decision, not a line lost in an
+#: alphabetical list.
+DEV_ONLY_FIELDS = {
+    "payments_demo_adapter",
+}
+
 #: Every field ``Settings`` is allowed to have. Infrastructure only.
-ALLOWED_FIELDS = {
-    "debug",
-    "log_level",
-    "app_version",
-    "postgres_host",
-    "postgres_port",
-    "postgres_user",
-    "postgres_password",
-    "postgres_db",
-    "redis_host",
-    "redis_port",
-    "redis_db",
-    "jwt_secret_key",
-    "encryption_keys",
-    "encryption_key_version",
-} | SEED_FIELDS
+ALLOWED_FIELDS = (
+    {
+        "debug",
+        "log_level",
+        "app_version",
+        "postgres_host",
+        "postgres_port",
+        "postgres_user",
+        "postgres_password",
+        "postgres_db",
+        "redis_host",
+        "redis_port",
+        "redis_db",
+        "jwt_secret_key",
+        "encryption_keys",
+        "encryption_key_version",
+    }
+    | SEED_FIELDS
+    | DEV_ONLY_FIELDS
+)
 
 
 def test_settings_holds_infrastructure_only() -> None:

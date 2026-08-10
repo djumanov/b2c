@@ -49,6 +49,23 @@ _SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
         "cvv",
         "cvc",
         "expiry",
+        # The saved-card path (API.md §19). ``number`` and ``expire`` are the
+        # names the request body and both provider APIs use.
+        #
+        # Two names are deliberately **absent**, and a test pins that:
+        # ``code`` — it is the provider code, the error code, the currency code
+        # and the notifier's template key, so redacting it would blank half the
+        # journal; and ``card_id`` — our own UUID, and the one field that makes
+        # a support call about a card tractable.
+        "number",
+        "expire",
+        "expire_date",
+        "card_token",
+        "otp",
+        "otp_code",
+        "sms_code",
+        "verify_code",
+        "x-auth",
     }
 )
 

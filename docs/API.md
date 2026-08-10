@@ -343,11 +343,17 @@ GTS javoblarini o'girish va status xaritasi — [ARCHITECTURE.md](ARCHITECTURE.m
 |---|---|
 | Auth (`login`, `password/reset`) | 5 / daqiqa / IP |
 | Qidiruv | 30 / daqiqa / foydalanuvchi |
+| **To'lov va karta** (tranzaksiya boshlash, karta qo'shish va tasdiqlash) | **10 / daqiqa / foydalanuvchi** |
 | Boshqa public | 120 / daqiqa / foydalanuvchi |
 | Admin | 300 / daqiqa / xodim |
 
 Oshib ketganda `429 rate_limited` va `Retry-After` header'i.
 Tizimga kirmagan foydalanuvchi uchun chegara **IP bo'yicha** hisoblanadi.
+
+> To'lov chegarasi qolganlaridan qattiqroq, chunki bu yerdagi har bir so'rov o'rnatmaning
+> **merchant credential'i bilan** provayderga chiqadi: chegara foydalanuvchini emas,
+> o'rnatmaning provayderdagi hisobini himoya qiladi. Kodni qayta yuborish (`resend-otp/`)
+> esa auth chegarasida — u email OTP qayta yuborish bilan bir xil shakldagi suiiste'mol.
 
 ---
 
@@ -414,8 +420,8 @@ qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
       { "code": "transfer",  "enabled": true }
     ],
     "payment_methods": [
-      { "code": "payme", "title": "Payme", "logo_url": "…" },
-      { "code": "click", "title": "Click", "logo_url": "…" }
+      { "code": "payme", "title": "Payme", "logo_url": "…", "supports_saved_cards": true },
+      { "code": "click", "title": "Click", "logo_url": "…", "supports_saved_cards": false }
     ],
     "menu": [ { "title": "Aksiyalar", "url": "/promotions", "children": [] } ],
     "features": { "blog": true, "loyalty": false }
@@ -429,6 +435,11 @@ Javob keshlanadi (`Cache-Control` + `ETag`); paneldan o'zgarish kiritilganda kes
 bu yerda faqat **yoqilgan** provayderlar bo'ladi. Sayt bu ro'yxatni tugmalarga aylantiradi,
 o'chirilgan provayder esa bosilmaydigan tugma bo'lardi. Tartib ham shu massivning o'zida —
 paneldagi `sort_order` bo'yicha, teng bo'lsa `code` bo'yicha (§29).
+
+`supports_saved_cards` — shu provayderda karta saqlash mumkinmi. **Sozlama emas, adapter
+imkoniyati**: provayderning karta-token API'si bor-yo'qligini kod biladi, panel emas.
+Sayt shundan "kartani saqlab qo'yish" tugmasini ko'rsatish-ko'rsatmaslikni hal qiladi;
+`false` bo'lgan provayderga karta so'rovi `404` qaytaradi (§19).
 
 `features` — sayt va ilova qaysi bo'limlarni ko'rsatishini shundan biladi: bayroq `false`
 bo'lsa menyu elementi ham, sahifa ham chizilmaydi. Bu **yagona himoya emas** — backend ham
@@ -637,7 +648,11 @@ hech narsani oshkor qilmaydi.
 | `POST` | `/public/profile/password/` | ✓ | Parolni o'zgartirish |
 | `DELETE` | `/public/profile/` | ✓ | Akkauntni o'chirish |
 | CRUD | `/public/profile/passengers/` | ✓ | Saqlangan yo'lovchilar va hujjatlari |
-| `GET` `DELETE` | `/public/profile/cards/` | ✓ | Saqlangan to'lov kartalari |
+| `GET` `POST` | `/public/profile/cards/` | ✓ | Saqlangan to'lov kartalari · yangi karta qo'shish |
+| `GET` `PATCH` `DELETE` | `/public/profile/cards/{id}/` | ✓ | Bitta karta · nomini o'zgartirish · o'chirish |
+| `POST` | `/public/profile/cards/{id}/verify/` | ✓ | Kartani SMS kodi bilan tasdiqlash |
+| `POST` | `/public/profile/cards/{id}/resend-otp/` | ✓ | Kodni qayta yuborish |
+| `POST` | `/public/profile/cards/{id}/default/` | ✓ | Asosiy karta qilib belgilash |
 | `GET` | `/public/profile/notifications/` | ✓ | Bildirishnomalar |
 | `POST` | `/public/profile/notifications/read-all/` | ✓ | Hammasini o'qilgan deb belgilash |
 | `POST` | `/public/profile/notifications/{id}/read/` | ✓ | Bittasini o'qilgan deb belgilash |
@@ -724,10 +739,12 @@ uni bajarishga yetarli bo'lmasligi kerak.
 > ishlatiladi.
 
 **Akkaunt o'chirilganda** shaxsiy ma'lumot tozalanadi — ism va ota ismi, telefon, tug'ilgan
-sana va manzil qatordan olib tashlanadi, saqlangan yo'lovchilar ham. Buyurtma va to'lov yozuvlari
-esa moliyaviy hujjat sifatida anonimlashtirilib saqlanadi
-([PROJECT.md](PROJECT.md) §13). Manzil bo'shaydi, ya'ni o'sha email bilan qaytadan
-ro'yxatdan o'tish mumkin.
+sana va manzil qatordan olib tashlanadi, saqlangan yo'lovchilar ham. Saqlangan kartalar
+**provayder tomonda ham** o'chiriladi va token qatordan olib tashlanadi. Buyurtma va to'lov
+yozuvlari esa moliyaviy hujjat sifatida anonimlashtirilib saqlanadi
+([PROJECT.md](PROJECT.md) §13) — tranzaksiyadagi maskalangan karta nusxasi ular bilan birga
+qoladi, chunki kvitansiya karta unutilgandan keyin ham o'qilishi kerak. Manzil bo'shaydi,
+ya'ni o'sha email bilan qaytadan ro'yxatdan o'tish mumkin.
 
 ### Saqlangan yo'lovchilar
 
@@ -773,6 +790,67 @@ GET /public/profile/passengers/
   saqlanishi mumkin.
 - `search` — ism va familiya bo'yicha; `ordering` default `-created_at`.
 
+### Saqlangan kartalar
+
+Mijoz bir nechta kartani saqlab qo'yadi va to'lovda bittasini tanlaydi (§22, `flow: card_token`).
+Karta **provayder tokeni** sifatida saqlanadi — raqamning o'zi hech qachon yozilmaydi
+([PROJECT.md](PROJECT.md) §13, D7).
+
+```json
+GET /public/profile/cards/
+→ { "status": "success",
+    "data": [
+      { "id": "7c1a…", "provider": "payme", "status": "active",
+        "masked_pan": "860049******6604", "last4": "6604",
+        "brand": "uzcard", "expiry_month": 3, "expiry_year": 2029,
+        "label": "Asosiy karta", "is_default": true,
+        "otp_sent_to": null, "otp_expires_at": null,
+        "last_used_at": "…", "created_at": "…", "updated_at": "…" }
+    ],
+    "errors": [], "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
+```
+
+**Qo'shish ikki qadam.** Avval karta ro'yxatdan o'tkaziladi, so'ng provayder yuborgan SMS
+kodi bilan tasdiqlanadi:
+
+```json
+POST /public/profile/cards/
+{ "provider": "payme", "number": "8600…", "expire": "0329", "label": "Asosiy karta" }
+Idempotency-Key: …
+
+→ 201 { "data": { "id": "7c1a…", "status": "pending_verification",
+                  "masked_pan": "860049******6604", "is_default": false,
+                  "otp_sent_to": "+9989**1234", "otp_expires_at": "…", … } }
+
+POST /public/profile/cards/{id}/verify/   { "code": "123456" }
+→ { "data": { "id": "7c1a…", "status": "active", "otp_sent_to": null, … } }
+```
+
+- `number` va `expire` — **faqat yozish uchun**. Ular hech qachon javobda qaytmaydi va
+  hech qanday `GET` da ko'rinmaydi. `expire` — `MMYY` (ikkala provayder ham shu shaklni
+  so'raydi). CVV **so'ralmaydi**.
+- `status`: `pending_verification` → `active`. Tasdiqlanmagan karta bilan to'lab
+  bo'lmaydi (§22 da `409`).
+- `otp_sent_to` va `otp_expires_at` **faqat** `pending_verification` da to'ldiriladi;
+  `active` kartada ikkalasi ham `null`.
+- **Kodni biz tekshirmaymiz** — uni provayder yuboradi va provayder tekshiradi. Bizdagi
+  hisoblagich faqat klient provayder endpointini o'rnatmaning merchant credential'i bilan
+  urib turmasligi uchun: **3 ta noto'g'ri urinish** dan keyin karta o'chiriladi va qaytadan
+  qo'shish kerak. Kod **5 daqiqa** yashaydi, qayta yuborish orasida **60 soniya**.
+- Noto'g'ri kod, muddati o'tgan kod va urinishlar tugagani — **bir xil xabar**. Ularni
+  ajratib ko'rsatish taxmin qilayotgan odamga qayerga yetganini aytib qo'yardi.
+- Tasdiqlanmay 30 daqiqa turgan karta o'chadi — bizdan ham, provayder tomondan ham.
+- **Birinchi tasdiqlangan karta avtomatik `is_default`** bo'ladi. Keyingilari uchun
+  `default/` chaqiriladi; asosiy karta **aynan bitta** bo'ladi, va buni baza kafolatlaydi
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §10). `PATCH {"is_default": true}` emas, alohida
+  endpoint — bu maydonga qiymat berish emas, o'tish (§16).
+- `PATCH` faqat `label` ni oladi. Boshqa hamma narsa provayderniki.
+- `DELETE` — §8 dagi soft delete, **ustiga** provayder tomonda ham o'chiradi. Provayder
+  javob bermasa ham mijozning ro'yxatidan yo'qoladi; qolgani fon vazifasining ishi.
+- Bir xil karta ikki marta qo'shilmaydi (`422`). Ikki **turli provayderda** esa ikkita
+  qator — tokenlar merchant'ga bog'langan va almashtirib bo'lmaydi.
+- `search` — `label` va `last4` bo'yicha; `ordering` default `-created_at`.
+
 ### Xatolar
 
 | Holat | `code` | HTTP |
@@ -785,10 +863,21 @@ GET /public/profile/passengers/
 | Noto'g'ri joriy parol | `validation` (`field: "current_password"`) | 422 |
 | `DELETE /public/profile/` da noto'g'ri parol | `validation` (`field: "password"`) | 422 |
 | Fayl turi yoki hajmi mos emas | `validation` (`field: "file"`) | 422 |
-| Boshqa mijozning yo'lovchisi | `not_found` | 404 |
+| Karta raqami yaroqsiz (uzunlik yoki Luhn) | `validation` (`field: "number"`) | 422 |
+| Amal muddati yaroqsiz yoki o'tgan | `validation` (`field: "expire"`) | 422 |
+| Kod noto'g'ri, muddati o'tgan yoki urinishlar tugagan | `validation` (`field: "code"`) | 422 |
+| Shu karta allaqachon saqlangan | `validation` (`field: "number"`) | 422 |
+| Allaqachon tasdiqlangan kartani `verify/` qilish | `conflict` | 409 |
+| Kodni juda tez qayta so'rash | `rate_limited` | 429 |
+| Provayderda karta API'si yo'q yoki u yoqilmagan | `not_found` | 404 |
+| Provayder javob bermadi | `upstream_error` · `upstream_timeout` | 502 · 504 |
+| Boshqa mijozning yo'lovchisi yoki kartasi | `not_found` | 404 |
 
-Oxirgi qator ataylab `404`, `403` emas: yo'lovchi faqat o'z egasi orqali ko'rinadi, ya'ni
+Oxirgi qator ataylab `404`, `403` emas: yozuv faqat o'z egasi orqali ko'rinadi, ya'ni
 "bunday yozuv yo'q" va "bu sizniki emas" — tashqaridan bir xil javob bo'lishi kerak.
+
+Provayderda karta API'si yo'qligi ham `404`: bu yo'l o'sha provayder uchun **mavjud emas**,
+va sabab §41 dagi "relizga kirmagan" bilan bir xil shaklda ifodalanadi.
 
 ---
 
@@ -879,14 +968,22 @@ GTS kodlaridan o'girish — [ARCHITECTURE.md](ARCHITECTURE.md) §7.
 |---|---|---|---|
 | `GET` | `/public/payments/{payment_id}/` | ✓ | To'lov holati va summasi |
 | `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
-| `POST` | `/public/payments/{payment_id}/transactions/` | ✓ | Tranzaksiya boshlash (`method` bilan) |
+| `POST` | `/public/payments/{payment_id}/transactions/` | ✓ | Tranzaksiya boshlash (`method`, ixtiyoriy `card_id`) |
 | `GET` | `/public/transactions/{id}/` | ✓ | Tranzaksiya holati |
-| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **§41** |
-| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTP bilan tasdiqlash — **§41** |
-| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish — **§41** |
+| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish |
+| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTP bilan tasdiqlash |
+| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish |
 
-**Hosted (redirect) usullar** uchun tranzaksiya yaratilganda `redirect_url` qaytadi —
-karta/OTP qadamlar o'tkazib yuboriladi. Payme va Click **ikkalasi ham shu oqimda ishlaydi**:
+Tranzaksiya **uchta oqimdan** birida ketadi. Qaysi biri — javobdagi `flow` aytadi, va
+klient boshqa hech narsaga qarab qaror qilmasligi kerak:
+
+| `flow` | Qachon | Keyin nima bo'ladi |
+|---|---|---|
+| `redirect` | `card_id` berilmagan va usul hosted | `redirect_url` ga o'tiladi; yakun webhook orqali keladi |
+| `card_token` | `card_id` berilgan (saqlangan karta) | **Javob yakuniy** — `status` darhol `paid` yoki `failed`; hech qayerga o'tilmaydi |
+| `card` | Yangi karta bilan, saqlamasdan to'lash | `card/` → `confirm/` qadamlari shu tranzaksiya ustida bajariladi |
+
+**Redirect** — hosted usul, karta/OTP qadamlari o'tkazib yuboriladi:
 
 ```json
 POST /public/payments/{payment_id}/transactions/
@@ -897,6 +994,38 @@ Idempotency-Key: …
     "data": { "transaction_id": "…", "flow": "redirect", "redirect_url": "https://…" } }
 ```
 
+**Saqlangan karta** — bitta so'rov, yakuniy javob:
+
+```json
+POST /public/payments/{payment_id}/transactions/
+{ "method": "payme", "card_id": "7c1a…" }
+Idempotency-Key: …
+
+→ { "status": "success",
+    "data": { "transaction_id": "…", "flow": "card_token", "status": "paid",
+              "card_masked": "860049******6604", "paid_at": "…" } }
+```
+
+Karta boshqa mijoznikiga tegishli bo'lsa yoki umuman bo'lmasa — `404` (§19 dagi qoida).
+Karta hali tasdiqlanmagan bo'lsa — `409 conflict`. Provayder rad etsa — `400 payment_failed`,
+to'lov esa `pending` holida qoladi va boshqa usul bilan qayta urinish mumkin.
+
+**Yangi karta bilan, saqlamasdan** — uch qadam, `flow: card`:
+
+```json
+POST /public/transactions/{id}/card/
+{ "number": "8600…", "expire": "0329", "save": false }
+Idempotency-Key: …
+
+→ { "data": { "transaction_id": "…", "flow": "card", "status": "awaiting_otp",
+              "otp_sent_to": "+9989**1234", "otp_expires_at": "…" } }
+
+POST /public/transactions/{id}/confirm/   { "code": "123456" }
+→ { "data": { "transaction_id": "…", "status": "paid", … } }
+```
+
+`save: true` bo'lsa muvaffaqiyatli to'lovdan keyin karta profilga ham qo'shiladi (§19).
+
 **Bo'lib to'lash** (`type: installment`) uchun qo'shimcha qadamlar:
 
 | Metod | Yo'l | Izoh |
@@ -904,10 +1033,16 @@ Idempotency-Key: …
 | `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash — **§41** |
 | `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish — **§41** |
 
-> **Karta ma'lumoti serverda saqlanmaydi va log'ga tushmaydi.** Birinchi relizda Payme va Click
-> faqat redirect oqimida ishlagani uchun karta raqami **umuman serverimizdan o'tmaydi**
-> ([PROJECT.md](PROJECT.md) D7) — `card/` va `confirm/` endpointlari kontraktda qoladi, lekin
-> ulanmaydi (§41).
+> **Karta raqami serverda saqlanmaydi va log'ga tushmaydi.** Karta-token oqimida
+> ([PROJECT.md](PROJECT.md) D7) raqam so'rov tanasidan adapterga, adapterdan provayderga
+> o'tadi va shu yerda tugaydi — hech bir ustunda, hech bir log qatorida yo'q. Qaytib
+> keladigan yagona narsa — provayder **tokeni**, u shifrlangan holda saqlanadi.
+> **CVV umuman so'ralmaydi.** Javobda karta hech qachon to'liq ko'rinmaydi: faqat
+> `masked_pan` va oxirgi to'rt raqam.
+
+> **Valyuta.** Karta yo'llari (`card_token` va `card`) faqat **UZS** ni qabul qiladi —
+> ikkala provayder ham karta API'sida boshqa valyuta bermaydi. Boshqa valyutadagi to'lovga
+> `card_id` berilsa `422 validation` qaytadi va klient redirect oqimiga tushadi.
 
 To'lovdan keyingi oqim (chipta chiqarish, xato bo'lsa avtomatik qaytarish) —
 [ARCHITECTURE.md](ARCHITECTURE.md) §8.
@@ -1216,7 +1351,31 @@ ko'rmasdi. Bu SMTP bilan bir naqsh, faqat singleton emas.
   keladi; shu sababli hozircha faqat "bo'sh emas" tekshiriladi.
 - `credentials` — **erkin obyekt**, sxemasi qat'iy emas. Payme va Click turli
   kalitlar so'raydi va ularning ro'yxati provayder hujjatidan keladi, kontrakt
-  esa uni belgilamaydi.
+  esa uni belgilamaydi. Adapter kutadigan kalitlar (panel ularni placeholder
+  sifatida ko'rsatadi):
+
+  | Provayder | Kalitlar |
+  |---|---|
+  | `payme` | `merchant_id`, `key` · ixtiyoriy `checkout_url` (test yoki prod) |
+  | `click` | `service_id`, `merchant_id`, `merchant_user_id`, `secret_key` |
+
+- ⚠ **`merchant_id` almashtirilsa o'sha provayderning saqlangan kartalari o'ladi** —
+  tokenlar merchant'ga bog'langan va yangi identlik bilan ishlamaydi. Shuning uchun
+  merchant identligi o'zgarganda o'sha provayderdagi barcha kartalar `removed` deb
+  belgilanadi va mijoz kartani qaytadan qo'shadi. Bu jimgina bo'lmaydi: o'zgarish
+  audit jurnaliga tushadi.
+- `POST /{code}/test/` credential'ni tekshiradi va natijani `last_tested_at` /
+  `last_test_ok` / `last_test_error` ga yozadi:
+
+  ```json
+  POST /admin/integrations/payments/payme/test/
+  → { "data": { "ok": true, "detail": null, "tested_at": "…" } }
+  ```
+
+  `ok: false` ham **`200`** — SMTP `test/` bilan bir xil semantika. `502` qaytarish
+  egaga nimadir noto'g'ri ekanini aytardi, lekin nimasi noto'g'ri ekanini aytmasdi,
+  holbuki tugma aynan shuning uchun bor. `ok` "credential autentifikatsiyadan o'tdi"
+  degani, "to'lov ishlaydi" degani emas: tekshiruv pul harakatlantirmaydi.
 
 `PATCH` da `credentials` **birlashtiriladi**, almashtirilmaydi:
 
@@ -1509,12 +1668,22 @@ Bu yo'llarning hammasi `admin` uchun **faqat o'qish** (§5, *Tizim va audit* sat
 | `POST` | `/api/v1/webhooks/payments/{provider}/` | — | Provayder callback'i |
 
 - `{provider}` — `payme`, `click`.
-- Auth **yo'q**, lekin har bir so'rov **imzo bo'yicha tekshiriladi**; imzo noto'g'ri bo'lsa
-  `401` qaytariladi va hech qanday holat o'zgarmaydi.
+- Auth **yo'q**, lekin har bir so'rov **imzo bo'yicha tekshiriladi**. Imzo noto'g'ri bo'lsa
+  **hech qanday holat o'zgarmaydi** — bu shartsiz qoida. Javob shakli esa provayderniki:
+  odatda `401`, lekin **Payme'da `200` va JSON-RPC xatosi `-32504`**, chunki uning protokoli
+  shuni kutadi va `401` ni ko'r-ko'rona qayta urinish sababi deb biladi. Qaysi biri
+  bo'lishidan qat'i nazar, tekshirilishi kerak bo'lgan narsa bitta: holat o'zgarmaganligi.
 - Callback **takroriy kelishi mumkin** — provayderlar qayta yuboradi. Ishlov idempotent:
   bir xil hodisa ikki marta yechmaydi ([ARCHITECTURE.md](ARCHITECTURE.md) §8).
-- Payme'ning merchant protokoli provayder tomonidan boshqariladigan JSON-RPC — uning
-  metodlari ham shu endpoint ortida amalga oshiriladi.
+- Payme'ning merchant protokoli provayder tomonidan boshqariladigan JSON-RPC — uning oltita
+  metodi (`CheckPerformTransaction`, `CreateTransaction`, `PerformTransaction`,
+  `CancelTransaction`, `CheckTransaction`, `GetStatement`) shu endpoint ortida amalga
+  oshiriladi. Autentifikatsiya — HTTP Basic, foydalanuvchi `Paycom`, parol merchant kaliti.
+- Click esa `application/x-www-form-urlencoded` yuboradi va ikkita amali bor: `action=0`
+  (Prepare) va `action=1` (Complete). Imzo — so'rov maydonlaridan yig'ilgan `md5`.
+- **Saqlangan karta bilan to'langan tranzaksiya ham callback oladi.** To'lov so'rov ichida
+  yakunlangan bo'lsa ham Payme protokoli chekni o'z yo'li bilan yopadi — shuning uchun
+  callback "bu allaqachon to'langan" holatini xatoga aylantirmasligi kerak.
 - Envelope qoidasi bu yerda **qo'llanmaydi**: javob shakli provayder protokoli talab qilgan
   ko'rinishda bo'ladi.
 
@@ -1530,7 +1699,6 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 
 | Endpoint / imkoniyat | Nega keyinroq | Qachon |
 |---|---|---|
-| `/public/transactions/{id}/card/`, `/confirm/`, `/resend-otp/` | Payme va Click redirect oqimida ishlaydi; karta+OTP faqat Paygine kabi provayder qo'shilganda kerak (D7) | Yangi provayder qo'shilganda |
 | `/public/payments/{payment_id}/installment/calculate/`, `/apply/` | D7 relizni **Payme va Click** bilan cheklaydi va ikkalasi ham bo'lib to'lash bermaydi — bu qadamlar uchun provayder umuman nomlanmagan | Bo'lib to'lash provayderi belgilanganda |
 | `/public/auth/social/apple/` | iOS ilovada Google bo'lgani uchun Apple qoidalari talab qiladi (D5) | 6-bosqich |
 | Telefon + SMS OTP (`login`, `register/confirm`, `password/reset`) | MVP'da faqat email/SMTP (D6) | SMS xizmati ulanganda |
@@ -1542,6 +1710,11 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 
 Kontrakt **hozirdan** to'liq belgilangan: bu endpointlar API'da mavjud, lekin birinchi relizda
 ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
+
+> **Ro'yxatdan chiqqan:** `/public/transactions/{id}/card/`, `/confirm/` va `/resend-otp/`
+> endi ulanadi. D7 qayta ko'rib chiqildi — saqlangan kartalar talab qilingani uchun Payme va
+> Click'ning karta-token API'lari ishlatiladi ([PROJECT.md](PROJECT.md) §11, §13). Bu
+> yo'llar 2-fazada, to'lov moduli bilan birga keladi.
 
 > `404` ning **ikkita sababi** bor va ular boshqa-boshqa. Bu yerdagisi — relizga
 > kirmagan, ya'ni **har bir o'rnatmada** bir xil. Ikkinchisi — client bo'limni

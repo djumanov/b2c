@@ -259,7 +259,15 @@ async def test_an_enabled_provider_reaches_site_config(
     data = (await api.get(CONFIG)).json()["data"]
 
     assert data["payment_methods"] == [
-        {"code": "payme", "title": "Payme", "logo_url": None}
+        {
+            "code": "payme",
+            "title": "Payme",
+            "logo_url": None,
+            # A capability of the adapter, not a setting (API.md §17). False
+            # here because no adapter is registered yet — the site therefore
+            # does not offer to save a card it could not save.
+            "supports_saved_cards": False,
+        }
     ]
 
 

@@ -58,7 +58,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 |---|---|---|---|---|
 | 17 | Sayt konfiguratsiyasi | **1** | ◐ | Yo'l va kesh bor; `payment_methods` `integrations` bilan to'ladi |
 | 18 | Autentifikatsiya | **1** | ✅ | `PROJECT.md` §15: "auth (customer + staff)". Email+parol 6a da, Google 5c da. Chetlanishlar: `devices/` → **6**, `social/apple/` → **6**, telefon+SMS → §41 |
-| 19 | Profil | **1** | ◐ | `profile/`, `avatar/`, `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7), `notifications/` → **4** (§2.8) |
+| 19 | Profil | **1** | ◐ | `profile/`, `avatar/`, `password/`, `passengers/` — 6b-bo'lakda qurildi. Chetlanishlar: `cards/` → **2** (§2.7, endi to'liq CRUD + `verify/`), `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | — | `ARCHITECTURE.md` §15: `orders` 2-fazada |
 | 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
@@ -164,11 +164,21 @@ Bu faza chegarasini surgani uchun nima qilingani ochiq yozilsin:
 - `airlines/`, `currencies/`, `places/`, `stations/` tegilmadi va o'z fazasida
   qoladi.
 
-**2.7 · §19 `profile/cards/` → 2-faza.** Bo'limda faqat `GET` va `DELETE` bor —
-karta **yaratilmaydi**, u to'lov provayderidan token sifatida keladi. 1-fazada
-yozadigan manba yo'q, shuning uchun to'lov bilan birga quriladi. ⚠ Redirect
-oqimida provayder qayta ishlatiladigan token beradimi — **2-faza boshida
-tasdiqlansin**; bermasa bo'lim §41 ga ko'chadi.
+**2.7 · §19 `profile/cards/` → 2-faza.** 1-fazada yozadigan manba yo'q — karta
+to'lov provayderidan keladi — shuning uchun bo'lim to'lov bilan birga quriladi.
+
+⚠ Bu yerda turgan ochiq savol (*"redirect oqimida provayder qayta ishlatiladigan
+token beradimi?"*) **javob topdi: bermaydi.** Shuning uchun kontrakt o'zgardi va
+`API.md` §19 endi `POST`, `verify/`, `resend-otp/` va `default/` ni ham o'z ichiga
+oladi — karta **yaratiladi**, provayderning karta-token API'si orqali (Payme
+Subscribe, Click Card Token). Bu `PROJECT.md` D7 ni qayta yozdi va o'rnatmani PCI
+SAQ D qamroviga oldi (`PROJECT.md` §13). Bo'lim §41 ga ko'chmadi — aksincha, §41
+dan `transactions/{id}/card|confirm|resend-otp/` chiqdi.
+
+⚠ Yangi ochiq savol o'rnini egalladi: **PCI majburiyatini kim oladi**
+(`PROJECT.md` §16.7). Javob kelmaguncha kartalar **yozilmaydi** — 7-bo'lakning
+qolgan qismi (to'lov, adapterlar, webhook, saga) bunga bog'liq emas va oldinga
+ketaveradi.
 
 **2.8 · §19 `profile/notifications/` → 4-faza.** Ichki bildirishnomalarni
 `notifications` moduli yozadi. 1-fazada yozadigan hech narsa yo'q.
@@ -241,7 +251,7 @@ Modullar: `settings`, `staff`, `audit`, `uploads`, `system`, `integrations`,
 | Nima | Qayerda |
 |---|---|
 | Panel ekranlari (integratsiyalar, sozlamalar) | 4-faza |
-| `profile/cards/` | 2-faza (§2.7) |
+| `profile/cards/` va `transactions/{id}/card\|confirm\|resend-otp/` | 2-faza (§2.7) |
 | `profile/notifications/` | 4-faza (§2.8) |
 | `settings/menu/` | 5-faza (§41) |
 | Telefon + SMS OTP, `devices/`, `social/apple/` | §41 |
@@ -369,7 +379,8 @@ ishlatiladi — yangi `avatar` purpose, `public`, chunki private yo'lni
 ishlaydi, va pul jimgina yo'qolmaydi.
 
 **Qamrov.** `API.md` §20 (`flight`), §21, §22, §23, §26 (`stations/` dan
-tashqari), §31, §32, §39 `jobs/{id}/`, §40; konvensiyalardan §9 va §12.
+tashqari), §31, §32, §39 `jobs/{id}/`, §40, **§19 `cards/`** (§2.7);
+konvensiyalardan §9, §12 va §14 dagi `payment` chegarasi.
 Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 `payments`, `promo` (minimal), `jobs`, `providers/payments/{payme,click}`.
 
@@ -381,7 +392,7 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | `catalog/stations/` | 3-faza (§2.6) |
 | Promokod CRUD, statistika, panel | 4-faza (§2.3) |
 | `orders/{id}/push/` | 6-faza (§41) |
-| Karta+OTP, `installment/…` | §41 |
+| `installment/…` | §41 |
 
 **Bog'liqliklar.**
 
@@ -400,7 +411,11 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | 4 | `ProductAdapter` porti + `flight` adapteri | Port **hozir** loyihalanadi, lekin faqat `flight` amalga oshiriladi ([ARCHITECTURE.md](ARCHITECTURE.md) §13.8) |
 | 5 | `products` — holatsiz qidiruv oqimi | **Hech narsa saqlanmaydi** (D2); regressiya testi bilan qo'riqlanadi |
 | 6 | `orders` — lokal yozuv, status xaritasi, `available_actions` | `available_actions` **server tomonda** hisoblanadi |
-| 7 | `payments` + Payme va Click adapterlari | Redirect + webhook; karta raqami serverdan o'tmaydi (D7). Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13) |
+| 7a | `PaymentProvider` va `CardTokenProvider` portlari + registry | Migratsiyasiz, marshrutsiz. Port **hozir** loyihalanadi: `dict` qaytishlar dataclass'ga, `handle_callback` xom baytlarni oladi, `verify()` qo'shiladi (§2.13) |
+| 7b | `payments` yadrosi — jadvallar, o'qish endpointlari, admin ro'yxati | Provayder chaqiruvisiz, nol adapter bilan yashil |
+| 7c | Payme va Click adapterlari | Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13). ⚠ Pul birligi: Payme **tiyin**, Click **so'm** — ikkalasi ham pinlangan test bilan |
+| 7d | Redirect oqimi + webhook'lar | Takroriy callback ikki marta yechmaydi; imzo yomon bo'lsa holat o'zgarmaydi (`API.md` §40) |
+| 7e | **Saqlangan kartalar** — `customer_cards`, `/public/profile/cards/`, OTP mashinasi, `flow: card_token` | ⚠ PCI javobiga bog'liq (`PROJECT.md` §16.7). Karta raqami hech bir jadvalga tushmasligi **regressiya testi** bilan qo'riqlanadi |
 | 8 | `promo` minimal (§2.3) | To'lov summasiga ta'sir qiladi, shuning uchun shu yerda |
 | 9 | **`booking` sagasi** | Transactional outbox + Celery; eng yuqori xavfli modul |
 | 10 | `jobs` + `GET /admin/jobs/{id}/` | Async ish reyestri (`API.md` §9) |
@@ -415,6 +430,8 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | Qaytarish ham xato → `needs_attention` | shu yerda |
 | Takroriy webhook ikki marta yechmaydi | `tests/integration/test_webhooks.py` |
 | Takliflar hech qayerda saqlanmaydi (D2) | `tests/contract/test_search_passthrough.py` |
+| Saqlangan karta bilan to'lov ishlaydi | `tests/integration/test_card_token_checkout.py` |
+| Karta raqami hech bir jadvalda va hech bir logda yo'q | `tests/integration/test_card_pan_never_stored.py` — har jadvalning har matnli ustuni supuriladi |
 
 **To'suvchi ochiq savollar.**
 
@@ -422,7 +439,8 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 |---|---|
 | `PROJECT.md` §16.3 — qisman qaytarish siyosati | 9-bo'lak (`refund/`) |
 | `ARCHITECTURE.md` §14 A9 — GTS qaysi `sort`/filtrni qo'llaydi | 5-bo'lak; javob kelmasa `API.md` §20 qisqartiriladi |
-| §2.7 — provayder qayta ishlatiladigan karta tokeni beradimi | 7-bo'lak |
+| **`PROJECT.md` §16.7 — PCI SAQ D majburiyatini kim oladi** | **7e-bo'lak**. Javob "yo'q" bo'lsa kartalar provayderning o'z formasi orqali ro'yxatdan o'tadi; 7a–7d o'zgarmaydi |
+| Click'ning `card_token/*` API'si shu merchant akkauntda yoqilganmi | 7c-bo'lak. Yoqilmagan bo'lsa `ClickAdapter` `CardTokenProvider` ni implement qilmaydi va Click uchun karta so'rovi `404` — boshqa hech narsa o'zgarmaydi |
 
 ---
 
