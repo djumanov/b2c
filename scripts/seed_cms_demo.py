@@ -1,12 +1,13 @@
-"""Seed demo CMS content: FAQ entries and static pages in uz / ru / en.
+"""Seed demo content: CMS pages/FAQ and profile deletion reasons, in uz / ru / en.
 
-Operational tooling, not application code — it drives the cms module through
-its service functions, the same way a panel operator would, and publishes
-everything it creates so the public surface can serve it straight away.
+Operational tooling, not application code — it drives the cms and customers
+modules through their service functions, the same way a panel operator
+would, and publishes everything it creates so the public surface can serve
+it straight away.
 
-Idempotent: pages are matched by slug, FAQ entries by their Uzbek question;
-existing rows are left untouched, so the script is safe to run twice —
-locally and on the demo server alike.
+Idempotent: pages are matched by slug, FAQ entries and deletion reasons by
+their Uzbek text; existing rows are left untouched, so the script is safe to
+run twice — locally and on the demo server alike.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -26,6 +27,9 @@ from app.modules.cms import service as cms_service
 from app.modules.cms.models import ContentStatus, Faq
 from app.modules.cms.models import Page as PageModel
 from app.modules.cms.schemas import FaqIn, FixedPageIn
+from app.modules.customers import service as customers_service
+from app.modules.customers.models import DeletionReason
+from app.modules.customers.schemas import DeletionReasonIn
 
 # --- pages -----------------------------------------------------------------------
 
@@ -322,6 +326,51 @@ FAQS: list[dict] = [
 ]
 
 
+# --- deletion reasons -------------------------------------------------------------
+
+DELETION_REASONS: list[dict] = [
+    {
+        "uz": "Endi xizmatdan foydalanmayman",
+        "ru": "Больше не пользуюсь сервисом",
+        "en": "I no longer use the service",
+    },
+    {
+        "uz": "Maxfiylik bilan bog'liq tashvishlar",
+        "ru": "Опасения по поводу конфиденциальности",
+        "en": "Privacy concerns",
+    },
+    {
+        "uz": "Boshqa xizmatdan foydalanaman",
+        "ru": "Пользуюсь другим сервисом",
+        "en": "I use a different service",
+    },
+    {
+        "uz": "Xizmat sifatidan norozi bo'ldim",
+        "ru": "Не устроило качество сервиса",
+        "en": "Unsatisfied with the service quality",
+    },
+    {
+        "uz": "Boshqa sabab",
+        "ru": "Другая причина",
+        "en": "Other reason",
+    },
+]
+
+
+async def seed_deletion_reasons(session: AsyncSession) -> None:
+    for spec in DELETION_REASONS:
+        question_uz = spec["uz"]
+        if await exists_live(
+            session, DeletionReason, DeletionReason.text["uz"].astext == question_uz
+        ):
+            print(f"deletion reason {question_uz!r}: already exists, skipped")
+            continue
+        await customers_service.create_deletion_reason(
+            session, DeletionReasonIn(text=spec)
+        )
+        print(f"deletion reason {question_uz!r}: created")
+
+
 async def seed_pages(session: AsyncSession) -> None:
     for spec in PAGES:
         slug = spec["slug"]
@@ -351,6 +400,7 @@ async def main() -> None:
     async with get_sessionmaker()() as session:
         await seed_pages(session)
         await seed_faqs(session)
+        await seed_deletion_reasons(session)
     await dispose_engine()
 
 
