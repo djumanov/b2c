@@ -12,7 +12,7 @@ from app.api.deps import LanguageDep, RequireFeature
 from app.api.envelope import enveloped_router
 from app.db.session import SessionDep
 from app.modules.cms import service
-from app.modules.cms.schemas import FaqPublicOut, PagePublicOut
+from app.modules.cms.schemas import AboutPageOut, FaqPublicOut, PagePublicOut
 
 faq_router = enveloped_router(
     prefix="/content/faq",
@@ -54,9 +54,11 @@ async def get_terms(session: SessionDep, language: LanguageDep) -> PagePublicOut
     return await service.get_page_public(session, "terms", requested=language.requested)
 
 
-@pages_router.get("/about/", summary="About the company, body in markdown")
-async def get_about(session: SessionDep, language: LanguageDep) -> PagePublicOut:
-    return await service.get_page_public(session, "about", requested=language.requested)
+@pages_router.get(
+    "/about/", summary="About the company, body in markdown, plus contact details"
+)
+async def get_about(session: SessionDep, language: LanguageDep) -> AboutPageOut:
+    return await service.get_about_page_public(session, requested=language.requested)
 
 
 __all__ = ["faq_router", "pages_router"]
