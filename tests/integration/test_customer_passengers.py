@@ -14,11 +14,37 @@ from tests.integration.conftest import customer_headers_for, make_customer
 
 PASSENGERS = "/api/v1/public/profile/passengers/"
 
+# The §26 catalogue shapes as GTS serves them (test_catalog.py pins the
+# passthrough); stored verbatim, so the tests assert on the whole object.
+GTS_DOCUMENT_TYPE = {
+    "rule": "",
+    "iso_code": "",
+    "type": "PSP",
+    "country": [],
+    "title": "Заграничный паспорт",
+    "translations": {
+        "uz": "Xorijga chiqish pasporti",
+        "ru": "Заграничный паспорт",
+        "en": "International passport",
+        "az": "Ümumvətəndaş (xarici) pasportu",
+    },
+}
+
+GTS_COUNTRY = {
+    "country_rus": "Узбекистан",
+    "country_eng": "Uzbekistan",
+    "code": "UZ",
+    "phone_code": 998,
+    "phone_mask": "(##) ###-##-##",
+    "emoji": "🇺🇿",
+    "translations": {"ru": "Узбекистан", "en": "Uzbekistan", "uz": "Oʻzbekiston"},
+}
+
 AZIZ = {
     "first_name": "Aziz",
     "last_name": "Karimov",
     "birth_date": "1995-04-17",
-    "document_type": "passport",
+    "document_type": GTS_DOCUMENT_TYPE,
     "document_number": "AA1234567",
 }
 
@@ -226,11 +252,11 @@ async def test_the_optional_person_and_document_fields_round_trip(
         api,
         customer,
         middle_name="Baxtiyorovich",
-        citizenship="Uzbekistan",
+        citizenship=GTS_COUNTRY,
         document_expiry_date="2030-01-01",
     )
     assert given["middle_name"] == "Baxtiyorovich"
-    assert given["citizenship"] == "Uzbekistan"
+    assert given["citizenship"] == GTS_COUNTRY
     assert given["document_expiry_date"] == "2030-01-01"
 
     omitted = await _create(api, customer, document_number="BB7654321")
@@ -239,26 +265,94 @@ async def test_the_optional_person_and_document_fields_round_trip(
     assert omitted["document_expiry_date"] is None
 
 
-async def test_citizenship_is_not_constrained(
+async def test_the_catalog_objects_are_stored_verbatim(
     api: AsyncClient, customer: Customer
 ) -> None:
-    """Free text like ``document_type``: the country list is GTS's, and a code
-    column would also pick a standard the contract has not named."""
-    spelled_out = await _create(api, customer, citizenship="Republic of Uzbekistan")
-    assert spelled_out["citizenship"] == "Republic of Uzbekistan"
+    """The §26 object is ours to keep, not to reshape: extra keys, Cyrillic and
+    the flag emoji all have to survive the round trip, because the UI renders
+    from the stored copy (STATUS.md §4.75)."""
+    embellished = {**GTS_COUNTRY, "an_unknown_future_key": {"nested": True}}
+    created = await _create(api, customer, citizenship=embellished)
 
-    as_a_code = await _create(api, customer, citizenship="UZB")
-    assert as_a_code["citizenship"] == "UZB"
+    assert created["citizenship"] == embellished
+    assert created["document_type"] == GTS_DOCUMENT_TYPE
+
+    fetched = await api.get(
+        f"{PASSENGERS}{created['id']}/", headers=customer_headers_for(customer)
+    )
+    assert fetched.json()["data"]["citizenship"] == embellished
+    assert fetched.json()["data"]["document_type"] == GTS_DOCUMENT_TYPE
 
 
-async def test_the_document_type_is_not_constrained(
+async def test_a_catalog_object_needs_its_identifier_key(
     api: AsyncClient, customer: Customer
 ) -> None:
-    """Free text until API.md §26 gains the catalogue GTS owns — a local enum
-    would be a guess a later catalogue contradicts."""
-    created = await _create(api, customer, document_type="birth_certificate")
+    """Everything but the identifier is GTS's shape and passes untouched — but
+    ``"code"``/``"type"`` is what the booking flow will hand back to GTS, so an
+    object without one is refused at save time, naming the field."""
+    cases = [
+        ("citizenship", {k: v for k, v in GTS_COUNTRY.items() if k != "code"}),
+        ("citizenship", {**GTS_COUNTRY, "code": "  "}),
+        ("document_type", {k: v for k, v in GTS_DOCUMENT_TYPE.items() if k != "type"}),
+        ("document_type", {**GTS_DOCUMENT_TYPE, "type": ""}),
+    ]
+    for field, value in cases:
+        response = await api.post(
+            PASSENGERS,
+            headers=customer_headers_for(customer),
+            json={**AZIZ, field: value},
+        )
+        assert response.status_code == 422, f"{field}: {response.text}"
+        assert response.json()["errors"][0]["field"] == field
 
-    assert created["document_type"] == "birth_certificate"
+
+async def test_a_bare_string_is_no_longer_accepted(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """The old contract took free text; the new one takes the catalogue object
+    or nothing."""
+    for field, value in (("citizenship", "Uzbekistan"), ("document_type", "passport")):
+        response = await api.post(
+            PASSENGERS,
+            headers=customer_headers_for(customer),
+            json={**AZIZ, field: value},
+        )
+        assert response.status_code == 422, f"{field}: {response.text}"
+        assert response.json()["errors"][0]["field"] == field
+
+
+async def test_a_catalog_object_can_be_cleared_and_replaced(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """Both fields stay optional: ``null`` clears them, and a ``PATCH`` with a
+    different object replaces the whole stored copy, not a merge of the two."""
+    created = await _create(api, customer, citizenship=GTS_COUNTRY)
+    url = f"{PASSENGERS}{created['id']}/"
+    headers = customer_headers_for(customer)
+
+    cleared = await api.patch(
+        url, headers=headers, json={"citizenship": None, "document_type": None}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["data"]["citizenship"] is None
+    assert cleared.json()["data"]["document_type"] is None
+
+    kazakhstan = {
+        "country_rus": "Казахстан",
+        "country_eng": "Kazakhstan",
+        "code": "KZ",
+        "phone_code": 7,
+        "phone_mask": "(###) ###-##-##",
+        "emoji": "🇰🇿",
+        "translations": {"ru": "Казахстан", "en": "Kazakhstan", "uz": "Qozogʻiston"},
+    }
+    replaced = await api.patch(url, headers=headers, json={"citizenship": kazakhstan})
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["data"]["citizenship"] == kazakhstan
+
+    fetched = await api.get(url, headers=headers)
+    assert fetched.json()["data"]["citizenship"] == kazakhstan
+    assert fetched.json()["data"]["document_type"] is None
 
 
 async def test_passengers_need_a_token(api: AsyncClient) -> None:

@@ -39,6 +39,7 @@ enumerates and they belong to this one account row; splitting them into a later
 import uuid
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -203,15 +204,16 @@ class Passenger(Entity):
     #: birth date has to be retyped before it can be booked anyway — so the
     #: gap would surface at booking time rather than at save time (API.md §19).
     birth_date: Mapped[date] = mapped_column(Date, nullable=False)
-    #: Free text for the same reason as ``document_type``: the list of countries
-    #: is GTS's, and picking a code here would also mean picking a standard
-    #: ("UZ" or "UZB") the contract has not named yet.
-    citizenship: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    #: Free text, not an enum. The catalogue of document types lives on the GTS
-    #: side (GTS.md §9) and API.md §26 has no endpoint that serves it, so a
-    #: local enum would be a guess — and a CHECK constraint is the expensive
-    #: kind of guess to be wrong about.
-    document_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: The full country object the client picked from the §26 ``countries/``
+    #: catalogue, stored verbatim: the UI shows the name with its translations
+    #: and flag, which the bare code ("UZ") cannot carry. Only the ``"code"``
+    #: key is checked, in Pydantic — no enum, no CHECK (STATUS.md §4.75).
+    citizenship: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    #: Same pattern: the §26 ``document-types/`` object verbatim, only the
+    #: ``"type"`` key checked in Pydantic. The catalogue is GTS's (GTS.md §9),
+    #: so a local enum would drift out from under it — and a CHECK constraint
+    #: is the expensive kind of guess to be wrong about.
+    document_type: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     document_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: Optional: not every kind of document carries one.
     document_expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
