@@ -1,5 +1,5 @@
-"""Seed demo content: CMS pages/FAQ, profile deletion reasons and the site's
-company contacts, in uz / ru / en.
+"""Seed demo content: CMS pages/FAQ, profile deletion reasons, the site's
+company contacts and available currencies, in uz / ru / en.
 
 Operational tooling, not application code — it drives the cms, customers and
 settings modules through their service functions, the same way a panel
@@ -7,9 +7,9 @@ operator would, and publishes everything it creates so the public surface
 can serve it straight away.
 
 Idempotent: pages are matched by slug, FAQ entries and deletion reasons by
-their Uzbek text, site settings by still being at their untouched defaults;
-existing rows are left untouched, so the script is safe to run twice —
-locally and on the demo server alike.
+their Uzbek text, site settings and currencies by still being at their
+untouched defaults; existing rows are left untouched, so the script is safe
+to run twice — locally and on the demo server alike.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -33,7 +33,7 @@ from app.modules.customers import service as customers_service
 from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
 from app.modules.settings import service as settings_service
-from app.modules.settings.schemas import SiteIn
+from app.modules.settings.schemas import CurrenciesIn, SiteIn
 
 # --- pages -----------------------------------------------------------------------
 
@@ -349,6 +349,26 @@ SITE_SETTINGS = {
 }
 
 
+# --- currencies --------------------------------------------------------------------
+
+#: UZS stays default; USD/EUR/RUB are added so the demo has more than one
+#: currency to switch between.
+DEMO_CURRENCIES = ["UZS", "USD", "EUR", "RUB"]
+
+
+async def seed_currencies(session: AsyncSession) -> None:
+    current = await settings_service.get_currencies(session)
+    # Skip once the list has grown past the untouched single-currency default:
+    # an admin's real configuration must never be clobbered by a rerun.
+    if len(current.available) > 1:
+        print("currencies: already configured, skipped")
+        return
+    await settings_service.update_currencies(
+        session, CurrenciesIn(available=DEMO_CURRENCIES)
+    )
+    print(f"currencies: {', '.join(DEMO_CURRENCIES)} seeded")
+
+
 async def seed_site_settings(session: AsyncSession) -> None:
     # Skip once any field is set: an admin's real entry must never be
     # clobbered by a rerun, unlike the pages/FAQ above there's no per-field
@@ -437,6 +457,7 @@ async def main() -> None:
         await seed_faqs(session)
         await seed_deletion_reasons(session)
         await seed_site_settings(session)
+        await seed_currencies(session)
     await dispose_engine()
 
 
