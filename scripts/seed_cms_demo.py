@@ -7,10 +7,13 @@ settings modules through their service functions, the same way a panel
 operator would, and publishes everything it creates so the public surface
 can serve it straight away.
 
-Idempotent: pages are matched by slug, FAQ entries and deletion reasons by
-their Uzbek text, site settings and currencies by still being at their
-untouched defaults; existing rows are left untouched, so the script is safe
-to run twice — locally and on the demo server alike.
+Safe to run twice — locally and on the demo server alike. Pages are matched
+by slug and always **updated** to match ``PAGES`` below (this is demo
+content, meant to be kept current, not an admin's own edit). FAQ entries and
+deletion reasons are matched by their Uzbek text, site settings and
+currencies by still being at their untouched defaults — those are left
+untouched once set, since there is no seed-vs-edited distinction to draw for
+them.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -835,15 +838,16 @@ async def seed_deletion_reasons(session: AsyncSession) -> None:
 async def seed_pages(session: AsyncSession) -> None:
     for spec in PAGES:
         slug = spec["slug"]
-        # Skip rather than upsert: a rerun must never clobber edited text.
-        if await exists_live(session, PageModel, PageModel.slug == slug):
-            print(f"page {slug!r}: already exists, skipped")
-            continue
+        # Upsert rather than skip: this is demo content, not an admin's own
+        # edit, so a rerun is meant to bring it up to date with PAGES below —
+        # ``upsert_fixed_page`` merges per language, so every seeded language
+        # here fully replaces what it held.
+        existed = await exists_live(session, PageModel, PageModel.slug == slug)
         await cms_service.upsert_fixed_page(
             session, slug, FixedPageIn(title=spec["title"], body=spec["body"])
         )
         await cms_service.set_fixed_page_status(session, slug, ContentStatus.PUBLISHED)
-        print(f"page {slug!r}: created and published")
+        print(f"page {slug!r}: {'updated' if existed else 'created'} and published")
 
 
 async def seed_faqs(session: AsyncSession) -> None:
