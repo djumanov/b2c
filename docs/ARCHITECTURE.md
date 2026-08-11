@@ -144,7 +144,7 @@ yupqa yig'uvchi.
 | `orders` | Lokal buyurtma yozuvlari, GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba |
 | `payments` | To'lovlar, tranzaksiyalar, qaytarishlar, **saqlangan kartalar (shifrlangan raqam bilan)**, provayder webhook'lari | D7 bo'yicha. Karta `/public/profile/cards/` yo'lida turadi, chunki kontrakt shunday deydi ([API.md](API.md) §19) — lekin qator **shifrlangan to'lov credential'i**, shuning uchun unga shifrlashga va to'lovga egalik qilgan modul egalik qiladi. `customers` da tursa, u to'lov paytida raqamni o'qish uchun `payments` modellarini import qilishga majbur bo'lardi — §4 taqiqlagan sikl. Tashqariga uchta eshik: `service.create_payment()`, `service.forget_cards()` va (2-fazada to'lov uchun) `service.reveal_card()` |
 | `promo` | Kodlar, qoidalar, to'lovga qo'llash, statistika | Chegirma **client marjasidan** ketadi, GTS to'liq tarifni oladi (§14 A4) |
-| `leads` | Lead'lar (murojaatlar), obunalar | Manbalar sxemasi kontraktdan chiqarildi — §14 G1 |
+| `leads` | Lead'lar (murojaatlar), mavzular lug'ati, obunalar | Manbalar sxemasi kontraktdan chiqarildi — §14 G1; mavzular oddiy tarjimali lug'at, G1 dagi sxema emas |
 | `notifications` | Shablonlar, yuborish, ommaviy yuborish, qurilma reyestri | MVP'da faqat SMTP adapteri (D6) |
 | `reports` | Dashboard, sotuv agregatsiyasi, maydonlar katalogi, saqlangan ko'rinishlar, eksport | Eksport `jobs` orqali |
 | `audit` | Har bir admin mutatsiyasi va auth hodisalarining o'zgarmas jurnali | Har bir handler emas, **dependency** yozadi |
@@ -331,7 +331,7 @@ deleted customers arxivi) · *config* (sozlama
 singletonlari, menu, integration configs) · *cms* (7 ta kontent jadvali, feedbacks) ·
 *commerce* (orders, order passengers, payments, transactions, refunds, customer cards,
 payment outbox, promo codes, promo usages) ·
-*engagement* (leads, subscriptions, templates, broadcasts, devices, notifications) ·
+*engagement* (leads, support topics, subscriptions, templates, broadcasts, devices, notifications) ·
 *ops* (jobs, audit log, uploads).
 
 > Qidiruv uchun jadval **yo'q** — bu D2 ning bevosita natijasi.
@@ -455,7 +455,10 @@ Bular ishni to'xtatmaydi, lekin tasdiqlanishi kerak.
 `/admin/leads/sources/` (CRUD) qo'shilgan edi. Keyin butun manbalar mashinasi
 kontraktdan olib tashlandi — murojaat qat'iy `topic + message + contact` shakliga
 tushdi ([API.md](API.md) §25, §35): panel sozlaydigan sxema kichik jamoaga
-keraksiz murakkablik edi.
+keraksiz murakkablik edi. Keyinroq qo'shilgan `support_topics` lug'ati bu qarorni
+**bekor qilmaydi**: u shakl sxemasi emas, formadagi mavzu tanlovining tarjimali
+ro'yxati xolos — murojaat baribir `topic` matni bilan, lug'atga solishtirilmasdan
+saqlanadi (o'chirish sabablari naqshi).
 
 **Keyinga qoldirilgan** — [PROJECT.md](PROJECT.md) §16 dagi ochiq savollar. Ularning hech biri
 hozir to'sqinlik qilmaydi.

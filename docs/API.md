@@ -1079,6 +1079,7 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
+| `GET` | `/public/leads/topics/` | — | Murojaat mavzulari — forma uchun tanlov ro'yxati |
 | `POST` | `/public/leads/` | (✓) | Murojaat qoldirish — mavzu, xabar va aloqa ma'lumoti |
 | `POST` | `/public/feedbacks/` | ✓ | Sharh qoldirish — moderatsiyaga tushadi |
 | `GET` | `/public/feedbacks/my/` | ✓ | O'z sharhlarim va ularning holati |
@@ -1097,6 +1098,26 @@ POST /public/leads/
 mijozga bog'lanadi; tokensiz ham qabul qilinadi. Operator mijoz bilan tashqi
 kanal orqali (telefon, email) bog'lanadi — ilova ichida suhbat yo'q. Spamga
 qarshi endpoint `auth` limiti ostida (§14).
+
+### Murojaat mavzulari
+
+Formadagi mavzu tanlovi shu ro'yxatdan to'ldiriladi. Ro'yxatni panel boshqaradi
+(§35), matn §7 bo'yicha bitta tilga siqilib keladi, tartib — panel belgilagan
+`sort_order`:
+
+```json
+GET /public/leads/topics/?lang=ru
+→ { "status": "success",
+    "data": [
+      { "id": "9f2c…", "name": "Оплата", "lang": "ru" },
+      { "id": "4b7a…", "name": "Возврат билета", "lang": "ru" } ] }
+```
+
+Mijoz mavzuni tanlaydi va ilova tanlanganning **matnini** — mijoz ko'rgan tilda,
+aynan ko'rganicha — `POST /public/leads/` dagi `topic` maydonida yuboradi.
+Server matnni lug'atga solishtirmaydi (§19 dagi o'chirish sabablari bilan bir
+xil naqsh): murojaat kelgan matni bilan saqlanadi, mavzu keyin o'chirilsa ham
+tarix buzilmaydi.
 
 ---
 
@@ -1610,12 +1631,37 @@ POST /admin/customers/deletion-reasons/
 | `GET` | `/admin/leads/` | `admin` | `?status=new\|in_progress\|done`; §6 qidiruv: `topic`, `name`, `contact` |
 | `GET` | `/admin/leads/{id}/` | `admin` | Tafsilot |
 | `PATCH` | `/admin/leads/{id}/` | `admin` | `{status, note}` |
+| `GET` `POST` | `/admin/leads/topics/` | `admin` | Murojaat mavzulari lug'ati |
+| `GET` `PATCH` `DELETE` | `/admin/leads/topics/{id}/` | `admin` | Bitta mavzu |
 | `GET` | `/admin/subscriptions/` | `admin` | Obunachi'lar ro'yxati |
 | `GET` | `/admin/subscriptions/export/` | `admin` | CSV eksport (async) |
 
 Murojaatda mas'ul (assignee) maydoni yo'q — ikki rolli modelda (§5) u shovqin
 bo'lardi. Operator murojaatni o'qiydi, holatini belgilaydi, `note` ga izoh yozadi
 va mijoz bilan tashqi kanal orqali bog'lanadi.
+
+### Murojaat mavzulari
+
+Mijoz murojaat formasida ko'radigan ro'yxat (§25). Resurs §8 dagi standart CRUD
+naqshida ishlaydi:
+
+```json
+POST /admin/leads/topics/
+{ "name": { "uz": "To'lov", "ru": "Оплата", "en": "Payment" },
+  "sort_order": 1 }
+→ 201
+```
+
+- `name` — tarjima obyekti (§7): kamida bitta til to'ldirilgan bo'lishi kerak,
+  bo'sh tillar public tomonda fallback bilan almashadi. `PATCH` tilma-til
+  birlashtiradi — bitta tilni yuborish qolganlarini o'chirmaydi (§30 bilan bir xil).
+- `sort_order` — public ro'yxatdagi tartib; `POST` da berilmasa oxiriga qo'shiladi.
+- `?search=` yo'q — matn `JSONB` da. Tartiblash: `?ordering=order|created_at`
+  (standart `order`).
+- Draft/publish holati yo'q: mavzuni yashirish — `DELETE` (soft delete). Murojaat
+  matni o'z holicha saqlangani uchun mavzu o'chirilsa ham tarix buzilmaydi.
+- Bo'lim `leads` bayrog'i ostida (§28): murojaatlar o'chirilgan o'rnatmada
+  mavzular ham ikkala yuzada `404` beradi.
 
 ---
 
