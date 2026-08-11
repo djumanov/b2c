@@ -47,6 +47,10 @@ CORE_PREFIXES: tuple[str, ...] = (
     # Nor is having an account. A customer's own details and saved travellers
     # are not a section of the product that a client chooses to sell.
     f"{API_PREFIX}/public/profile/",
+    # The dictionary the delete screen reads (API.md §34). The deletion flow it
+    # feeds cannot be switched off, so its lookup cannot either — a precise
+    # prefix, so the rest of §34 still forces its own decision when it lands.
+    f"{API_PREFIX}/admin/customers/deletion-reasons/",
     # Nor are the lists a passenger form is filled in from. A client who
     # "switched off" document types would have a booking flow nobody can
     # complete, so there is no flag in FEATURE_DEFAULTS this could hang from —

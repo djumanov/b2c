@@ -279,7 +279,7 @@ Batafsil asoslar — [ARCHITECTURE.md](ARCHITECTURE.md) §2.
 | **D4** | Xarid uchun **akkaunt majburiy** — mehmon sifatida xarid yo'q |
 | **D5** | Auth — **email + parol**, qo'shimcha **Google**. ⚠ iOS ilovada Google bo'lsa Apple qoidalari **Sign in with Apple** ni talab qiladi (6-bosqich) |
 | **D6** | MVP'da OTP va parol tiklash — **faqat email/SMTP**. Telefon + SMS keyinroq |
-| **D7** | To'lov provayderlari — **Payme + Click**. Ikkalasi redirect + webhook, **va karta-token oqimi** (Payme Subscribe API, Click Card Token API) — saqlangan kartalar shu orqali ishlaydi. Karta raqami serverimizdan **o'tadi**, lekin **hech qachon saqlanmaydi**: qatorda faqat provayder tokeni turadi. ⚠ Bu PCI qamrovini o'zgartiradi — §13. *(Qayta ko'rib chiqildi: dastlab redirect-only edi, saqlangan kartalar talabi bilan kengaytirildi — [ARCHITECTURE.md](ARCHITECTURE.md) §2)* |
+| **D7** | To'lov provayderlari — **Payme + Click**, ikkalasi redirect + webhook. **Saqlangan kartalar provayderga bog'lanmaydi**: karta — lokal autofill yozuvi, raqami bazada **faqat AES-GCM shifrlangan holda** turadi va to'lov paytida server tomonidan ochilib provayderga uzatiladi ([API.md](API.md) §19, §22). ⚠ Shifrlangan bo'lsa ham raqamni saqlash PCI qamrovini og'irlashtiradi — §13. *(Qayta ko'rib chiqildi: dastlab redirect-only edi; keyin saqlangan kartalar talabi bilan karta-token oqimiga kengaytirildi; 2026-08-11 da soddalashtirildi — provayder tokeni o'rniga shifrlangan lokal yozuv — [ARCHITECTURE.md](ARCHITECTURE.md) §2)* |
 | **D8** | Tillar — **uz + ru + en**. Bo'sh qolgan tarjima [API.md](API.md) §7 fallback zanjiriga tushadi |
 | **D9** | Beshta vertikal ham **birinchi relizda** (§8) |
 | **D10** | O'rnatish, yangilash va zaxira — **clientning zimmasida**; biz artefakt va hujjat beramiz (§14) |
@@ -317,7 +317,8 @@ foydalanuvchiga tushunarli xabar ko'rsatiladi. GTS xatosi hech qachon yashirilma
 **Saqlanadigan shaxsiy ma'lumot:** ism, familiya va ota ismi, email, telefon, tug'ilgan sana,
 fuqarolik, hujjat turi, raqami va amal muddati (yo'lovchi ma'lumoti sifatida), buyurtma tarixi,
 IP manzil, qurilma push tokeni, saqlangan to'lov kartasining **maskalangan raqami, oxirgi to'rt
-raqami, BIN'i, brendi va amal muddati** hamda provayderning **karta tokeni** (shifrlangan).
+raqami, BIN'i, brendi va amal muddati** hamda karta raqamining o'zi — **faqat AES-GCM
+shifrlangan holda** (D7).
 
 Ota ismi **ustun sifatida ixtiyoriy** (`NULL` qabul qiladi), lekin profil "to'liq" hisoblanishi
 uchun kerak — [API.md](API.md) §19 dagi `is_profile_complete` beshta maydonni sanaydi. Hujjat
@@ -326,9 +327,9 @@ majburiyat emas: bu yerda turgan maydon har bir jadvalda paydo bo'lishi shart de
 
 | Mavzu | Qoida |
 |---|---|
-| **Karta raqami** | **Hech qachon saqlanmaydi va log'ga tushmaydi.** U so'rov tanasidan adapterga, adapterdan provayderga o'tadi va shu yerda tugaydi — hech bir ustunda, hech bir log qatorida yo'q. **CVV umuman so'ralmaydi**: na Payme, na Click uni talab qiladi, so'ralmagan maydon esa himoyalanishi shart bo'lmagan maydon |
-| **Karta tokeni** | To'lov provayderi qaytargan token DB'da **shifrlangan** (AES-GCM, `key_version` bilan) — integratsiya kalitlari bilan bir xil naql. Yonida faqat ko'rsatish uchun kerak bo'lgan maskalangan raqam, oxirgi to'rt raqam, BIN, brend va amal muddati turadi |
-| **PCI DSS** | Karta-token oqimi (D7) karta raqamini serverdan o'tkazadi, shuning uchun o'rnatma **SAQ A emas, SAQ D** qamrovida: yillik o'z-o'zini baholash, choraklik ASV skani, shifrlash kaliti uchun hujjatlashtirilgan boshqaruv, pen-test va hodisaga javob rejasi. Majburiyat **o'rnatma egasining zimmasida** (D10) — §16.7 |
+| **Karta raqami** | **Hech qachon ochiq matnda saqlanmaydi, log'ga tushmaydi va klientga qaytmaydi.** Bazada faqat **AES-GCM shifrlangan** nusxa turadi (`key_version` bilan — integratsiya kalitlari bilan bir xil naql); u faqat to'lov paytida server ichida ochiladi va provayderga uzatiladi. **CVV umuman so'ralmaydi**: na Payme, na Click uni talab qiladi, so'ralmagan maydon esa himoyalanishi shart bo'lmagan maydon |
+| **Karta yozuvi** | Shifrlangan raqam yonida faqat ko'rsatish uchun kerak bo'lgan maskalangan raqam, oxirgi to'rt raqam, BIN, brend va amal muddati turadi — bularning hammasi raqamning o'zidan lokal chiqariladi, provayder qatnashmaydi |
+| **PCI DSS** | Karta raqami — shifrlangan bo'lsa ham — **saqlanadi**, shuning uchun o'rnatma **SAQ D** qamrovida, ustiga **saqlangan karta ma'lumoti bilan**: PCI 3-talab (saqlash nazorati, hujjatlashtirilgan kalit boshqaruvi, saqlash muddati va o'chirish siyosati) to'liq qo'llanadi, yillik o'z-o'zini baholash, choraklik ASV skani, pen-test va hodisaga javob rejasi bilan birga. Bu avvalgi token-oqimidan **og'irroq** qamrov. Majburiyat **o'rnatma egasining zimmasida** (D10) — §16.7 |
 | Parollar | `argon2` bilan xeshlanadi |
 | Integratsiya kalitlari | DB'da shifrlangan (AES-GCM), kalit env'da. O'qishda **maskalanadi** — faqat oxirgi belgilar ko'rinadi |
 | Kalit rotatsiyasi | Har bir yozuvda `key_version` bor, shuning uchun kalitni almashtirish uchun credential'larni qayta kiritish shart emas |
@@ -337,13 +338,20 @@ majburiyat emas: bu yerda turgan maydon har bir jadvalda paydo bo'lishi shart de
 | Audit | Paneldagi **har bir mutatsiya** yoziladi: kim, qachon, qaysi resurs, qanday o'zgarish. Auth hodisalari alohida belgilanadi |
 | CORS | Public — sayt va ilova domenlari; admin — faqat panel domeni |
 
-**Akkaunt o'chirilganda** (`DELETE /public/profile/`) shaxsiy ma'lumot tozalanadi, lekin
-buyurtma va to'lov yozuvlari **moliyaviy hujjat sifatida anonimlashtirilib saqlanadi** — ular
-hisobot va qaytarish uchun kerak. Saqlangan kartalar **provayder tomonda ham** o'chiriladi va
-token qatordan olib tashlanadi; tranzaksiyadagi maskalangan nusxa esa qoladi, chunki kvitansiya
-karta unutilgandan keyin ham o'qilishi kerak.
+**Akkaunt o'chirilganda** (`DELETE /public/profile/`) jonli qatordagi shaxsiy ma'lumot
+tozalanadi, lekin buyurtma va to'lov yozuvlari **moliyaviy hujjat sifatida anonimlashtirilib
+saqlanadi** — ular hisobot va qaytarish uchun kerak. Saqlangan kartalarning **shifrlangan
+raqami qatordan o'chiriladi** va qator soft-delete qilinadi; tranzaksiyadagi maskalangan
+nusxa esa qoladi, chunki kvitansiya karta unutilgandan keyin ham o'qilishi kerak.
 
-> Saqlash muddatlari (audit log, anonimlashtirilgan buyurtmalar) hali belgilanmagan — §16.
+Tozalashdan oldin esa qatorning **to'liq shaxsiy nusxasi** — email, ism, telefon, tug'ilgan
+sana, ro'yxatdan o'tgan sana — mijoz yuborgan o'chirish sabablari bilan birga
+`deleted_customers` arxiviga yoziladi ([API.md](API.md) §19). Bu ongli savdo: "o'chirish"
+jonli tizimdan chiqarish ma'nosida qoladi, biznes esa kimlar va nima sababdan ketganini
+ko'ra oladi. Arxiv faqat bazada, hech bir API uni qaytarmaydi.
+
+> Saqlash muddatlari (audit log, anonimlashtirilgan buyurtmalar, `deleted_customers`
+> arxivi) hali belgilanmagan — §16.
 
 ---
 
@@ -409,7 +417,7 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 | Bosqich | Natija | Qabul mezoni |
 |---|---|---|
 | **1. Yadro** | FastAPI skeleti, envelope va xato katalogi, auth (customer + staff), RBAC, sozlamalar + shifrlangan credential'lar, migratsiyalar, audit, `site-config`, health | Panelga `owner` sifatida kirish mumkin · brend rangi o'zgartirilsa `site-config` da **deploysiz** aks etadi · ikki rolli kirish testi o'tadi: `admin` tokeni `owner` talab qiladigan endpointda `403` oladi |
-| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va anti-corruption qatlami, `ProductAdapter` porti, **aviachipta** adapteri, holatsiz qidiruv oqimi (D2), verify/bron, Payme + Click, **saqlangan kartalar (karta-token oqimi, D7)**, saga, buyurtmalar, **to'lovga promokod qo'llash** | Aviachipta bo'yicha qidiruv → bron → to'lov → chipta uchidan-uchiga ishlaydi · chipta xatosida avtomatik qaytarish ishlaydi · takroriy webhook ikki marta yechmaydi · saqlangan karta bilan to'lov ishlaydi va **karta raqami hech bir jadvalda yo'q** |
+| **2. GTS ulanishi va birinchi vertikal** | GTS sessiya klienti va anti-corruption qatlami, `ProductAdapter` porti, **aviachipta** adapteri, holatsiz qidiruv oqimi (D2), verify/bron, Payme + Click, **saqlangan karta bilan to'lov (D7)**, saga, buyurtmalar, **to'lovga promokod qo'llash** | Aviachipta bo'yicha qidiruv → bron → to'lov → chipta uchidan-uchiga ishlaydi · chipta xatosida avtomatik qaytarish ishlaydi · takroriy webhook ikki marta yechmaydi · saqlangan karta bilan to'lov ishlaydi va **karta raqami ochiq matnda hech bir jadvalda yo'q** |
 | **3. Qolgan vertikallar** | Poyezd, sug'urta, eSIM, transfer — har biri adapter sifatida | To'rttasi ham to'liq oqimdan o'tadi · **oqim va saga kodiga o'zgarish kiritilmagan** — adapter porti o'zini shu bilan oqlaydi |
 | **4. Panel** | Brending, sozlamalar, integratsiyalar, kontent, buyurtmalar, to'lovlar, mijozlar, promokodlar, xodimlar, dashboard — **panel ekranlari**; ularning ortidagi API o'z fazasida quriladi (masalan integratsiyalar API'si 1-fazada) | `admin` da jamoa bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish rejimida ochiladi · sirlar maskalangan holda qaytadi |
 | **5. Sayt** | Web frontend `site-config` va public API ustida, uz/ru/en | Paneldagi rang/logo o'zgarishi saytda **qayta build'siz** ko'rinadi · tarjima bo'lmagan maydon fallback bilan ko'rsatiladi |
@@ -435,7 +443,7 @@ Zaxira **clientning zimmasida**. Uchta narsa nusxalanishi shart:
 | 4 | **Dashboard ko'rsatkichlari** — aniq ro'yxat kerak (sotuv, konversiya, o'rtacha chek, …) | Hisobotlar moduli |
 | 5 | **Saqlash muddatlari** — audit log va anonimlashtirilgan buyurtmalar necha muddat saqlanadi? | §13, DB o'sishi |
 | 6 | **Kutilayotgan yuk** — bir vaqtdagi foydalanuvchilar va yiliga buyurtmalar soni | Server o'lchami va GTS'ga ketadigan so'rovlar soni (§12, D2) |
-| 7 | **PCI DSS majburiyati** — SAQ D ni kim to'ldiradi, ASV skanini kim buyurtma qiladi, natijani kim saqlaydi? ⚠ Bu **tijoriy javob**, texnik emas, va D7 ni tasdiqlaydigan yagona narsa. Rad etilsa muqobil bor: kartani provayderning o'z formasida ro'yxatdan o'tkazish — token keladi, raqam kelmaydi | §13, D7, to'lovlar moduli. Javob kelmaguncha saqlangan kartalar **yozilmaydi** |
+| 7 | **PCI DSS majburiyati** — SAQ D ni kim to'ldiradi, ASV skanini kim buyurtma qiladi, natijani kim saqlaydi? ⚠ Bu **tijoriy javob**, texnik emas. *2026-08-11 texnik qaror qabul qilindi: karta raqami AES-GCM shifrlangan holda saqlanadi (D7) — ya'ni qamrov endi "saqlangan karta ma'lumoti bilan SAQ D", §13.* Tijoriy yarmi ochiq qoladi va endi saqlash nazorati (PCI 3-talab) ni ham o'z ichiga oladi. Rad etilsa muqobil bor: kartani provayderning o'z formasida ro'yxatdan o'tkazish — token keladi, raqam saqlanmaydi | §13, D7, to'lovlar moduli |
 
 **Ochiq tashqi bog'liqlik:** GTS mashina akkaunti uchun ikki bosqichli tasdiq o'chirilishi kerak
 (D1). Yechimi bizning qo'limizda emas — GTS jamoasi bilan oldindan hal qilinishi kerak — lekin

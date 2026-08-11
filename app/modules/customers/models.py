@@ -5,11 +5,16 @@ same soft-delete and rotation rules. Two audiences that behave differently under
 the same threat would be two sets of rules to remember, and API.md §4 describes
 one mechanism with two sets of lifetimes.
 
-Four tables:
+Six tables:
 
 ``customers`` is the entity, soft-deleted like everything else (API.md §8), with
 its email unique **among live rows only** — an account that was deleted must not
 lock its address away forever.
+
+``deletion_reasons`` is the panel-managed list a customer picks from before
+deleting the account (API.md §19, §34), and ``deleted_customers`` is the
+append-only archive that keeps the pre-scrub personal snapshot together with
+the reasons the customer sent (PROJECT.md §13).
 
 ``passengers`` is the saved-traveller list (API.md §19), also an entity. Note it
 is **not** the order's passenger list: ARCHITECTURE.md §10 puts those under
@@ -37,14 +42,17 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
     String,
+    func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -209,6 +217,61 @@ class Passenger(Entity):
     document_expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
+class DeletionReason(Entity):
+    """One entry in the why-are-you-leaving list (API.md §19, §34).
+
+    ``text`` is the usual ``{lang: value}`` translation object (API.md §7).
+    No draft/publish state: hiding a reason is the soft delete, and the archive
+    keeps whatever text the customer actually sent, so editing or deleting a
+    reason never rewrites history.
+    """
+
+    __tablename__ = "deletion_reasons"
+
+    text: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    #: Plain-string default: the ``text`` column above shadows SQLAlchemy's
+    #: ``text()`` for the rest of this class body.
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
+class DeletedCustomer(Base, UUIDPrimaryKeyMixin):
+    """The pre-scrub snapshot of a customer who deleted the account.
+
+    ``delete_account`` empties the live row (PROJECT.md §13); this row is what
+    it looked like the moment before, plus the reasons the customer sent —
+    verbatim, in whatever language they read them. Append-only: no timestamps
+    mixin, no soft delete, and **no foreign key** — the archive must outlive
+    the customer row and never be reachable through a cascade. No API returns
+    it.
+    """
+
+    __tablename__ = "deleted_customers"
+    __table_args__ = (
+        CheckConstraint("jsonb_typeof(reasons) = 'array'", name="reasons_is_array"),
+    )
+
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), nullable=False, index=True
+    )
+    #: Indexed for the "what do you hold about this address" support question.
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: The customer row's ``created_at`` — how long the account lived.
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+
+
 class CustomerRefreshToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """One issued refresh token. Rotation revokes the row it replaced."""
 
@@ -274,6 +337,8 @@ __all__ = [
     "OTP_PURPOSE_COLUMN",
     "Customer",
     "CustomerRefreshToken",
+    "DeletedCustomer",
+    "DeletionReason",
     "EmailOtp",
     "OtpPurpose",
     "Passenger",

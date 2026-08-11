@@ -31,7 +31,8 @@ though the request is about to fail.
 
 **Deleting an account empties the row, not just hides it.** PROJECT.md §13
 says personal data is cleared; a soft delete alone conceals a row without
-emptying it, so the two happen together.
+emptying it, so the two happen together — after the pre-scrub snapshot and the
+customer's reasons have gone to the ``deleted_customers`` archive.
 """
 
 import hashlib
@@ -41,6 +42,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Final
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
@@ -48,12 +50,14 @@ from app.api.envelope import Page
 from app.api.errors import Forbidden, NotFound, Unauthorized, ValidationFailed
 from app.api.listing import (
     ListQuery,
+    OrderingMap,
     apply_created_range,
     apply_ordering,
     apply_search,
     page,
     paginate,
 )
+from app.core import i18n
 from app.core.logging import get_logger
 from app.core.security import (
     TOKEN_TTL,
@@ -75,10 +79,13 @@ from app.core.security import (
 )
 from app.db.mixins import utcnow
 from app.db.redis import get_redis
+from app.db.repository import get_live_or_404, live
 from app.modules.customers import repository
 from app.modules.customers.models import (
     Customer,
     CustomerRefreshToken,
+    DeletedCustomer,
+    DeletionReason,
     EmailOtp,
     OtpPurpose,
     Passenger,
@@ -86,6 +93,10 @@ from app.modules.customers.models import (
 from app.modules.customers.schemas import (
     OTP_LENGTH,
     AccountDeleteIn,
+    DeletionReasonAdminOut,
+    DeletionReasonIn,
+    DeletionReasonPublicOut,
+    DeletionReasonUpdateIn,
     LoginIn,
     PassengerCreateIn,
     PassengerOut,
@@ -846,18 +857,34 @@ async def change_password(
 async def delete_account(
     session: AsyncSession, customer: Customer, data: AccountDeleteIn
 ) -> None:
-    """Scrub the personal data and end the account.
+    """Archive the pre-scrub snapshot, then scrub and end the account.
 
     PROJECT.md §13 says personal data is *cleared*, not merely hidden — so a
     soft delete on its own would not do: ``deleted_at`` conceals a row, it does
     not empty it. Order and payment records would stay, anonymised, as
     financial documents; there are none yet in this phase.
 
+    Before the scrub, the row as it stood goes to ``deleted_customers``
+    together with the reasons the customer sent — verbatim, never matched
+    against the dictionary (API.md §19). Same transaction as the scrub: the
+    archive exists exactly when the account is gone.
+
     The address is emptied too, which is also what frees it: the unique index
     covers live rows only, so the same person can register again afterwards.
     """
-    if not verify_password(data.password, customer.password_hash):
-        raise ValidationFailed("Password is incorrect", field="password")
+    session.add(
+        DeletedCustomer(
+            customer_id=customer.id,
+            email=customer.email,
+            first_name=customer.first_name,
+            last_name=customer.last_name,
+            middle_name=customer.middle_name,
+            phone=customer.phone,
+            birth_date=customer.birth_date,
+            registered_at=customer.created_at,
+            reasons=data.reasons,
+        )
+    )
 
     # Nothing to release with it — the code names a picture the client ships,
     # not a file this installation stores.
@@ -883,6 +910,119 @@ async def delete_account(
     await _revoke_all_sessions(session, customer.id)
     await session.commit()
     logger.info("customer_deleted", customer_id=str(customer.id))
+
+
+# --- deletion reasons (API.md §19, §34) ----------------------------------------------
+
+_DELETION_REASON_ORDERING: Final[OrderingMap] = {
+    "order": DeletionReason.sort_order,
+    "created_at": DeletionReason.created_at,
+}
+
+
+async def list_deletion_reasons_admin(
+    session: AsyncSession, pagination: Pagination, query: ListQuery
+) -> Page[DeletionReasonAdminOut]:
+    # No ``search``: the only text is JSONB, which cannot take a plain ILIKE —
+    # the same reason the FAQ panel searches its category code instead.
+    stmt = live(DeletionReason)
+    stmt = apply_created_range(stmt, query, DeletionReason.created_at)
+    stmt = apply_ordering(
+        stmt,
+        query,
+        allowed=_DELETION_REASON_ORDERING,
+        default="order",
+        tiebreak=DeletionReason.id,
+    )
+    rows, total = await paginate(session, stmt, pagination)
+    return page(
+        [DeletionReasonAdminOut.model_validate(row) for row in rows],
+        pagination,
+        total,
+    )
+
+
+async def create_deletion_reason(
+    session: AsyncSession, data: DeletionReasonIn
+) -> DeletionReasonAdminOut:
+    if data.sort_order is None:
+        # New entries join at the end of the panel's order.
+        last = await session.scalar(
+            select(func.max(DeletionReason.sort_order)).where(
+                DeletionReason.deleted_at.is_(None)
+            )
+        )
+        sort_order = (last if last is not None else -1) + 1
+    else:
+        sort_order = data.sort_order
+    reason = DeletionReason(text=data.text, sort_order=sort_order)
+    session.add(reason)
+    await session.commit()
+    await session.refresh(reason)
+    logger.info("deletion_reason_created", reason_id=str(reason.id))
+    return DeletionReasonAdminOut.model_validate(reason)
+
+
+async def get_deletion_reason(
+    session: AsyncSession, reason_id: uuid.UUID
+) -> DeletionReasonAdminOut:
+    return DeletionReasonAdminOut.model_validate(
+        await _require_deletion_reason(session, reason_id)
+    )
+
+
+async def update_deletion_reason(
+    session: AsyncSession, reason_id: uuid.UUID, data: DeletionReasonUpdateIn
+) -> DeletionReasonAdminOut:
+    reason = await _require_deletion_reason(session, reason_id)
+    # Translated fields merge per language, so one language can be edited
+    # without resending the others (the same PATCH semantics as the cms).
+    if data.text is not None:
+        reason.text = {**reason.text, **data.text}
+    if data.sort_order is not None:
+        reason.sort_order = data.sort_order
+    await session.commit()
+    await session.refresh(reason)
+    return DeletionReasonAdminOut.model_validate(reason)
+
+
+async def delete_deletion_reason(session: AsyncSession, reason_id: uuid.UUID) -> None:
+    reason = await _require_deletion_reason(session, reason_id)
+    reason.soft_delete()
+    await session.commit()
+    logger.info("deletion_reason_deleted", reason_id=str(reason.id))
+
+
+async def _require_deletion_reason(
+    session: AsyncSession, reason_id: uuid.UUID
+) -> DeletionReason:
+    return await get_live_or_404(session, DeletionReason, reason_id, name="Reason")
+
+
+async def list_deletion_reasons_public(
+    session: AsyncSession, *, requested: str | None
+) -> list[DeletionReasonPublicOut]:
+    languages = await settings_service.get_languages(session)
+    stmt = live(DeletionReason).order_by(
+        DeletionReason.sort_order.asc(), DeletionReason.id.asc()
+    )
+    rows = (await session.scalars(stmt)).all()
+
+    items: list[DeletionReasonPublicOut] = []
+    for row in rows:
+        resolved = i18n.resolve(
+            row.text,
+            requested=requested,
+            default=languages.default,
+            available=languages.available,
+        )
+        if resolved.value is None:
+            # Nothing readable in any language — better absent than blank.
+            continue
+        items.append(
+            DeletionReasonPublicOut(id=row.id, text=resolved.value, lang=resolved.lang)
+        )
+    return items
 
 
 # --- saved passengers (API.md §19) ---------------------------------------------------
