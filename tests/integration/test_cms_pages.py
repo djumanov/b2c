@@ -111,10 +111,11 @@ async def test_admin_routes_refuse_a_customer_token(
 async def test_about_carries_company_contact_details(
     api: AsyncClient, admin: Staff
 ) -> None:
-    """ "About" folds in what the admin entered under ``/admin/settings/site/``.
+    """ "About" is the company contact details, not the page's own text.
 
     Not page content — asked from the settings module through its service
-    (API.md §30, §17).
+    (API.md §30, §17). The page's publish state still gates the 404, but its
+    title/body never appear in the response.
     """
     headers = headers_for(admin)
     await _put(api, headers, page="about")
@@ -126,6 +127,7 @@ async def test_about_carries_company_contact_details(
         json={
             "name": {"uz": "GTS Sayohat"},
             "support_email": "info@gts.uz",
+            "support_phone": "+998901234567",
             "domain": "gts.uz",
             "social": {
                 "instagram": "https://instagram.com/gts",
@@ -141,10 +143,18 @@ async def test_about_carries_company_contact_details(
     assert data["company_name"] == "GTS Sayohat"
     assert data["company_email"] == "info@gts.uz"
     assert data["company_website"] == "gts.uz"
+    assert data["company_phone"] == "+998901234567"
     assert {"name": "instagram", "link": "https://instagram.com/gts"} in data[
         "social_media"
     ]
     assert {"name": "telegram", "link": "https://t.me/gts"} in data["social_media"]
+    assert data.keys() == {
+        "company_name",
+        "company_email",
+        "company_website",
+        "company_phone",
+        "social_media",
+    }
 
 
 async def test_pages_ignore_feature_flags(

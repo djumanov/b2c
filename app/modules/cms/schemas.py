@@ -118,15 +118,19 @@ class SocialLinkOut(BaseModel):
     link: str
 
 
-class AboutPageOut(PagePublicOut):
-    """ "About" with the company contact details the admin enters once in
+class AboutPageOut(BaseModel):
+    """Company contact details the admin enters once in
     ``/admin/settings/site/`` — not page content, asked from the settings
     module through its service (API.md §30, ARCHITECTURE.md §4).
+
+    No ``title``/``body``: the "about" page's text is not part of this
+    response, only its publish state gates the 404 (API.md §30).
     """
 
     company_name: str | None
     company_email: str | None
     company_website: str | None
+    company_phone: str | None
     social_media: list[SocialLinkOut]
 
 

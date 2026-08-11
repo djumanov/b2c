@@ -305,14 +305,16 @@ async def get_page_public(
 async def get_about_page_public(
     session: AsyncSession, *, requested: str | None
 ) -> AboutPageOut:
-    """ "About", plus the company contact details (API.md §24, §30).
+    """The company contact details, not the "about" page's text (API.md §24, §30).
 
-    Company name, email, website and social links are not page content — the
-    admin enters them once in ``/admin/settings/site/`` and this asks the
-    settings module for the answer rather than keeping its own copy
-    (ARCHITECTURE.md §4).
+    Company name, email, website, phone and social links are not page
+    content — the admin enters them once in ``/admin/settings/site/`` and
+    this asks the settings module for the answer rather than keeping its own
+    copy (ARCHITECTURE.md §4). ``get_page_public`` is still called to gate on
+    the "about" page's publish state (404 when unpublished) — its title and
+    body are discarded, they are not part of this response.
     """
-    page = await get_page_public(session, "about", requested=requested)
+    await get_page_public(session, "about", requested=requested)
     site = await settings_service.get_site(session)
     languages = await settings_service.get_languages(session)
     company_name = i18n.resolve_value(
@@ -322,10 +324,10 @@ async def get_about_page_public(
         available=languages.available,
     )
     return AboutPageOut(
-        **page.model_dump(),
         company_name=company_name,
         company_email=site.support_email,
         company_website=site.domain,
+        company_phone=site.support_phone,
         social_media=[
             SocialLinkOut(name=name, link=link) for name, link in site.social.items()
         ],

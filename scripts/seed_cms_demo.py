@@ -1,13 +1,15 @@
-"""Seed demo content: CMS pages/FAQ and profile deletion reasons, in uz / ru / en.
+"""Seed demo content: CMS pages/FAQ, profile deletion reasons and the site's
+company contacts, in uz / ru / en.
 
-Operational tooling, not application code — it drives the cms and customers
-modules through their service functions, the same way a panel operator
-would, and publishes everything it creates so the public surface can serve
-it straight away.
+Operational tooling, not application code — it drives the cms, customers and
+settings modules through their service functions, the same way a panel
+operator would, and publishes everything it creates so the public surface
+can serve it straight away.
 
 Idempotent: pages are matched by slug, FAQ entries and deletion reasons by
-their Uzbek text; existing rows are left untouched, so the script is safe to
-run twice — locally and on the demo server alike.
+their Uzbek text, site settings by still being at their untouched defaults;
+existing rows are left untouched, so the script is safe to run twice —
+locally and on the demo server alike.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -30,6 +32,8 @@ from app.modules.cms.schemas import FaqIn, FixedPageIn
 from app.modules.customers import service as customers_service
 from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
+from app.modules.settings import service as settings_service
+from app.modules.settings.schemas import SiteIn
 
 # --- pages -----------------------------------------------------------------------
 
@@ -326,6 +330,37 @@ FAQS: list[dict] = [
 ]
 
 
+# --- site settings (company contacts for /public/content/about/) ----------------
+
+SITE_SETTINGS = {
+    "name": {
+        "uz": "GTS Sayohat",
+        "ru": "GTS Путешествия",
+        "en": "GTS Travel",
+    },
+    "domain": "gts.uz",
+    "support_phone": "+998712001122",
+    "support_email": "info@gts.uz",
+    "social": {
+        "instagram": "https://instagram.com/gts.uz",
+        "telegram": "https://t.me/gts_uz",
+        "facebook": "https://facebook.com/gts.uz",
+    },
+}
+
+
+async def seed_site_settings(session: AsyncSession) -> None:
+    # Skip once any field is set: an admin's real entry must never be
+    # clobbered by a rerun, unlike the pages/FAQ above there's no per-field
+    # matching key to check against, just the untouched-defaults state.
+    current = await settings_service.get_site(session)
+    if current.name or current.domain or current.support_email:
+        print("site settings: already configured, skipped")
+        return
+    await settings_service.update_site(session, SiteIn(**SITE_SETTINGS))
+    print("site settings: company contacts seeded")
+
+
 # --- deletion reasons -------------------------------------------------------------
 
 DELETION_REASONS: list[dict] = [
@@ -401,6 +436,7 @@ async def main() -> None:
         await seed_pages(session)
         await seed_faqs(session)
         await seed_deletion_reasons(session)
+        await seed_site_settings(session)
     await dispose_engine()
 
 
