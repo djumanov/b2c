@@ -1,5 +1,6 @@
 """Seed demo content: CMS pages/FAQ, profile deletion reasons, the site's
-company contacts and available currencies, in uz / ru / en.
+company contacts, leads support contact and available currencies, in
+uz / ru / en.
 
 Operational tooling, not application code — it drives the cms, customers and
 settings modules through their service functions, the same way a panel
@@ -32,6 +33,8 @@ from app.modules.cms.schemas import FaqIn, FixedPageIn
 from app.modules.customers import service as customers_service
 from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
+from app.modules.leads import service as leads_service
+from app.modules.leads.schemas import SupportContactIn
 from app.modules.settings import service as settings_service
 from app.modules.settings.schemas import CurrenciesIn, SiteIn
 
@@ -381,6 +384,33 @@ async def seed_site_settings(session: AsyncSession) -> None:
     print("site settings: company contacts seeded")
 
 
+# --- leads support contact (§25, §35) ---------------------------------------------
+
+SUPPORT_CONTACT = {
+    "support_username": "@gts_support",
+    "support_phone": "+998712001133",
+    "support_email": "support@gts.uz",
+    "working_hours": {
+        "uz": "Dush-Juma 09:00-18:00",
+        "ru": "Пн-Пт 09:00-18:00",
+        "en": "Mon-Fri 09:00-18:00",
+    },
+}
+
+
+async def seed_support_contact(session: AsyncSession) -> None:
+    # Same skip rule as site settings: no per-field matching key, just the
+    # untouched-defaults state, so a real entry is never clobbered by a rerun.
+    current = await leads_service.get_support_contact_admin(session)
+    if current.support_username or current.support_phone or current.support_email:
+        print("leads support contact: already configured, skipped")
+        return
+    await leads_service.update_support_contact(
+        session, SupportContactIn(**SUPPORT_CONTACT)
+    )
+    print("leads support contact: seeded")
+
+
 # --- deletion reasons -------------------------------------------------------------
 
 DELETION_REASONS: list[dict] = [
@@ -457,6 +487,7 @@ async def main() -> None:
         await seed_faqs(session)
         await seed_deletion_reasons(session)
         await seed_site_settings(session)
+        await seed_support_contact(session)
         await seed_currencies(session)
     await dispose_engine()
 
