@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Entity
+from app.db.mixins import SingletonMixin, singleton_check
 
 
 class LeadStatus(enum.StrEnum):
@@ -72,4 +73,30 @@ class SupportTopic(Entity):
     )
 
 
-__all__ = ["Lead", "LeadStatus", "SupportTopic"]
+class SupportContact(Entity, SingletonMixin):
+    """How to reach support directly, next to the topic form (API.md §25, §35).
+
+    A second, narrower door than ``settings.Site.support_phone/support_email``:
+    that document describes the installation as a whole, this one is what the
+    "contact us" screen shows and includes a channel (Telegram) the site
+    document does not carry. One row, config-in-DB (CLAUDE.md) so a client
+    changing their handle or hours needs no deploy.
+    """
+
+    __tablename__ = "leads_support_contact"
+    __table_args__ = (singleton_check(),)
+
+    #: Telegram handle, e.g. ``"@brand_support"`` — the operator's own
+    #: convention, not validated here.
+    support_username: Mapped[str | None] = mapped_column(String(160))
+    support_phone: Mapped[str | None] = mapped_column(String(32))
+    support_email: Mapped[str | None] = mapped_column(String(255))
+    #: Translated free text, e.g. ``{"uz": "Dush-Juma 09:00-18:00"}`` — shown
+    #: to the customer, so it follows the same shape as ``SupportTopic.name``.
+    #: Optional: an empty dict means "not shown".
+    working_hours: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
+__all__ = ["Lead", "LeadStatus", "SupportContact", "SupportTopic"]

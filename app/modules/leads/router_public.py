@@ -14,6 +14,7 @@ from app.modules.leads import service
 from app.modules.leads.schemas import (
     LeadCreatedOut,
     LeadCreateIn,
+    SupportContactPublicOut,
     SupportTopicPublicOut,
 )
 
@@ -54,4 +55,22 @@ async def list_topics(
     return await service.list_topics_public(session, requested=language.requested)
 
 
-__all__ = ["router", "topics_router"]
+# --- support contact (API.md §25) ---------------------------------------------------
+
+support_router = enveloped_router(
+    prefix="/leads/support",
+    tags=["leads"],
+    dependencies=[Depends(RequireFeature("leads"))],
+)
+
+
+@support_router.get("/", summary="How to reach support directly")
+async def get_support_contact(
+    session: SessionDep, language: LanguageDep
+) -> SupportContactPublicOut:
+    return await service.get_support_contact_public(
+        session, requested=language.requested
+    )
+
+
+__all__ = ["router", "support_router", "topics_router"]

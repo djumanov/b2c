@@ -8,6 +8,7 @@ exactly two jobs: keep the message, and keep the panel's working state on it.
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
@@ -24,12 +25,15 @@ from app.api.listing import (
 from app.core import i18n
 from app.core.logging import get_logger
 from app.db.repository import get_live_or_404, live
-from app.modules.leads.models import Lead, SupportTopic
+from app.modules.leads.models import Lead, SupportContact, SupportTopic
 from app.modules.leads.schemas import (
     LeadAdminOut,
     LeadCreatedOut,
     LeadCreateIn,
     LeadUpdateIn,
+    SupportContactAdminOut,
+    SupportContactIn,
+    SupportContactPublicOut,
     SupportTopicAdminOut,
     SupportTopicIn,
     SupportTopicPublicOut,
@@ -206,15 +210,85 @@ async def list_topics_public(
     return items
 
 
+# --- support contact (API.md §25, §35) ---------------------------------------------
+
+
+async def _get_or_create_support_contact(session: AsyncSession) -> SupportContact:
+    """Singleton read, created on first ask — the same shape as
+    ``settings/repository.py``'s ``_singleton``, kept local since ``leads``
+    has no repository layer of its own yet."""
+    row = await session.scalar(select(SupportContact).limit(1))
+    if row is not None:
+        return row
+
+    await session.execute(
+        pg_insert(SupportContact)
+        .values(id=uuid.uuid4(), singleton=True, working_hours={})
+        .on_conflict_do_nothing()
+    )
+    created = await session.scalar(select(SupportContact).limit(1))
+    if created is None:  # pragma: no cover - the insert or a peer just made it
+        raise RuntimeError("leads_support_contact could not be initialised")
+    return created
+
+
+def _support_contact_out(row: SupportContact) -> SupportContactAdminOut:
+    return SupportContactAdminOut.model_validate(row)
+
+
+async def get_support_contact_admin(session: AsyncSession) -> SupportContactAdminOut:
+    return _support_contact_out(await _get_or_create_support_contact(session))
+
+
+async def update_support_contact(
+    session: AsyncSession, data: SupportContactIn
+) -> SupportContactAdminOut:
+    row = await _get_or_create_support_contact(session)
+    if data.support_username is not None:
+        row.support_username = data.support_username.strip() or None
+    if data.support_phone is not None:
+        row.support_phone = data.support_phone.strip() or None
+    if data.support_email is not None:
+        row.support_email = str(data.support_email)
+    if data.working_hours is not None:
+        row.working_hours = {**row.working_hours, **data.working_hours}
+    await session.commit()
+    await session.refresh(row)
+    return _support_contact_out(row)
+
+
+async def get_support_contact_public(
+    session: AsyncSession, *, requested: str | None
+) -> SupportContactPublicOut:
+    row = await _get_or_create_support_contact(session)
+    languages = await settings_service.get_languages(session)
+    resolved = i18n.resolve(
+        row.working_hours,
+        requested=requested,
+        default=languages.default,
+        available=languages.available,
+    )
+    return SupportContactPublicOut(
+        support_username=row.support_username,
+        support_phone=row.support_phone,
+        support_email=row.support_email,
+        working_hours=resolved.value,
+        working_hours_lang=resolved.lang,
+    )
+
+
 __all__ = [
     "create_lead",
     "create_topic",
     "delete_topic",
     "get_lead",
+    "get_support_contact_admin",
+    "get_support_contact_public",
     "get_topic",
     "list_leads",
     "list_topics_admin",
     "list_topics_public",
     "update_lead",
+    "update_support_contact",
     "update_topic",
 ]
