@@ -260,14 +260,37 @@ async def test_account_deletion_erases_the_cards_too(
 # --- listing -----------------------------------------------------------------------
 
 
-async def test_search_filters_by_last4_and_newest_comes_first(
-    api: AsyncClient, customer_headers: dict[str, str]
+async def test_search_filters_by_last4(
+    api: AsyncClient, session: AsyncSession, customer_headers: dict[str, str]
 ) -> None:
     first = await _saved(api, customer_headers)
     second = await _saved(api, customer_headers, number="4111111111111111")
 
     listed = await api.get(CARDS, headers=customer_headers)
-    assert [row["id"] for row in listed.json()["data"]] == [second["id"], first["id"]]
+    assert {row["id"] for row in listed.json()["data"]} == {first["id"], second["id"]}
 
     found = await api.get(CARDS, params={"search": "4608"}, headers=customer_headers)
     assert [row["id"] for row in found.json()["data"]] == [first["id"]]
+
+
+async def test_newest_card_comes_first(
+    api: AsyncClient, session: AsyncSession, customer_headers: dict[str, str]
+) -> None:
+    """Default ordering is ``-created_at`` (API.md §19).
+
+    Inside one test transaction ``now()`` is pinned, so the rows are nudged
+    apart explicitly — otherwise the order would fall to the id tiebreak and
+    the assertion would be about UUID luck.
+    """
+    first = await _saved(api, customer_headers)
+    second = await _saved(api, customer_headers, number="4111111111111111")
+    await session.execute(
+        text(
+            "UPDATE customer_cards SET created_at = created_at - interval '1 minute'"
+            " WHERE id = :id"
+        ),
+        {"id": first["id"]},
+    )
+
+    listed = await api.get(CARDS, headers=customer_headers)
+    assert [row["id"] for row in listed.json()["data"]] == [second["id"], first["id"]]

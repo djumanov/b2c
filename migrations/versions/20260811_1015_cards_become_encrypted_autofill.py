@@ -1,7 +1,7 @@
 """cards become encrypted autofill records
 
 Revision ID: a1c9f4e82d07
-Revises: 3f7a92c15d84
+Revises: 8c41d09e2b57
 Create Date: 2026-08-11 10:15:00.000000
 
 ⚠ **Destructive.** ``customer_cards`` is dropped and recreated: nearly every
@@ -27,7 +27,7 @@ from alembic import op
 
 
 revision: str = 'a1c9f4e82d07'
-down_revision: str | None = '3f7a92c15d84'
+down_revision: str | None = '8c41d09e2b57'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
