@@ -1089,6 +1089,7 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
 | `GET` | `/public/leads/topics/` | — | Murojaat mavzulari — forma uchun tanlov ro'yxati |
+| `GET` | `/public/leads/support/` | — | Support bilan to'g'ridan-to'g'ri bog'lanish ma'lumoti |
 | `POST` | `/public/leads/` | (✓) | Murojaat qoldirish — mavzu, xabar va aloqa ma'lumoti |
 | `POST` | `/public/feedbacks/` | ✓ | Sharh qoldirish — moderatsiyaga tushadi |
 | `GET` | `/public/feedbacks/my/` | ✓ | O'z sharhlarim va ularning holati |
@@ -1127,6 +1128,27 @@ aynan ko'rganicha — `POST /public/leads/` dagi `topic` maydonida yuboradi.
 Server matnni lug'atga solishtirmaydi (§19 dagi o'chirish sabablari bilan bir
 xil naqsh): murojaat kelgan matni bilan saqlanadi, mavzu keyin o'chirilsa ham
 tarix buzilmaydi.
+
+### Support bilan bog'lanish
+
+Murojaat formasi bilan bir ekranda ko'rsatiladigan, support'ga to'g'ridan-to'g'ri
+murojaat qilish ma'lumoti — Telegram, telefon, email va (ixtiyoriy) ish vaqti.
+Panel `/admin/leads/support/` orqali bitta yozuvni boshqaradi (§35);
+`site.support_phone`/`site.support_email` (§17, §28) dan farqli — bu ma'lumot
+faqat murojaat ekraniga tegishli va Telegram username'ni ham o'z ichiga oladi:
+
+```json
+GET /public/leads/support/?lang=ru
+→ { "status": "success",
+    "data": { "support_username": "@brand_support",
+      "support_phone": "+998901234567", "support_email": "support@brand.uz",
+      "working_hours": "Пн-Пт 09:00-18:00", "working_hours_lang": "ru" } }
+```
+
+Har bir maydon mustaqil ixtiyoriy: hech qachon to'ldirilmagan maydon `null`
+qaytadi — ilova uni ko'rsatmaydi. `working_hours` tarjima obyekti (§7), matn
+bitta tilga siqilib keladi va qaysi tilda kelgani `working_hours_lang` da
+ko'rsatiladi (`SupportTopic`dagi `lang` bilan bir xil naqsh).
 
 ---
 
@@ -1650,6 +1672,7 @@ POST /admin/customers/deletion-reasons/
 | `PATCH` | `/admin/leads/{id}/` | `admin` | `{status, note}` |
 | `GET` `POST` | `/admin/leads/topics/` | `admin` | Murojaat mavzulari lug'ati |
 | `GET` `PATCH` `DELETE` | `/admin/leads/topics/{id}/` | `admin` | Bitta mavzu |
+| `GET` `PATCH` | `/admin/leads/support/` | `admin` | Support bilan bog'lanish ma'lumoti |
 | `GET` | `/admin/subscriptions/` | `admin` | Obunachi'lar ro'yxati |
 | `GET` | `/admin/subscriptions/export/` | `admin` | CSV eksport (async) |
 
@@ -1679,6 +1702,27 @@ POST /admin/leads/topics/
   matni o'z holicha saqlangani uchun mavzu o'chirilsa ham tarix buzilmaydi.
 - Bo'lim `leads` bayrog'i ostida (§28): murojaatlar o'chirilgan o'rnatmada
   mavzular ham ikkala yuzada `404` beradi.
+
+### Support bilan bog'lanish
+
+Bitta yozuv (singleton, boshqa `settings/*` yozuvlari kabi): jadval yo'q,
+`GET` birinchi chaqiruvda yozuvni yaratadi, `PATCH` uni yangilaydi:
+
+```json
+PATCH /admin/leads/support/
+{ "support_username": "@brand_support", "support_phone": "+998901234567",
+  "support_email": "support@brand.uz",
+  "working_hours": { "uz": "Dush-Juma 09:00-18:00", "ru": "Пн-Пт 09:00-18:00" } }
+→ 200
+```
+
+- Barcha maydonlar ixtiyoriy va mustaqil: bo'sh satr yuborilsa maydon
+  tozalanadi, `null`/berilmagan maydon o'zgarishsiz qoladi (§8 dagi PATCH
+  naqshi, `settings.site` bilan bir xil).
+- `working_hours` tarjima obyekti (§7), `PATCH` tilma-til birlashtiradi —
+  bitta tilni yuborish qolganlarini o'chirmaydi (§30 bilan bir xil), lekin
+  bo'sh obyekt yuborish barcha tillarni tozalaydi (`name`dan farqli, bu maydon
+  butunlay ixtiyoriy).
 
 ---
 

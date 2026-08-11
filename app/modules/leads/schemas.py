@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.core.i18n import SUPPORTED_LANGUAGES, Translated
 from app.modules.leads.models import LeadStatus
@@ -103,11 +103,57 @@ class SupportTopicPublicOut(BaseModel):
     lang: str | None
 
 
+# --- support contact (API.md §25, §35) --------------------------------------------
+
+
+class SupportContactAdminOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    support_username: str | None
+    support_phone: str | None
+    support_email: str | None
+    working_hours: Translated
+    updated_at: datetime
+
+
+class SupportContactIn(BaseModel):
+    #: An empty string clears the field; ``None`` (omitted) leaves it alone —
+    #: the same PATCH semantics as ``settings.SiteIn``.
+    support_username: Annotated[str, Field(max_length=160)] | None = None
+    support_phone: Annotated[str, Field(max_length=32)] | None = None
+    support_email: EmailStr | None = None
+    #: Merged per language, like every translated PATCH (API.md §30). Unlike
+    #: ``SupportTopicIn.name``, this field is optional end to end, so an
+    #: all-empty object is allowed — it clears the hours rather than erroring.
+    working_hours: Translated | None = None
+
+    @field_validator("working_hours")
+    @classmethod
+    def _known_languages(cls, value: Translated | None) -> Translated | None:
+        if value is None:
+            return None
+        return {
+            lang: text for lang, text in value.items() if lang in SUPPORTED_LANGUAGES
+        }
+
+
+class SupportContactPublicOut(BaseModel):
+    support_username: str | None
+    support_phone: str | None
+    support_email: str | None
+    working_hours: str | None
+    #: The language ``working_hours`` actually came back in (API.md §7).
+    working_hours_lang: str | None
+
+
 __all__ = [
     "LeadAdminOut",
     "LeadCreateIn",
     "LeadCreatedOut",
     "LeadUpdateIn",
+    "SupportContactAdminOut",
+    "SupportContactIn",
+    "SupportContactPublicOut",
     "SupportTopicAdminOut",
     "SupportTopicIn",
     "SupportTopicPublicOut",

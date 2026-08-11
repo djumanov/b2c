@@ -18,6 +18,8 @@ from app.modules.leads import service
 from app.modules.leads.schemas import (
     LeadAdminOut,
     LeadUpdateIn,
+    SupportContactAdminOut,
+    SupportContactIn,
     SupportTopicAdminOut,
     SupportTopicIn,
     SupportTopicUpdateIn,
@@ -97,4 +99,25 @@ async def delete_topic(id: uuid.UUID, session: SessionDep) -> Response:
     return Response(status_code=204)
 
 
-__all__ = ["router", "topics_router"]
+# --- support contact (API.md §35) ---------------------------------------------------
+
+support_router = enveloped_router(
+    prefix="/leads/support",
+    tags=["leads"],
+    dependencies=[Depends(current_staff), Depends(RequireFeature("leads"))],
+)
+
+
+@support_router.get("/", summary="How to reach support directly")
+async def get_support_contact(session: SessionDep) -> SupportContactAdminOut:
+    return await service.get_support_contact_admin(session)
+
+
+@support_router.patch("/", summary="Change the support contact details")
+async def update_support_contact(
+    data: SupportContactIn, session: SessionDep
+) -> SupportContactAdminOut:
+    return await service.update_support_contact(session, data)
+
+
+__all__ = ["router", "support_router", "topics_router"]
