@@ -430,7 +430,7 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | 7b | `payments` yadrosi — jadvallar, o'qish endpointlari, admin ro'yxati | Provayder chaqiruvisiz, nol adapter bilan yashil |
 | 7c | Payme va Click adapterlari | Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13). ⚠ Pul birligi: Payme **tiyin**, Click **so'm** — ikkalasi ham pinlangan test bilan |
 | 7d | Redirect oqimi + webhook'lar | Takroriy callback ikki marta yechmaydi; imzo yomon bo'lsa holat o'zgarmaydi (`API.md` §40) |
-| 7e | **Saqlangan kartalar** — `customer_cards`, `/public/profile/cards/`, OTP mashinasi, `flow: card_token` | ⚠ PCI javobiga bog'liq (`PROJECT.md` §16.7). Karta raqami hech bir jadvalga tushmasligi **regressiya testi** bilan qo'riqlanadi |
+| 7e | **Saqlangan karta bilan to'lov** — checkout karta qadamini bazadagi shifrlangan raqamdan `reveal_card()` orqali to'ldiradi (§2.7) | Kartalarning o'zi 1-fazada oddiy CRUD sifatida qurilgan. Karta raqami **ochiq matnda** hech bir jadvalga tushmasligi **regressiya testi** bilan qo'riqlanadi |
 | 8 | `promo` minimal (§2.3) | To'lov summasiga ta'sir qiladi, shuning uchun shu yerda |
 | 9 | **`booking` sagasi** | Transactional outbox + Celery; eng yuqori xavfli modul |
 | 10 | `jobs` + `GET /admin/jobs/{id}/` | Async ish reyestri (`API.md` §9) |
@@ -445,8 +445,8 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | Qaytarish ham xato → `needs_attention` | shu yerda |
 | Takroriy webhook ikki marta yechmaydi | `tests/integration/test_webhooks.py` |
 | Takliflar hech qayerda saqlanmaydi (D2) | `tests/contract/test_search_passthrough.py` |
-| Saqlangan karta bilan to'lov ishlaydi | `tests/integration/test_card_token_checkout.py` |
-| Karta raqami hech bir jadvalda va hech bir logda yo'q | `tests/integration/test_card_pan_never_stored.py` — har jadvalning har matnli ustuni supuriladi |
+| Saqlangan karta bilan to'lov ishlaydi | `tests/integration/test_saved_card_checkout.py` |
+| Karta raqami **ochiq matnda** hech bir jadvalda va hech bir logda yo'q | `tests/integration/test_card_pan_never_stored.py` — har jadvalning har matnli ustuni supuriladi |
 
 **To'suvchi ochiq savollar.**
 
@@ -454,8 +454,7 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 |---|---|
 | `PROJECT.md` §16.3 — qisman qaytarish siyosati | 9-bo'lak (`refund/`) |
 | `ARCHITECTURE.md` §14 A9 — GTS qaysi `sort`/filtrni qo'llaydi | 5-bo'lak; javob kelmasa `API.md` §20 qisqartiriladi |
-| **`PROJECT.md` §16.7 — PCI SAQ D majburiyatini kim oladi** | **7e-bo'lak**. Javob "yo'q" bo'lsa kartalar provayderning o'z formasi orqali ro'yxatdan o'tadi; 7a–7d o'zgarmaydi |
-| Click'ning `card_token/*` API'si shu merchant akkauntda yoqilganmi | 7c-bo'lak. Yoqilmagan bo'lsa `ClickAdapter` `CardTokenProvider` ni implement qilmaydi va Click uchun karta so'rovi `404` — boshqa hech narsa o'zgarmaydi |
+| **`PROJECT.md` §16.7 — PCI SAQ D majburiyatini kim oladi** | Tijoriy javob hali ochiq; texnik qaror qabul qilingan (shifrlangan raqam saqlanadi, §2.7). Javob "yo'q" bo'lsa kartalar provayderning o'z formasi orqali ro'yxatdan o'tadi; 7a–7d o'zgarmaydi |
 
 ---
 

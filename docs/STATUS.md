@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/cms-fixed-page-endpoints`
+**Oxirgi yangilanish:** 2026-08-11 · `refactor/cards-autofill-simplify`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -77,6 +77,7 @@ kontrakt testlari.
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
 | `cms` (sahifalar) | Qat'iy uchlik — `privacy-policy`, `terms`, `about` — har biri o'z endpointi bilan (Swagger'da frontend/mobil ko'radi): admin `GET`/`PUT` (upsert, tillarni birlashtiradi) + publish/unpublish, public `GET`; draft ham yozilmagan ham bir xil `404`. Umumiy `pages/{slug}` CRUD olib tashlandi. Yadro — bayroqsiz (API.md §28) | 12 |
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
+| `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
 
 > Ustundagi son — **yo'llar** soni (jami — §1 dagi 77).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
