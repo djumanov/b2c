@@ -462,6 +462,33 @@ async def test_logout_needs_a_token_of_its_own(
     assert response.status_code == 401
 
 
+async def test_logout_cannot_end_someone_elses_session(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    """A valid access token only proves who the caller is, not that the
+    refresh token they present is theirs — a leaked one is not a way for
+    an unrelated, logged-in account to sign somebody else out."""
+    other = await make_customer(session, email="other@example.uz")
+    victim = (
+        await api.post(LOGIN, json={"login": customer.email, "password": PASSWORD})
+    ).json()["data"]
+    attacker = (
+        await api.post(LOGIN, json={"login": other.email, "password": PASSWORD})
+    ).json()["data"]
+
+    response = await api.post(
+        LOGOUT,
+        json={"refresh_token": victim["refresh_token"]},
+        headers=bearer(attacker["access_token"]),
+    )
+    assert response.status_code == 403
+
+    # The victim's session survives the attempt.
+    assert (
+        await api.post(REFRESH, json={"refresh_token": victim["refresh_token"]})
+    ).status_code == 200
+
+
 # --- what the row decides, not the claim ---------------------------------------------
 
 

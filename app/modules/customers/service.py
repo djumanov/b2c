@@ -703,9 +703,18 @@ async def refresh_session(
     return pair
 
 
-async def logout(session: AsyncSession, refresh_token: str) -> None:
-    """Revoke one session. Idempotent — logging out twice is not an error."""
+async def logout(
+    session: AsyncSession, customer_id: uuid.UUID, refresh_token: str
+) -> None:
+    """Revoke one session. Idempotent — logging out twice is not an error.
+
+    ``customer_id`` is the access token's subject: the caller proves the
+    session is theirs before it is ended, so a leaked refresh token is not
+    also a way to sign somebody else out (API.md §18).
+    """
     claims = _decode_refresh(refresh_token)
+    if claims.subject_id != customer_id:
+        raise Forbidden("This refresh token does not belong to you")
     stored = await repository.token_by_jti(session, claims.jti)
     if stored is not None and not stored.is_revoked:
         stored.revoked_at = utcnow()

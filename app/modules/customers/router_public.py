@@ -13,7 +13,7 @@ while the sign-in itself is an account question and so belongs to this module.
 
 from fastapi import Depends, Request, Response
 
-from app.api.deps import RateLimit, client_ip, current_customer
+from app.api.deps import CurrentCustomer, RateLimit, client_ip
 from app.api.envelope import enveloped_router
 from app.db.session import SessionDep
 from app.modules.customers import service
@@ -124,11 +124,12 @@ async def social_login(
     # API.md §18 marks this one ✓: the caller proves the session is theirs
     # before it is ended, so a leaked refresh token is not also a way to sign
     # somebody out.
-    dependencies=[Depends(current_customer)],
     summary="Revoke this refresh token",
 )
-async def logout(data: RefreshIn, session: SessionDep) -> Response:
-    await service.logout(session, data.refresh_token)
+async def logout(
+    data: RefreshIn, customer: CurrentCustomer, session: SessionDep
+) -> Response:
+    await service.logout(session, customer.id, data.refresh_token)
     return Response(status_code=204)
 
 
