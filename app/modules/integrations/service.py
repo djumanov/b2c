@@ -736,10 +736,6 @@ async def enabled_payment_methods(session: AsyncSession) -> list[dict[str, Any]]
             "code": row.code.value,
             "title": row.title,
             "logo_url": await uploads_service.url_for(session, row.logo_id),
-            # A capability of the adapter, not a setting: whether a provider has
-            # a card-token API is something the code knows and the panel does
-            # not (API.md §17).
-            "supports_saved_cards": payments_registry.supports_cards(row.code.value),
         }
         for row in await repository.payment_providers(session)
         if row.enabled

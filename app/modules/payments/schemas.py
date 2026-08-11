@@ -11,28 +11,22 @@ back out.
 import re
 import uuid
 from datetime import datetime
-from typing import Annotated
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
-
-from app.providers.payments.base import CardStatus, PaymentProviderCode
+from pydantic import BaseModel, SecretStr, field_validator
 
 #: A card number is 13–19 digits (ISO/IEC 7812). Spaces and dashes are stripped
 #: before this is applied — people paste what is printed on the card.
 _DIGITS = re.compile(r"\d{13,19}$")
 _SEPARATORS = re.compile(r"[\s-]")
-#: ``MMYY``, which is what both providers ask for.
+#: ``MMYY``, which is what the payment forms use.
 _EXPIRE = re.compile(r"(0[1-9]|1[0-2])\d{2}$")
-
-CardLabel = Annotated[str, Field(min_length=1, max_length=64)]
 
 
 def _luhn_ok(number: str) -> bool:
     """The check digit every card carries.
 
-    Cheap, and it turns the commonest typo into a ``422`` from us instead of a
-    round trip that spends the installation's merchant credentials to be told
-    the same thing.
+    Cheap, and it turns the commonest typo into a ``422`` before anything is
+    stored.
     """
     total, odd = 0, False
     for char in reversed(number):
@@ -52,18 +46,11 @@ class CardOut(BaseModel):
     model_config = {"from_attributes": True}
 
     id: uuid.UUID
-    provider: PaymentProviderCode
-    status: CardStatus
     masked_pan: str
     last4: str
     brand: str | None
-    expiry_month: int | None
-    expiry_year: int | None
-    label: str | None
-    is_default: bool
-    #: Both are filled only while ``status`` is ``pending_verification``.
-    otp_sent_to: str | None = None
-    otp_expires_at: datetime | None = None
+    expiry_month: int
+    expiry_year: int
     last_used_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -78,10 +65,8 @@ class CardCreateIn(BaseModel):
     #: regression test pins this.
     model_config = {"extra": "forbid", "hide_input_in_errors": True}
 
-    provider: PaymentProviderCode
     number: SecretStr
     expire: SecretStr
-    label: CardLabel | None = None
 
     @field_validator("number")
     @classmethod
@@ -104,28 +89,7 @@ class CardCreateIn(BaseModel):
         return SecretStr(expire)
 
 
-class CardUpdateIn(BaseModel):
-    """``PATCH`` takes the label and nothing else — the rest is the provider's."""
-
-    model_config = {"extra": "forbid"}
-
-    label: CardLabel | None = None
-
-
-class CardVerifyIn(BaseModel):
-    #: Same reason as ``CardCreateIn`` — a rejected code should not be echoed
-    #: into a log line either.
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
-
-    #: Length is not pinned: the code is the provider's, and both of them have
-    #: changed it before. An empty string is still not a code.
-    code: Annotated[str, Field(min_length=1, max_length=16)]
-
-
 __all__ = [
     "CardCreateIn",
-    "CardLabel",
     "CardOut",
-    "CardUpdateIn",
-    "CardVerifyIn",
 ]

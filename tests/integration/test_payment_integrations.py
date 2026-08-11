@@ -263,10 +263,6 @@ async def test_an_enabled_provider_reaches_site_config(
             "code": "payme",
             "title": "Payme",
             "logo_url": None,
-            # A capability of the adapter, not a setting (API.md §17). False
-            # here because no adapter is registered yet — the site therefore
-            # does not offer to save a card it could not save.
-            "supports_saved_cards": False,
         }
     ]
 

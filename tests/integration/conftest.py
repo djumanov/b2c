@@ -25,9 +25,8 @@ start of every run.
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -54,19 +53,6 @@ from app.modules.customers.models import Customer
 from app.modules.staff.models import Staff
 from app.providers.notifications import set_notifier
 from app.providers.notifications.base import Channel
-from app.providers.payments import clear_overrides as clear_payment_overrides
-from app.providers.payments import set_provider as set_payment_provider
-from app.providers.payments.base import (
-    CallbackResult,
-    CardCredentials,
-    ChargeResult,
-    PaymentProviderCode,
-    ProviderCheck,
-    RefundResult,
-    RefundStatus,
-    RegisteredCard,
-    TransactionStatus,
-)
 from app.providers.storage import set_storage
 from app.providers.storage.local import LocalStorage
 from tests.conftest import bearer, issue_token
@@ -354,135 +340,10 @@ def notifier() -> Iterator[RecordingNotifier]:
     set_notifier(None)
 
 
-# --- payment provider fixtures -------------------------------------------------
+# --- card test data -------------------------------------------------------------
 
-
-#: The code every fake card provider answers, so a test does not have to say it
-#: twice. Payme rather than Click because Click's card API is a per-merchant
-#: add-on and may legitimately be absent (API.md §29).
-CARD_PROVIDER = PaymentProviderCode.PAYME
 
 #: A test card. Luhn-valid, and one of the numbers the schemes publish for
 #: exactly this purpose — never a real PAN, not even a retired one.
 TEST_CARD_NUMBER = "8600490744664608"
 TEST_CARD_EXPIRE = "0329"
-
-
-@dataclass
-class FakeCardProvider:
-    """Stands in for Payme's Subscribe API.
-
-    Structural rather than a subclass, the reason ``RecordingNotifier`` gives.
-    It records the numbers it is handed so a test can prove the card reached
-    the adapter and stopped there.
-    """
-
-    code: PaymentProviderCode = CARD_PROVIDER
-    #: The confirmation code this fake will accept.
-    expected_code: str = "123456"
-    #: Cards the provider currently holds, by token.
-    tokens: dict[str, str] = field(default_factory=dict)
-    #: Every number handed over, so a test can assert where it did *not* go.
-    seen_numbers: list[str] = field(default_factory=list)
-    removed: list[str] = field(default_factory=list)
-    #: Set to make ``register_card`` hand back an already-confirmed card.
-    registers_verified: bool = False
-    _next: int = 0
-
-    def _registered(self, token: str, *, verified: bool) -> RegisteredCard:
-        number = self.tokens[token]
-        return RegisteredCard(
-            token=token,
-            masked_pan=f"{number[:6]}******{number[-4:]}",
-            last4=number[-4:],
-            bin=number[:6],
-            brand="uzcard",
-            expiry_month=3,
-            expiry_year=2029,
-            verified=verified,
-            otp_sent_to=None if verified else "+9989**1234",
-            otp_wait_seconds=None,
-        )
-
-    async def register_card(
-        self, card: CardCredentials, *, save: bool = True
-    ) -> RegisteredCard:
-        self.seen_numbers.append(card.number)
-        self._next += 1
-        token = f"tok-{self._next}"
-        self.tokens[token] = card.number
-        return self._registered(token, verified=self.registers_verified)
-
-    async def request_card_code(self, *, token: str) -> RegisteredCard:
-        return self._registered(token, verified=False)
-
-    async def verify_card(self, *, token: str, code: str) -> RegisteredCard:
-        return self._registered(token, verified=code == self.expected_code)
-
-    async def remove_card(self, *, token: str) -> None:
-        self.removed.append(token)
-        self.tokens.pop(token, None)
-
-    async def charge_card(
-        self,
-        *,
-        token: str,
-        order_id: str,
-        amount: Decimal,
-        currency: str,
-        reference: str,
-    ) -> ChargeResult:
-        return ChargeResult(status=TransactionStatus.PAID, provider_ref=f"rcp-{token}")
-
-    # --- the redirect half of the port, unused by the card tests ---
-
-    async def create_payment(
-        self, *, order_id: str, amount: Decimal, currency: str, return_url: str
-    ) -> str:
-        return "https://example.invalid/pay"
-
-    def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
-        return True
-
-    async def handle_callback(
-        self, headers: Mapping[str, str], body: bytes
-    ) -> CallbackResult:
-        return CallbackResult(body={})
-
-    async def refund(
-        self, *, transaction_ref: str, amount: Decimal | None = None
-    ) -> RefundResult:
-        return RefundResult(status=RefundStatus.SUCCEEDED)
-
-    async def status(self, *, transaction_ref: str) -> ChargeResult:
-        return ChargeResult(status=TransactionStatus.PAID)
-
-    async def verify(self) -> ProviderCheck:
-        return ProviderCheck(ok=True)
-
-
-@dataclass
-class FakeHostedProvider(FakeCardProvider):
-    """A provider with **no** card API — everything card-shaped is a 404.
-
-    Inherits the redirect half and drops the five card methods, which is what
-    makes ``isinstance(adapter, CardTokenProvider)`` false. This is the shape
-    Click takes when its card-token contract is not enabled.
-    """
-
-    code: PaymentProviderCode = PaymentProviderCode.CLICK
-
-    register_card = None  # type: ignore[assignment]
-    request_card_code = None  # type: ignore[assignment]
-    verify_card = None  # type: ignore[assignment]
-    remove_card = None  # type: ignore[assignment]
-    charge_card = None  # type: ignore[assignment]
-
-
-@pytest.fixture
-def card_provider() -> Iterator[FakeCardProvider]:
-    """Pin a card-capable provider, and take the pin away afterwards."""
-    fake = FakeCardProvider()
-    set_payment_provider(CARD_PROVIDER, fake)
-    yield fake
-    clear_payment_overrides()

@@ -892,8 +892,8 @@ async def delete_account(
     for passenger in await repository.live_passengers_for(session, customer.id):
         passenger.soft_delete()
     # A service call, not a cascade: ``customer_cards`` belongs to ``payments``
-    # and carries no foreign key back here (ARCHITECTURE.md §4, §5). It also has
-    # to reach the provider, which no database constraint could do.
+    # and carries no foreign key back here (ARCHITECTURE.md §4, §5). It also
+    # erases the encrypted number, which a bare cascade would not.
     await payments_service.forget_cards(session, customer.id)
 
     customer.email = f"deleted-{customer.id}@invalid"

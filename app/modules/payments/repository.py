@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repository import live
 from app.modules.payments.models import CustomerCard
-from app.providers.payments.base import CardStatus
 
 
 def owned_cards(customer_id: uuid.UUID) -> Select[tuple[CustomerCard]]:
@@ -40,35 +39,8 @@ async def live_cards_for(
     return rows.all()
 
 
-async def current_default(
-    session: AsyncSession, customer_id: uuid.UUID
-) -> CustomerCard | None:
-    """The card marked default, if there is one.
-
-    Read before setting a new one so the old flag is cleared in the same
-    transaction — the partial unique index refuses two, and a failed insert is
-    a worse answer than a correct swap.
-    """
-    row: CustomerCard | None = await session.scalar(
-        owned_cards(customer_id).where(CustomerCard.is_default)
-    )
-    return row
-
-
-async def active_cards_for(
-    session: AsyncSession, customer_id: uuid.UUID
-) -> Sequence[CustomerCard]:
-    """Cards that can actually be charged."""
-    rows = await session.scalars(
-        owned_cards(customer_id).where(CustomerCard.status == CardStatus.ACTIVE)
-    )
-    return rows.all()
-
-
 __all__ = [
-    "active_cards_for",
     "card_by_id",
-    "current_default",
     "live_cards_for",
     "owned_cards",
 ]

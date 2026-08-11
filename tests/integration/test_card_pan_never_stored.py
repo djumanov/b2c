@@ -1,10 +1,17 @@
-"""The card number reaches the adapter and stops — PROJECT.md §13, D7.
+"""The card number is stored encrypted and nowhere else — PROJECT.md §13, D7.
 
-This is the regression test the whole saved-card design exists to pass, so it
-does not check the columns we happen to have written. It sweeps
+This is the regression test the saved-card design exists to pass, so it does
+not check the columns we happen to have written. It sweeps
 ``information_schema`` and asserts the number is absent from **every** text-ish
 column of **every** table — which is the form that still holds after somebody
-adds a column next year without reading this file.
+adds a column next year without reading this file. The ciphertext passes the
+sweep by construction: AES-GCM output is base64 and cannot contain the digit
+substring. A companion test in ``test_saved_cards.py`` proves the number *is*
+there, encrypted — stored-but-sealed, not simply absent.
+
+The rest pins the leak paths around the row: log lines, ``repr``/``str``/
+``model_dump``, a ``ValidationError`` echoing its input, the redaction map, and
+the OpenAPI schema.
 """
 
 import structlog
@@ -16,11 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import redact
 from app.modules.customers.models import Customer
 from app.modules.payments.schemas import CardCreateIn
-from app.providers.payments.base import CardCredentials
+from app.modules.payments.service import CardSecret
 from tests.integration.conftest import (
     TEST_CARD_EXPIRE,
     TEST_CARD_NUMBER,
-    FakeCardProvider,
     customer_headers_for,
 )
 
@@ -36,48 +42,36 @@ _FORBIDDEN = (
 _TEXT_TYPES = ("character varying", "text", "character", "json", "jsonb")
 
 
-async def _run_the_whole_flow(
-    api: AsyncClient, headers: dict[str, str], card_provider: FakeCardProvider
-) -> None:
+async def _run_the_whole_flow(api: AsyncClient, headers: dict[str, str]) -> None:
     created = await api.post(
         CARDS,
-        json={
-            "provider": "payme",
-            "number": TEST_CARD_NUMBER,
-            "expire": TEST_CARD_EXPIRE,
-            "label": "Asosiy",
-        },
+        json={"number": TEST_CARD_NUMBER, "expire": TEST_CARD_EXPIRE},
         headers=headers,
     )
     assert created.status_code == 201, created.text
-    card_id = created.json()["data"]["id"]
-
-    verified = await api.post(
-        f"{CARDS}{card_id}/verify/",
-        json={"code": card_provider.expected_code},
-        headers=headers,
-    )
-    assert verified.status_code == 200, verified.text
 
     # And a failing path too — an exception carries different things than a
-    # success does.
-    await api.post(
+    # success does. The duplicate save raises through the IntegrityError branch.
+    duplicate = await api.post(
         CARDS,
-        json={"provider": "payme", "number": TEST_CARD_NUMBER, "expire": "0329"},
+        json={"number": TEST_CARD_NUMBER, "expire": TEST_CARD_EXPIRE},
         headers=headers,
     )
+    assert duplicate.status_code == 422, duplicate.text
 
 
-async def test_the_number_is_in_no_column_of_no_table(
+async def test_the_number_is_in_no_column_of_no_table_in_the_clear(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
-    card_provider: FakeCardProvider,
 ) -> None:
-    await _run_the_whole_flow(api, customer_headers_for(customer), card_provider)
+    await _run_the_whole_flow(api, customer_headers_for(customer))
 
-    # It really did reach the adapter — otherwise this test proves nothing.
-    assert card_provider.seen_numbers == [TEST_CARD_NUMBER, TEST_CARD_NUMBER]
+    # The card really was written — otherwise this sweep proves nothing.
+    stored = (
+        await session.execute(text("SELECT count(*) FROM customer_cards"))
+    ).scalar()
+    assert stored == 1
 
     columns = (
         await session.execute(
@@ -104,16 +98,15 @@ async def test_the_number_is_in_no_column_of_no_table(
         if found is not None:
             hits.append(f"{table_name}.{column_name}")
 
-    assert hits == [], f"the card number was written to: {', '.join(hits)}"
+    assert hits == [], f"the card number was written in the clear to: {', '.join(hits)}"
 
 
 async def test_the_number_is_in_no_log_line(
     api: AsyncClient,
     customer: Customer,
-    card_provider: FakeCardProvider,
 ) -> None:
     with structlog.testing.capture_logs() as captured:
-        await _run_the_whole_flow(api, customer_headers_for(customer), card_provider)
+        await _run_the_whole_flow(api, customer_headers_for(customer))
 
     assert captured, "nothing was logged — the sweep would pass vacuously"
     rendered = str(captured)
@@ -123,14 +116,13 @@ async def test_the_number_is_in_no_log_line(
 
 def test_the_schema_hides_the_number_from_every_accidental_printer() -> None:
     data = CardCreateIn(
-        provider="payme",  # type: ignore[arg-type]
         number=TEST_CARD_NUMBER,  # type: ignore[arg-type]
         expire=TEST_CARD_EXPIRE,  # type: ignore[arg-type]
     )
     assert TEST_CARD_NUMBER not in repr(data)
     assert TEST_CARD_NUMBER not in str(data)
     assert TEST_CARD_NUMBER not in str(data.model_dump())
-    # Only ``get_secret_value`` gets at it, and it is called exactly once.
+    # Only ``get_secret_value`` gets at it.
     assert data.number.get_secret_value() == TEST_CARD_NUMBER
 
 
@@ -139,7 +131,6 @@ def test_a_validation_error_does_not_quote_the_number() -> None:
     bad = TEST_CARD_NUMBER[:-1] + "0"  # right length, wrong check digit
     try:
         CardCreateIn(
-            provider="payme",  # type: ignore[arg-type]
             number=bad,  # type: ignore[arg-type]
             expire=TEST_CARD_EXPIRE,  # type: ignore[arg-type]
         )
@@ -149,16 +140,16 @@ def test_a_validation_error_does_not_quote_the_number() -> None:
         raise AssertionError("expected a validation error")
 
 
-def test_the_credentials_dataclass_does_not_print_itself() -> None:
-    card = CardCredentials(number=TEST_CARD_NUMBER, expire=TEST_CARD_EXPIRE)
-    assert TEST_CARD_NUMBER not in repr(card)
-    assert repr(card) == "CardCredentials(last4='4608')"
+def test_the_revealed_secret_does_not_print_itself() -> None:
+    """``reveal_card``'s result is headed for a provider — never for a log."""
+    secret = CardSecret(number=TEST_CARD_NUMBER, expire=TEST_CARD_EXPIRE)
+    assert TEST_CARD_NUMBER not in repr(secret)
+    assert repr(secret) == "CardSecret(last4='4608')"
 
 
 def test_redaction_covers_the_card_keys_but_not_code() -> None:
     assert redact({"number": TEST_CARD_NUMBER})["number"] == "[redacted]"
     assert redact({"expire": "0329"})["expire"] == "[redacted]"
-    assert redact({"card_token": "tok-1"})["card_token"] == "[redacted]"
     # Deliberately *not* redacted — see the comment in ``core/logging.py``.
     # ``code`` is the provider code, the error code and the notifier's template
     # key; blanking it would empty half the journal.
