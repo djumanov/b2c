@@ -113,6 +113,23 @@ class PagePublicOut(BaseModel):
     updated_at: datetime
 
 
+class SocialLinkOut(BaseModel):
+    name: str
+    link: str
+
+
+class AboutPageOut(PagePublicOut):
+    """ "About" with the company contact details the admin enters once in
+    ``/admin/settings/site/`` — not page content, asked from the settings
+    module through its service (API.md §30, ARCHITECTURE.md §4).
+    """
+
+    company_name: str | None
+    company_email: str | None
+    company_website: str | None
+    social_media: list[SocialLinkOut]
+
+
 # --- reorder ---------------------------------------------------------------------
 
 
@@ -122,6 +139,7 @@ class ReorderItemIn(BaseModel):
 
 
 __all__ = [
+    "AboutPageOut",
     "FaqAdminOut",
     "FaqIn",
     "FaqPublicOut",
@@ -130,4 +148,5 @@ __all__ = [
     "PageAdminOut",
     "PagePublicOut",
     "ReorderItemIn",
+    "SocialLinkOut",
 ]

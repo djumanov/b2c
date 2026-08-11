@@ -29,6 +29,7 @@ from app.db.repository import get_live_or_404, live
 from app.modules.cms.models import ContentStatus, Faq
 from app.modules.cms.models import Page as PageModel
 from app.modules.cms.schemas import (
+    AboutPageOut,
     FaqAdminOut,
     FaqIn,
     FaqPublicOut,
@@ -37,6 +38,7 @@ from app.modules.cms.schemas import (
     PageAdminOut,
     PagePublicOut,
     ReorderItemIn,
+    SocialLinkOut,
 )
 from app.modules.settings import service as settings_service
 
@@ -300,10 +302,41 @@ async def get_page_public(
     )
 
 
+async def get_about_page_public(
+    session: AsyncSession, *, requested: str | None
+) -> AboutPageOut:
+    """ "About", plus the company contact details (API.md §24, §30).
+
+    Company name, email, website and social links are not page content — the
+    admin enters them once in ``/admin/settings/site/`` and this asks the
+    settings module for the answer rather than keeping its own copy
+    (ARCHITECTURE.md §4).
+    """
+    page = await get_page_public(session, "about", requested=requested)
+    site = await settings_service.get_site(session)
+    languages = await settings_service.get_languages(session)
+    company_name = i18n.resolve_value(
+        site.name,
+        requested=requested,
+        default=languages.default,
+        available=languages.available,
+    )
+    return AboutPageOut(
+        **page.model_dump(),
+        company_name=company_name,
+        company_email=site.support_email,
+        company_website=site.domain,
+        social_media=[
+            SocialLinkOut(name=name, link=link) for name, link in site.social.items()
+        ],
+    )
+
+
 __all__ = [
     "FIXED_PAGE_SLUGS",
     "create_faq",
     "delete_faq",
+    "get_about_page_public",
     "get_faq",
     "get_fixed_page_admin",
     "get_page_public",

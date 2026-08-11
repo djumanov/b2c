@@ -108,6 +108,45 @@ async def test_admin_routes_refuse_a_customer_token(
     ).status_code == 403
 
 
+async def test_about_carries_company_contact_details(
+    api: AsyncClient, admin: Staff
+) -> None:
+    """ "About" folds in what the admin entered under ``/admin/settings/site/``.
+
+    Not page content — asked from the settings module through its service
+    (API.md §30, §17).
+    """
+    headers = headers_for(admin)
+    await _put(api, headers, page="about")
+    await api.post(f"{ADMIN_URL}about/publish/", headers=headers)
+
+    site = await api.patch(
+        "/api/v1/admin/settings/site/",
+        headers=headers,
+        json={
+            "name": {"uz": "GTS Sayohat"},
+            "support_email": "info@gts.uz",
+            "domain": "gts.uz",
+            "social": {
+                "instagram": "https://instagram.com/gts",
+                "telegram": "https://t.me/gts",
+            },
+        },
+    )
+    assert site.status_code == 200, site.text
+
+    about = await api.get(f"{PUBLIC_URL}about/")
+    assert about.status_code == 200
+    data = about.json()["data"]
+    assert data["company_name"] == "GTS Sayohat"
+    assert data["company_email"] == "info@gts.uz"
+    assert data["company_website"] == "gts.uz"
+    assert {"name": "instagram", "link": "https://instagram.com/gts"} in data[
+        "social_media"
+    ]
+    assert {"name": "telegram", "link": "https://t.me/gts"} in data["social_media"]
+
+
 async def test_pages_ignore_feature_flags(
     api: AsyncClient, owner: Staff, admin: Staff
 ) -> None:

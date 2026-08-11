@@ -1077,7 +1077,7 @@ Hammasi auth talab qilmaydi. `?lang=` bilan til tanlanadi (§7).
 | `GET` | `/public/content/contacts/` | Ofis va kontakt nuqtalari |
 | `GET` | `/public/content/privacy-policy/` | Maxfiylik siyosati — markdown tana (§30) |
 | `GET` | `/public/content/terms/` | Foydalanish shartlari — markdown tana (§30) |
-| `GET` | `/public/content/about/` | Biz haqimizda — markdown tana (§30) |
+| `GET` | `/public/content/about/` | Biz haqimizda — markdown tana + kompaniya kontaktlari (§30) |
 | `GET` | `/public/content/banners/` | `?placement=` |
 | `GET` | `/public/content/popular-directions/` | Bosh sahifadagi yo'nalishlar |
 | `GET` | `/public/content/feedbacks/` | Chop etilgan sharhlar |
@@ -1525,8 +1525,14 @@ yurmaydi:
 ixtiyoriy, lekin yaratishda kamida bitta tilda qiymat bo'lishi shart (`422`).
 `body` — har til bo'yicha **markdown** matn: `{ "uz": "# Sarlavha…", "ru": "…" }`.
 Konstruktor yo'q — render klient tomonda. Yozilmagan yoki chop etilmagan sahifa
-public'da `404` qaytaradi. "Biz haqimizda" sahifasi kompaniya matnini beradi;
-ijtimoiy tarmoq havolalari esa `site-config` dagi `site.social` dan olinadi (§17).
+public'da `404` qaytaradi.
+
+`GET /public/content/about/` markdown tanadan tashqari kompaniya kontaktlarini
+ham qaytaradi: `company_name`, `company_email`, `company_website`,
+`social_media: [{name, link}]`. Bu maydonlar sahifa kontenti emas — admin
+ularni bir marta `/admin/settings/site/` orqali kiritadi (§28), `site.name`,
+`site.support_email`, `site.domain`, `site.social` dan olinadi (§17) va
+"about" endpointi ularni qayta ko'rsatadi.
 
 ### Sharh moderatsiyasi
 

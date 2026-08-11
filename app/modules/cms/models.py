@@ -55,8 +55,9 @@ class Page(Entity):
     Each page has its own route on both surfaces (API.md §24, §30); the slug
     column keys the row behind them. Rows are not seeded: the first admin PUT
     creates one, and a page never written or not published answers 404
-    publicly. Social links are not page content — they live in the site
-    settings and ride out in ``site-config`` (API.md §17).
+    publicly. Company contact details (name, email, website, social links) are
+    not page content either — they live in the site settings and are folded
+    into the public "about" response by the service layer (API.md §30, §17).
     """
 
     __tablename__ = "pages"
