@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-11 · `refactor/cards-autofill-simplify`
+**Oxirgi yangilanish:** 2026-08-11 · `feat/support-topics`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
-| Endpointlar | 77 ta yo'l / 108 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 22 ta + `alembic_version` |
-| Migratsiyalar | 19 ta, bitta head (`cdac5166fee1`) |
-| Testlar | 644 ta — unit 20 fayl · contract 7 · integration 24 |
+| Endpointlar | 80 ta yo'l / 114 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 23 ta + `alembic_version` |
+| Migratsiyalar | 21 ta, bitta head (`8c41d09e2b57`) |
+| Testlar | 661 ta — unit 20 fayl · contract 7 · integration 26 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -77,6 +77,7 @@ kontrakt testlari.
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
 | `cms` (sahifalar) | Qat'iy uchlik — `privacy-policy`, `terms`, `about` — har biri o'z endpointi bilan (Swagger'da frontend/mobil ko'radi): admin `GET`/`PUT` (upsert, tillarni birlashtiradi) + publish/unpublish, public `GET`; draft ham yozilmagan ham bir xil `404`. Umumiy `pages/{slug}` CRUD olib tashlandi. Yadro — bayroqsiz (API.md §28) | 12 |
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
+| `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
 | `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
 
 > Ustundagi son — **yo'llar** soni (jami — §1 dagi 77).
@@ -90,7 +91,7 @@ kontrakt testlari.
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
 `email_otps`, `passengers`, `payment_providers`, `social_credentials`,
-`customer_cards`, `faqs`, `pages`, `leads`.
+`customer_cards`, `faqs`, `pages`, `leads`, `support_topics`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -236,6 +237,7 @@ tug'ilmasligi uchun.
 | 71 | `DELETE /public/profile/` **parol emas, sabab so'raydi** — №45 bekor: token o'chirishga yetarli, tana `{reasons: [matn…]}` va u **majburiy** | Mahsulot qarori: ketayotgan mijozdan parol emas, sabab qimmat. Matnlar mijoz ko'rgan tilda **aynan kelganicha** saqlanadi, lug'atga solishtirilmaydi — shuning uchun sabab keyin tahrirlangan yoki o'chirilgani tarixni buzmaydi. `DELETE` tanasi haqidagi `httpx` ogohlantirishi kuchda qoladi |
 | 72 | `deleted_customers` — o'chirishdan **oldingi to'liq shaxsiy nusxa** + sabablar, FK'siz, faqat qo'shiladigan jadval | Jonli qator baribir tozalanadi (PROJECT.md §13 saqlanib qoldi), lekin biznes kimlar va nima uchun ketganini ko'rishi kerak. FK yo'q: arxiv hech nimaga bog'lanmaydi va hech nima uni kaskadda o'chira olmaydi. Hech bir API qaytarmaydi; saqlash muddati — §16 dagi ochiq savollar qatorida |
 | 73 | `deletion_reasons` lug'ati — `text` JSONB + `sort_order`, **holatsiz va bayroqsiz** | FAQ'dagi draft/publish tahririy ehtiyoj uchun edi; besh qatorlik lug'atga yashirish = soft delete yetadi. O'chirish oqimini o'chirib bo'lmagani uchun uning lug'atiga `RequireFeature` ham ma'nosiz |
+| 74 | `support_topics` — murojaat formasining mavzu lug'ati, №73 naqshida (`name` JSONB + `sort_order`, holatsiz); murojaat **matnni** saqlaydi, `topic_id` emas | Klient tanlangan mavzuning siqilgan matnini mavjud `topic` maydonida yuboradi — lead kontrakti o'zgarmadi, №71 dagi verbatim tamoyili takrorlanadi. Bu G1 ni bekor qilmaydi: sxema emas, tanlov ro'yxati xolos. `leads` moduli ichida, `leads` bayrog'i ostida |
 
 ---
 
