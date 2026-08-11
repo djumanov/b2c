@@ -14,6 +14,8 @@ from typing import Annotated, Final
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.core.i18n import SUPPORTED_LANGUAGES, Translated
+
 #: A floor, not a policy (PROJECT.md §7): below this the argon2 hash stops
 #: being the thing that protects the account.
 MIN_PASSWORD_LENGTH: Final = 8
@@ -155,10 +157,82 @@ class PasswordChangeIn(BaseModel):
 
 
 class AccountDeleteIn(BaseModel):
-    """The password, again. See API.md §19 — this is the one irreversible
-    thing a customer token can do, so holding the token is not enough."""
+    """Why the customer is leaving — mandatory and verbatim (API.md §19).
 
-    password: str
+    The texts arrive as the customer read them, in whatever language that was,
+    and are never checked against the ``deletion_reasons`` dictionary — only
+    bounded. No password: the token is enough (STATUS.md №71 reversed №45).
+    """
+
+    reasons: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=500)]],
+        Field(min_length=1, max_length=20),
+    ]
+
+    @field_validator("reasons")
+    @classmethod
+    def _no_blank_reasons(cls, value: list[str]) -> list[str]:
+        stripped = [reason.strip() for reason in value]
+        if not all(stripped):
+            raise ValueError("a reason must not be blank")
+        return stripped
+
+
+# --- deletion reasons (API.md §19, §34) --------------------------------------------
+
+
+def _check_translated(value: Translated) -> Translated:
+    """The cms module's rule, repeated: schemas are not a module's ``service``
+    door, so importing it from there would cross the one line ARCHITECTURE.md
+    draws."""
+    filtered = {
+        lang: text for lang, text in value.items() if lang in SUPPORTED_LANGUAGES
+    }
+    if not any(text.strip() for text in filtered.values()):
+        raise ValueError(
+            "at least one language must have a value; "
+            f"this release serves {', '.join(SUPPORTED_LANGUAGES)}"
+        )
+    return filtered
+
+
+class DeletionReasonIn(BaseModel):
+    text: Translated
+    #: Omitted means "append at the end" — the service picks max + 1.
+    sort_order: int | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _known_languages(cls, value: Translated) -> Translated:
+        return _check_translated(value)
+
+
+class DeletionReasonUpdateIn(BaseModel):
+    #: Merged per language, like every translated PATCH (API.md §30).
+    text: Translated | None = None
+    sort_order: int | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _known_languages(cls, value: Translated | None) -> Translated | None:
+        return None if value is None else _check_translated(value)
+
+
+class DeletionReasonAdminOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    text: Translated
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class DeletionReasonPublicOut(BaseModel):
+    id: uuid.UUID
+    text: str
+    #: The language the text actually came back in (API.md §7).
+    lang: str | None
 
 
 # --- saved passengers (API.md §19) ------------------------------------------------
@@ -237,6 +311,10 @@ __all__ = [
     "MIN_PASSWORD_LENGTH",
     "OTP_LENGTH",
     "AccountDeleteIn",
+    "DeletionReasonAdminOut",
+    "DeletionReasonIn",
+    "DeletionReasonPublicOut",
+    "DeletionReasonUpdateIn",
     "LoginIn",
     "PassengerCreateIn",
     "PassengerOut",

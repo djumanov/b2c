@@ -19,13 +19,14 @@ import uuid
 
 from fastapi import Depends, Response
 
-from app.api.deps import CurrentCustomer, PaginationDep, current_customer
+from app.api.deps import CurrentCustomer, LanguageDep, PaginationDep, current_customer
 from app.api.envelope import Page, enveloped_router
 from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.customers import service
 from app.modules.customers.schemas import (
     AccountDeleteIn,
+    DeletionReasonPublicOut,
     PassengerCreateIn,
     PassengerOut,
     PassengerUpdateIn,
@@ -55,6 +56,18 @@ async def update_profile(
 ) -> ProfileOut:
     return await service.update_profile(
         session, await service.get_active(session, customer.id), data
+    )
+
+
+@router.get(
+    "/deletion-reasons/",
+    summary="Why-are-you-leaving choices for the delete screen",
+)
+async def list_deletion_reasons(
+    session: SessionDep, language: LanguageDep
+) -> list[DeletionReasonPublicOut]:
+    return await service.list_deletion_reasons_public(
+        session, requested=language.requested
     )
 
 

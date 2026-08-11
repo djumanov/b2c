@@ -8,7 +8,8 @@ in-app conversation and no per-source field schema (ARCHITECTURE.md §14 G1).
 import enum
 import uuid
 
-from sqlalchemy import CheckConstraint, String, Text, text
+from sqlalchemy import CheckConstraint, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,4 +53,23 @@ class Lead(Entity):
     )
 
 
-__all__ = ["Lead", "LeadStatus"]
+class SupportTopic(Entity):
+    """What the app's lead form offers in its topic picker (API.md §25, §35).
+
+    The lead keeps the collapsed text, not a key into this table — the same
+    verbatim choice as deletion reasons (§19) — so no draft/publish state and
+    no FK: hiding a topic is the soft delete, and history survives it.
+    """
+
+    __tablename__ = "support_topics"
+
+    name: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    #: The panel's chosen order; the public list follows it.
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+
+__all__ = ["Lead", "LeadStatus", "SupportTopic"]

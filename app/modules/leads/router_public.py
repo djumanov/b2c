@@ -7,11 +7,15 @@ the one public endpoint that writes a row for anybody who asks.
 
 from fastapi import Depends
 
-from app.api.deps import OptionalCustomer, RateLimit, RequireFeature
+from app.api.deps import LanguageDep, OptionalCustomer, RateLimit, RequireFeature
 from app.api.envelope import enveloped_router
 from app.db.session import SessionDep
 from app.modules.leads import service
-from app.modules.leads.schemas import LeadCreatedOut, LeadCreateIn
+from app.modules.leads.schemas import (
+    LeadCreatedOut,
+    LeadCreateIn,
+    SupportTopicPublicOut,
+)
 
 router = enveloped_router(
     prefix="/leads",
@@ -34,4 +38,20 @@ async def create_lead(
     )
 
 
-__all__ = ["router"]
+# --- support topics (API.md §25) --------------------------------------------------
+
+topics_router = enveloped_router(
+    prefix="/leads/topics",
+    tags=["leads"],
+    dependencies=[Depends(RequireFeature("leads"))],
+)
+
+
+@topics_router.get("/", summary="Topic choices for the lead form")
+async def list_topics(
+    session: SessionDep, language: LanguageDep
+) -> list[SupportTopicPublicOut]:
+    return await service.list_topics_public(session, requested=language.requested)
+
+
+__all__ = ["router", "topics_router"]

@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-10 · `feat/cms-fixed-page-endpoints`
+**Oxirgi yangilanish:** 2026-08-11 · `feat/support-topics`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
-| Endpointlar | 74 ta yo'l / 102 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 22 ta + `alembic_version` |
-| Migratsiyalar | 19 ta, bitta head (`cdac5166fee1`) |
-| Testlar | 644 ta — unit 20 fayl · contract 7 · integration 24 |
+| Endpointlar | 80 ta yo'l / 114 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 23 ta + `alembic_version` |
+| Migratsiyalar | 21 ta, bitta head (`8c41d09e2b57`) |
+| Testlar | 661 ta — unit 20 fayl · contract 7 · integration 26 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -67,7 +67,8 @@ kontrakt testlari.
 | `integrations` (social) | Google OAuth client'i; `client_id` ochiq, `client_secret` shifrlangan | 1 |
 | `system` | health, version (setup'dan) | 2 |
 | `customers` (auth) | Ro'yxatdan o'tish + email OTP, kirish, rotatsiyali refresh, uch qadamli parol tiklash | 9 |
-| `customers` (profil) | Profil o'qish/tahrir (avatar kodi shu yerda), parol, akkauntni o'chirish, saqlangan yo'lovchilar CRUD | 4 |
+| `customers` (profil) | Profil o'qish/tahrir (avatar kodi shu yerda), parol, akkauntni o'chirish (sabablar bilan, arxivga nusxa), sabablar ro'yxati, saqlangan yo'lovchilar CRUD | 5 |
+| `customers` (sabablar, admin) | `deletion_reasons` lug'ati CRUD — `text` JSONB, `sort_order`, holatsiz | 2 |
 | `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
 | `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy, auth yo'q, jadval yo'q | 2 |
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
@@ -76,8 +77,10 @@ kontrakt testlari.
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
 | `cms` (sahifalar) | Qat'iy uchlik — `privacy-policy`, `terms`, `about` — har biri o'z endpointi bilan (Swagger'da frontend/mobil ko'radi): admin `GET`/`PUT` (upsert, tillarni birlashtiradi) + publish/unpublish, public `GET`; draft ham yozilmagan ham bir xil `404`. Umumiy `pages/{slug}` CRUD olib tashlandi. Yadro — bayroqsiz (API.md §28) | 12 |
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
+| `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
+| `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
 
-> Ustundagi son — **yo'llar** soni (jami — §1 dagi 74).
+> Ustundagi son — **yo'llar** soni (jami — §1 dagi 77).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
@@ -88,7 +91,7 @@ kontrakt testlari.
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
 `email_otps`, `passengers`, `payment_providers`, `social_credentials`,
-`customer_cards`, `faqs`, `pages`, `leads`.
+`customer_cards`, `faqs`, `pages`, `leads`, `support_topics`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -205,7 +208,7 @@ tug'ilmasligi uchun.
 | 42 | `UploadPurpose.AVATAR` va `POST`/`DELETE` `/public/profile/avatar/` **olib tashlandi**, ishlatilmay qoldirilmadi | §4.41 dan keyin ular hech kim chaqirmaydigan yuklash yuzasi bo'lib qolardi — public yuzada esa endi umuman fayl qabul qilinmaydi. Migratsiya CHECK'ni toraytirishdan oldin `avatar` qatorlarini o'chiradi, baytlarni esa orphan sweep oladi: migratsiyada storage adapteri yo'q |
 | 43 | Kod serverda **tekshirilmaydi** — ruxsat etilgan qiymatlar ro'yxati yo'q, faqat 64 belgi chegarasi | Ro'yxatni chiqaradigan tomon — klient, demak uni bilgan tomon ham o'sha. Serverda tursa har bir yangi rasm backend deployiga aylanardi, ustiga ilova va sayt bir xil to'plam chiqarishi shart emas. Noma'lum kod shundayligicha saqlanadi va qaytariladi; uni chiza olmaslik — yuborgan klientning ishi |
 | 44 | Akkaunt o'chirilganda qator **bo'shatiladi**, faqat soft delete emas | `PROJECT.md` §13 "tozalanadi" deydi; `deleted_at` qatorni yashiradi, bo'shatmaydi. Manzilni ham bo'shatish — o'sha odam qaytadan ro'yxatdan o'ta olishining sharti, chunki unique indeks faqat tirik qatorlarni qamraydi |
-| 45 | `DELETE /public/profile/` **parol so'raydi** | Mijoz tokeni bajara oladigan yagona qaytarib bo'lmaydigan amal. Narxi — `DELETE` da tana, va ba'zi klientlar (`httpx`) uni qisqartmada yubora olmaydi; kontraktda ogohlantirish bor |
+| 45 | ~~`DELETE /public/profile/` **parol so'raydi**~~ — **№71 bilan bekor qilindi** | Mijoz tokeni bajara oladigan yagona qaytarib bo'lmaydigan amal. Narxi — `DELETE` da tana, va ba'zi klientlar (`httpx`) uni qisqartmada yubora olmaydi; kontraktda ogohlantirish bor |
 | 46 | Yo'lovchi so'rovlari **har doim** egasi bo'yicha cheklangan, boshqa mijozniki `404` | `403` "bunday id bor" deb aytardi. Egasiz chaqirilishi mumkin bo'lgan yordamchi — bu oxir-oqibat egasiz chaqiriladigan yordamchi, shuning uchun `owned_passengers(customer_id)` dan boshqa kirish nuqtasi yo'q |
 | 47 | Tanani chegara bilan o'qish `app/api/multipart.py` da, `uploads` ichida emas | Ikkinchi yuza (avatar yuklash) paydo bo'lganda ko'chirilgandi; §4.41 uni olib tashlagach ham qaytarilmadi. Muqobili — bir modul routerining boshqa modul routeridan yordamchi import qilishi, ya'ni ARCHITECTURE.md §4 to'sib turgan bog'liqlikning aynan o'zi. Yordamchi so'rov tanasi haqida, faylning maqsadi haqida emas |
 | 48 | To'lov credential'lari — **bitta shifrlangan JSON obyekt**, kalit boshiga ustun emas | Payme va Click turli kalitlar so'raydi va ro'yxat har birining o'z hujjatidan keladi. Ustunlar bilan bo'lsa, kontraktda adapterlar keyin rad etadigan sxema paydo bo'lardi. Shu sababli `enabled: true` uchun ham faqat "bo'sh emas" tekshiriladi — aniq kalitlarni adapter biladi |
@@ -231,6 +234,10 @@ tug'ilmasligi uchun.
 | 68 | `passengers.citizenship` — **cheklanmagan satr**, enum ham, ISO kodi ham emas | `document_type` bilan bir sabab: davlatlar katalogi GTS tomonda va §26 `countries/` uni faqat **ko'rsatadi**, cheklamaydi — lokal ro'yxat GTS ro'yxati o'zgarganda unga zid bo'lib chiqardi. Ustiga kod tanlash standartni ham tanlash demak — "UZ" mi, "UZB" mi, kontrakt hali aytmagan. Satrni keyin kengaytirish arzon, upstream bilan kelishmaydigan CHECK'ni yechish esa yo'q |
 | 69 | `SMTP_*` env'ga qo'shildi — lekin **urug' sifatida**: faqat `host` bo'sh qatorda o'qiladi | Bo'sh baza pochta yubora olmaydi, pochtasiz esa parol tiklash kodi ham ketmaydi — ya'ni paneldan sozlash uchun avval panelga kirish kerak, kirish uchun esa pochta. `FIRST_OWNER_*` shu tugunni xodim tomonidan yechgandi, bu — relay tomonidan. Sozlama baribir DB'da: qator to'lgach env boshqa o'qilmaydi, shuning uchun keyin tahrirlangan `.env` client tanlaganini almashtira olmaydi. `tests/unit/test_config.py` dagi tripwire saqlanib qoldi — urug'lar `SEED_FIELDS` da nomma-nom sanaladi, ya'ni yangi `smtp_*` maydon baribir testni yiqitadi |
 | 70 | Xat **matn va HTML** bo'lib bitta konvertda ketadi; HTML `providers/notifications/html.py` da, jadval va inline CSS bilan | Kod ko'taradigan xat — yangi mijoz brendni ko'radigan birinchi joy, va yalang'och matn hech kimnikiga o'xshamaydi. Matn qismi qoladi: uni ko'rsatolmaydigan mijoz ham kodni oladi. Markup ataylab eskicha — Gmail `<style>` blokini olib tashlaydi, Outlook esa Word orqali chizadi, flex/grid ikkalasida ham ishonchsiz. Brend qiymatlari argument bo'lib kiradi, chunki provayder `settings` ni import qila olmaydi (ARCHITECTURE.md §4) |
+| 71 | `DELETE /public/profile/` **parol emas, sabab so'raydi** — №45 bekor: token o'chirishga yetarli, tana `{reasons: [matn…]}` va u **majburiy** | Mahsulot qarori: ketayotgan mijozdan parol emas, sabab qimmat. Matnlar mijoz ko'rgan tilda **aynan kelganicha** saqlanadi, lug'atga solishtirilmaydi — shuning uchun sabab keyin tahrirlangan yoki o'chirilgani tarixni buzmaydi. `DELETE` tanasi haqidagi `httpx` ogohlantirishi kuchda qoladi |
+| 72 | `deleted_customers` — o'chirishdan **oldingi to'liq shaxsiy nusxa** + sabablar, FK'siz, faqat qo'shiladigan jadval | Jonli qator baribir tozalanadi (PROJECT.md §13 saqlanib qoldi), lekin biznes kimlar va nima uchun ketganini ko'rishi kerak. FK yo'q: arxiv hech nimaga bog'lanmaydi va hech nima uni kaskadda o'chira olmaydi. Hech bir API qaytarmaydi; saqlash muddati — §16 dagi ochiq savollar qatorida |
+| 73 | `deletion_reasons` lug'ati — `text` JSONB + `sort_order`, **holatsiz va bayroqsiz** | FAQ'dagi draft/publish tahririy ehtiyoj uchun edi; besh qatorlik lug'atga yashirish = soft delete yetadi. O'chirish oqimini o'chirib bo'lmagani uchun uning lug'atiga `RequireFeature` ham ma'nosiz |
+| 74 | `support_topics` — murojaat formasining mavzu lug'ati, №73 naqshida (`name` JSONB + `sort_order`, holatsiz); murojaat **matnni** saqlaydi, `topic_id` emas | Klient tanlangan mavzuning siqilgan matnini mavjud `topic` maydonida yuboradi — lead kontrakti o'zgarmadi, №71 dagi verbatim tamoyili takrorlanadi. Bu G1 ni bekor qilmaydi: sxema emas, tanlov ro'yxati xolos. `leads` moduli ichida, `leads` bayrog'i ostida |
 
 ---
 

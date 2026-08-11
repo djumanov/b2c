@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.customers.models import Customer
+from app.modules.customers.models import Customer, DeletedCustomer
 from tests.integration.conftest import PASSWORD, customer_headers_for
 
 PROFILE = "/api/v1/public/profile/"
@@ -290,7 +290,7 @@ async def test_deleting_the_account_empties_the_row(
         "DELETE",
         PROFILE,
         headers=customer_headers_for(customer),
-        json={"password": PASSWORD},
+        json={"reasons": ["No longer travelling"]},
     )
     assert response.status_code == 204
 
@@ -309,7 +309,9 @@ async def test_a_deleted_account_loses_access_at_once(
     api: AsyncClient, customer: Customer
 ) -> None:
     headers = customer_headers_for(customer)
-    await api.request("DELETE", PROFILE, headers=headers, json={"password": PASSWORD})
+    await api.request(
+        "DELETE", PROFILE, headers=headers, json={"reasons": ["Just leaving"]}
+    )
 
     assert (await api.get(PROFILE, headers=headers)).status_code == 401
 
@@ -324,7 +326,7 @@ async def test_the_address_can_be_registered_again_afterwards(
         "DELETE",
         PROFILE,
         headers=customer_headers_for(customer),
-        json={"password": PASSWORD},
+        json={"reasons": ["Just leaving"]},
     )
 
     response = await api.post(
@@ -341,19 +343,87 @@ async def test_the_address_can_be_registered_again_afterwards(
     assert len(rows.all()) == 1
 
 
-async def test_deleting_needs_the_password(
+async def test_deleting_needs_at_least_one_reason(
     api: AsyncClient, customer: Customer, session: AsyncSession
 ) -> None:
-    """The one irreversible thing a customer token can do, so holding the token
-    is not enough (API.md §19)."""
+    """The reasons list is mandatory (API.md §19) — absent, empty and blank
+    all mean the customer has not answered."""
+    headers = customer_headers_for(customer)
+
+    for body in ({}, {"reasons": []}, {"reasons": ["   "]}):
+        response = await api.request("DELETE", PROFILE, headers=headers, json=body)
+        assert response.status_code == 422, response.text
+        assert response.json()["errors"][0]["field"] == "reasons"
+
+    await session.refresh(customer)
+    assert not customer.is_deleted
+
+
+async def test_reason_limits_are_enforced(
+    api: AsyncClient, customer: Customer, session: AsyncSession
+) -> None:
+    """Bounded, not validated: any text is accepted, but only within §19's
+    caps — at most 20 reasons of at most 500 characters."""
+    headers = customer_headers_for(customer)
+
+    too_many = {"reasons": ["reason"] * 21}
+    too_long = {"reasons": ["x" * 501]}
+    for body in (too_many, too_long):
+        response = await api.request("DELETE", PROFILE, headers=headers, json=body)
+        assert response.status_code == 422, response.text
+        # An item-level violation names the element: "reasons.0".
+        assert response.json()["errors"][0]["field"].startswith("reasons")
+
+    await session.refresh(customer)
+    assert not customer.is_deleted
+
+
+async def test_deletion_archives_the_pii(
+    api: AsyncClient, customer: Customer, session: AsyncSession
+) -> None:
+    """PROJECT.md §13: the live row is scrubbed, but the pre-scrub snapshot and
+    the reasons — verbatim, no dictionary check — land in ``deleted_customers``."""
+    # Captured now: loading the archive row below refreshes ``customer`` from
+    # the database, where these have already been scrubbed.
+    address = customer.email
+    first_name = customer.first_name
+    registered_at = customer.created_at
+    await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={
+            "last_name": "Karimov",
+            "middle_name": "Baxtiyorovich",
+            "phone": "+998901234567",
+            "birth_date": "1995-04-17",
+        },
+    )
+
+    reasons = ["Больше не пользуюсь", "Anything the client sent"]
     response = await api.request(
         "DELETE",
         PROFILE,
         headers=customer_headers_for(customer),
-        json={"password": "not-it"},
+        json={"reasons": reasons},
     )
+    assert response.status_code == 204
 
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "password"
+    archived = (
+        await session.scalars(
+            select(DeletedCustomer).where(DeletedCustomer.customer_id == customer.id)
+        )
+    ).one()
+    assert archived.email == address
+    assert archived.first_name == first_name
+    assert archived.last_name == "Karimov"
+    assert archived.middle_name == "Baxtiyorovich"
+    assert archived.phone == "+998901234567"
+    assert str(archived.birth_date) == "1995-04-17"
+    assert archived.registered_at == registered_at
+    assert archived.reasons == reasons
+    assert archived.deleted_at is not None
+
+    # ...while the live row holds none of it any more.
     await session.refresh(customer)
-    assert not customer.is_deleted
+    assert customer.email != address
+    assert customer.phone is None
