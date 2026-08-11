@@ -370,6 +370,9 @@ Quyidagi ikki xatboshi o'sha eski dizaynni tasvirlaydi.) `avatar/` uchun mavjud
   undan oshmaydi; `document_type` cheklanmagan satr bo'lib qoladi. Ro'yxatning
   o'zi endi §26 `document-types/` dan olinadi (§2.6), lekin ustunni cheklash —
   boshqa qaror: lokal enum GTS ro'yxati o'zgarganda unga zid bo'lib chiqardi.
+  (2026-08-11 da satr §26 katalogidan tanlangan **to'liq JSONB obyektga**
+  aylandi — `citizenship` ham; tekshiruv faqat `"code"`/`"type"` kaliti,
+  STATUS.md §4.74. Enum/CHECK haqidagi xulosa kuchda qoladi.)
 - `email` `PATCH` orqali o'zgarmaydi — yangi manzilni tasdiqlaydigan oqim
   kontraktda yo'q (§2.12).
 - `cards/` — oddiy CRUD sifatida qurildi (§2.7 qayta ko'rildi); `notifications/` →

@@ -1,9 +1,9 @@
 """``GET /public/catalog/*`` — API.md §26.
 
 What a passenger form is filled in from: the document types a traveller can
-carry and the countries they can hold. Both were the reason
-``passengers.document_type`` and ``citizenship`` are unconstrained strings —
-there was no endpoint serving the vocabulary.
+carry and the countries they can hold. The object the client picks here is
+what ``passengers.document_type`` and ``citizenship`` store verbatim
+(STATUS.md §4.74).
 
 **No authentication**, and none is declared: a visitor who has not signed in
 still has to see the form. Only the rate limit on the parent public router

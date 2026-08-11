@@ -10,9 +10,9 @@ would make changing either look like changing both.
 
 import uuid
 from datetime import date, datetime
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from app.core.i18n import SUPPORTED_LANGUAGES, Translated
 
@@ -238,6 +238,37 @@ class DeletionReasonPublicOut(BaseModel):
 # --- saved passengers (API.md §19) ------------------------------------------------
 
 
+def _check_catalog_object(
+    value: dict[str, Any] | None, key: str
+) -> dict[str, Any] | None:
+    """The §26 catalogue object is stored verbatim; only its identifier key is
+    checked, because that is the one part the booking flow will need to hand
+    back to GTS. Everything else is GTS's shape, not ours (STATUS.md §4.74).
+    """
+    if value is None:
+        return None
+    identifier = value.get(key)
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ValueError(f'must be a catalog object with a non-empty "{key}"')
+    return value
+
+
+def _check_country(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    return _check_catalog_object(value, "code")
+
+
+def _check_document_type(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    return _check_catalog_object(value, "type")
+
+
+#: A country object picked from §26 ``countries/`` — stored as it came.
+CountryObject = Annotated[dict[str, Any] | None, AfterValidator(_check_country)]
+#: A document-type object picked from §26 ``document-types/`` — stored as it came.
+DocumentTypeObject = Annotated[
+    dict[str, Any] | None, AfterValidator(_check_document_type)
+]
+
+
 class PassengerOut(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -246,8 +277,8 @@ class PassengerOut(BaseModel):
     last_name: str
     middle_name: str | None
     birth_date: date
-    citizenship: str | None
-    document_type: str | None
+    citizenship: dict[str, Any] | None
+    document_type: dict[str, Any] | None
     document_number: str | None
     document_expiry_date: date | None
     created_at: datetime
@@ -263,12 +294,8 @@ class PassengerCreateIn(BaseModel):
     #: Required — API.md §19. A saved passenger without one still has to be
     #: retyped before it can be booked, so it would only look saved.
     birth_date: date
-    #: Free text, like ``document_type`` — and for the extra reason that a code
-    #: would mean choosing a standard ("UZ" or "UZB") the contract has not named.
-    citizenship: Annotated[str | None, Field(max_length=64)] = None
-    #: Free text: the catalogue of document types is GTS's and API.md §26 has
-    #: no endpoint serving it yet.
-    document_type: Annotated[str | None, Field(max_length=32)] = None
+    citizenship: CountryObject = None
+    document_type: DocumentTypeObject = None
     document_number: Annotated[str | None, Field(max_length=64)] = None
     document_expiry_date: date | None = None
 
@@ -280,8 +307,8 @@ class PassengerUpdateIn(BaseModel):
     last_name: PersonName | None = None
     middle_name: PersonName | None = None
     birth_date: date | None = None
-    citizenship: Annotated[str | None, Field(max_length=64)] = None
-    document_type: Annotated[str | None, Field(max_length=32)] = None
+    citizenship: CountryObject = None
+    document_type: DocumentTypeObject = None
     document_number: Annotated[str | None, Field(max_length=64)] = None
     document_expiry_date: date | None = None
 

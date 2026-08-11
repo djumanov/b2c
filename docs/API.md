@@ -777,8 +777,14 @@ GET /public/profile/passengers/
     "data": [
       { "id": "3c1d…", "first_name": "Aziz", "last_name": "Karimov",
         "middle_name": "Baxtiyorovich", "birth_date": "1995-04-17",
-        "citizenship": "Uzbekistan",
-        "document_type": "passport", "document_number": "AA1234567",
+        "citizenship": { "code": "UZ", "country_eng": "Uzbekistan",
+                         "country_rus": "Узбекистан", "phone_code": 998,
+                         "phone_mask": "(##) ###-##-##", "emoji": "🇺🇿",
+                         "translations": { "uz": "Oʻzbekiston", "…": "…" } },
+        "document_type": { "type": "PSP", "title": "Заграничный паспорт",
+                           "translations": { "uz": "Xorijga chiqish pasporti", "…": "…" },
+                           "rule": "", "iso_code": "", "country": [] },
+        "document_number": "AA1234567",
         "document_expiry_date": "2030-01-01",
         "created_at": "…", "updated_at": "…" }
     ],
@@ -794,18 +800,19 @@ GET /public/profile/passengers/
 - `middle_name`, `citizenship` va `document_expiry_date` — **ixtiyoriy**. Ota ismi hujjatda
   har doim ham bo'lmaydi (chet el pasporti), amal muddati esa hujjatning har bir turida
   bo'lmaydi.
-- `citizenship` — `document_type` kabi **cheklanmagan satr**, enum ham, ISO kodi ham emas.
-  Davlatlar ro'yxati GTS tomonda ([GTS.md](GTS.md) §9) va klientga `/public/catalog/countries/`
-  (§26) orqali beriladi, lekin ustunning o'zi cheklanmaydi: kod tanlash qaysi standart
-  ekanini ("UZ" yoki "UZB") kontrakt aytmaguncha erta bo'lardi, ro'yxatni esa GTS
-  o'zgartirsa saqlangan yo'lovchi yaroqsiz bo'lib qolardi.
+- `citizenship` — §26 `countries/` katalogidan tanlangan **to'liq obyekt**, aynan
+  kelganicha saqlanadi va qaytadi (JSONB). Server faqat `"code"` kaliti bo'sh bo'lmagan
+  satr ekanini tekshiradi, qolgan kalitlarga tegmaydi — shakl GTS'niki, ikkinchi lug'atni
+  qo'lda yuritmaymiz (§26). Obyekt to'liq saqlanadi, chunki UI keyin nomni tarjimalari va
+  bayrog'i bilan ko'rsatadi — `"UZ"` kodining o'zi buni bermaydi; GTS katalogni o'zgartirsa
+  ham saqlangan nusxa o'z holicha o'qilaveradi.
 - **Bitta yo'lovchida bitta hujjat.** Ichma-ich ro'yxat emas: saqlangan yo'lovchi bron
   uchun bitta hujjat bilan ishlatiladi.
-- `document_type` — **cheklanmagan satr**. Hujjat turlari katalogi GTS tomonda
-  ([GTS.md](GTS.md) §9) va klientga `/public/catalog/document-types/` (§26) orqali
-  beriladi — forma shundan to'ldiriladi. Ustun baribir cheklanmaydi: lokal enum GTS
-  ro'yxati o'zgarganda unga zid bo'lib chiqardi, va buni saqlash paytida emas, bron
-  paytida bilib qolinardi.
+- `document_type` — xuddi shu naqsh: §26 `document-types/` katalogidan tanlangan
+  **to'liq obyekt**, aynan kelganicha saqlanadi (JSONB). Server faqat `"type"` kaliti
+  bo'sh bo'lmagan satr ekanini tekshiradi. Lokal enum yo'q — GTS ro'yxati o'zgarganda
+  unga zid bo'lib chiqardi, va buni saqlash paytida emas, bron paytida bilib qolinardi.
+- Ikkala maydonda ham `PATCH` da `null` qiymatni tozalaydi (§8).
 - Takrorlanish taqiqlanmaydi — bitta odam eski va yangi pasporti bilan ikki marta
   saqlanishi mumkin.
 - `search` — ism va familiya bo'yicha; `ordering` default `-created_at`.
@@ -865,6 +872,8 @@ POST /public/profile/cards/
 | `PATCH` da noma'lum maydon (jumladan `email` va `is_profile_complete`) | `validation` | 422 |
 | Yo'lovchida `birth_date` yo'q | `validation` (`field: "birth_date"`) | 422 |
 | Yo'lovchi `PATCH` ida majburiy maydonga `null` (`first_name`, `last_name`, `birth_date`) | `validation` (`field`: o'sha maydon) | 422 |
+| `citizenship` obyekt emas yoki `"code"` kaliti bo'sh/yo'q | `validation` (`field: "citizenship"`) | 422 |
+| `document_type` obyekt emas yoki `"type"` kaliti bo'sh/yo'q | `validation` (`field: "document_type"`) | 422 |
 | Noto'g'ri joriy parol | `validation` (`field: "current_password"`) | 422 |
 | `DELETE /public/profile/` da `reasons` yo'q, bo'sh yoki chegaradan tashqarida | `validation` (`field: "reasons"`, element xatosida `"reasons.N"`) | 422 |
 | Fayl turi yoki hajmi mos emas | `validation` (`field: "file"`) | 422 |
