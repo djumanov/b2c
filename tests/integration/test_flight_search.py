@@ -49,7 +49,13 @@ def _mock_signin() -> respx.Route:
     return respx.post(f"{GTS}/v1/auth/signin/").mock(
         return_value=httpx.Response(
             200,
-            json=_envelope({"session_key": "session-abc", "timeout_minutes": 360}),
+            json=_envelope(
+                {
+                    "session_key": "session-abc",
+                    "token": "tok-abc",
+                    "timeout_minutes": 360.0,
+                }
+            ),
         )
     )
 
@@ -105,7 +111,8 @@ async def test_a_search_passes_through_and_returns_gts_request_id(
     import json as jsonlib
 
     assert jsonlib.loads(search.calls.last.request.content) == SEARCH_BODY
-    assert search.calls.last.request.headers["cookie"] == "sessionid=session-abc"
+    cookie = search.calls.last.request.headers["cookie"]
+    assert cookie == "esession=session-abc; token=tok-abc"
 
 
 @respx.mock
@@ -177,8 +184,37 @@ async def test_offers_pass_through_untouched(
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == gts_offers
+    assert response.json()["data"] == {**gts_offers, "search_status": "success"}
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_running_search_is_relayed_not_failed(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """GTS says ``In process`` with partial offers — the client sees exactly
+    that, not a 502 (the bug live testing caught on 2026-08-12)."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/offers/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "In process",
+                "message": "В процессе",
+                "code": 0,
+                "data": {"offers": [{"offer_id": "o-1"}], "next_token": "t-1"},
+            },
+        )
+    )
+
+    response = await api.post(OFFERS, json={"request_id": "r-1"})
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["search_status"] == "In process"
+    assert body["offers"] == [{"offer_id": "o-1"}]
 
 
 @respx.mock

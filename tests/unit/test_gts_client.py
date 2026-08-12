@@ -42,7 +42,13 @@ def _mock_signin(session_key: str = "session-key-1") -> respx.Route:
     return respx.post(f"{BASE_URL}/v1/auth/signin/").mock(
         return_value=httpx.Response(
             200,
-            json=_envelope({"session_key": session_key, "timeout_minutes": 360}),
+            json=_envelope(
+                {
+                    "session_key": session_key,
+                    "token": "tok-1",
+                    "timeout_minutes": 360,
+                }
+            ),
         )
     )
 
@@ -51,9 +57,10 @@ def _mock_signin(session_key: str = "session-key-1") -> respx.Route:
 
 
 @respx.mock
-async def test_the_session_rides_as_a_cookie(
+async def test_the_session_rides_as_the_two_cookies(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
+    """Live GTS demands both — either cookie alone is a 401."""
     _mock_signin("abc123")
     route = respx.post(f"{BASE_URL}/v1/content/search/").mock(
         return_value=httpx.Response(200, json=_envelope({"request_id": "r-1"}))
@@ -63,7 +70,8 @@ async def test_the_session_rides_as_a_cookie(
         "/v1/content/search/", json={"adt": 1}, timeout=None
     )
 
-    assert route.calls.last.request.headers["cookie"] == "sessionid=abc123"
+    cookie = route.calls.last.request.headers["cookie"]
+    assert cookie == "esession=abc123; token=tok-1"
 
 
 @respx.mock
@@ -164,6 +172,60 @@ async def test_a_403_counts_as_a_dead_session_too(
 
     assert data == {"request_id": "r-3"}
     assert route.call_count == 2
+
+
+# --- post_envelope: status is a state, not a verdict ---------------------------------
+
+
+@respx.mock
+async def test_post_envelope_relays_an_in_process_answer(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """A running search is not a failure — the whole envelope comes back."""
+    _mock_signin()
+    respx.post(f"{BASE_URL}/v1/content/offers/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "In process",
+                "message": "В процессе",
+                "code": 0,
+                "data": {"offers": [{"offer_id": "o-1"}], "next_token": "t"},
+            },
+        )
+    )
+
+    payload = await GtsHttpClient(_credential()).post_envelope(
+        "/v1/content/offers/", json={"request_id": "r"}, timeout=None
+    )
+
+    assert payload["status"] == "In process"
+    assert payload["data"]["offers"] == [{"offer_id": "o-1"}]
+
+
+@respx.mock
+async def test_post_envelope_still_refuses_a_real_error(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    _mock_signin()
+    respx.post(f"{BASE_URL}/v1/content/offers/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "error",
+                "message": "Ошибка сервиса",
+                "code": -104,
+                "data": None,
+            },
+        )
+    )
+
+    with pytest.raises(UpstreamError) as caught:
+        await GtsHttpClient(_credential()).post_envelope(
+            "/v1/content/offers/", json={"request_id": "r"}, timeout=None
+        )
+
+    assert caught.value.message == "Ошибка сервиса"
 
 
 # --- every other way it can go wrong -------------------------------------------------

@@ -74,13 +74,18 @@ Ticket Company        GTS Core / Gateway       Module                Integration
   javob beradi:
 
   ```json
-  { "data": { "session_key": "f771d913342bec7e9d6572ef9c8783",
-              "expired_time": "2023-07-06T15:55:06.736536",
-              "timeout_minutes": 360 } }
+  { "data": { "session_key": "cba50a03-3e19-434a-960a-8ae5c8ee0fd8",
+              "token": "gAAAAABqfGBo…",
+              "expired_time": "2026-08-12T23:00:40+00:00",
+              "timeout_minutes": 360.0 } }
   ```
 
-  Ya'ni **sessiya muddati aniq ma'lum** (odatda 6 soat) — sessiya menejeri 401 ni kutmasdan,
-  muddat bo'yicha oldindan qayta kirishi mumkin. Chiqish — `POST /v1/auth/logout/`.
+  Sessiya keyingi `/v1/` chaqiruvlarda **ikkita cookie** sifatida qaytariladi
+  (jonli tekshirilgan, 2026-08-12): `esession={session_key}` va
+  `token={token}` — bittasi yolg'iz `401` oladi. `timeout_minutes` float
+  keladi. Ya'ni **sessiya muddati aniq ma'lum** (odatda 6 soat) — sessiya
+  menejeri 401 ni kutmasdan, muddat bo'yicha oldindan qayta kirishi mumkin.
+  Chiqish — `POST /v1/auth/logout/`.
   Ba'zi so'rovlarda qo'shimcha `agent-uid` header'i uzatiladi.
 - **Ikki bosqichli tasdiq — akkaunt bayrog'i**, protokol talabi emas: akkaunt
   `two_factory: false` / `type_factory: null` bilan yaratiladi yoki shunday o'zgartiriladi

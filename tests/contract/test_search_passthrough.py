@@ -84,7 +84,13 @@ def _mock_gts() -> respx.Route:
     respx.post(f"{GTS}/v1/auth/signin/").mock(
         return_value=httpx.Response(
             200,
-            json=_envelope({"session_key": "session-abc", "timeout_minutes": 360}),
+            json=_envelope(
+                {
+                    "session_key": "session-abc",
+                    "token": "tok-abc",
+                    "timeout_minutes": 360.0,
+                }
+            ),
         )
     )
     search_route = respx.post(f"{GTS}/v1/content/search/").mock(

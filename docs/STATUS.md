@@ -112,16 +112,18 @@ To'liq reja — [PHASES.md](PHASES.md).
 
 **2-fazadan boshlab yuborilgani (2026-08-12):** GTS klienti + sessiya menejeri
 (`providers/gts/client.py`), `flight` adapteri va `products` moduli —
-`search/` va `offers/` jonli passthrough sifatida ishlaydi. Jonli GTS'da
-tekshirilishi kerak bo'lgan **ikkita taxmin** kodda belgilangan:
+`search/` va `offers/` jonli passthrough sifatida ishlaydi. **Jonli GTS'da
+tekshirildi (2026-08-12)**:
 
-- sessiya `Cookie: sessionid={session_key}` sifatida yuboriladi (Django
-  default; Postman kolleksiyasi cookie jar'ga tayanadi va nomini aytmaydi) —
-  noto'g'ri chiqsa `client.py` dagi `_SESSION_COOKIE` yagona burama;
-- o'lgan sessiya HTTP `401` **yoki** `403` deb qabul qilinadi — jonli javob
-  ko'rilgach toraytirilsin. GTS akkauntida `white_list` (server IP) va
-  `is_single` (bitta sessiya — panelga kirish backend sessiyasini o'ldiradi)
-  bayroqlari ham ishlab chiqarishda muhim.
+- sessiya **ikkita cookie** bilan yuriladi: `esession={session_key}` va
+  `token={token}` — ikkalasi ham signin javobining `data` sida keladi,
+  bittasi yolg'iz `401` oladi. Kolleksiyadagi "cookie jar" taxmini
+  (`sessionid`) noto'g'ri chiqdi va tuzatildi;
+- o'lgan sessiya jonli GTS'da HTTP `401` qaytardi (kod `403` ni ham shunday
+  qabul qilaveradi); `timeout_minutes` **float** (`360.0`) keladi. GTS
+  akkauntida `white_list` (server IP) va `is_single` (bitta sessiya —
+  panelga kirish backend sessiyasini o'ldiradi) bayroqlari ishlab
+  chiqarishda muhim.
 
 **2-fazaga qoldirilgan, ya'ni bugun `404` qaytaradigan yo'llar:**
 

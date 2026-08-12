@@ -938,13 +938,16 @@ POST /public/flight/offers/
 { "request_id": "…", "next_token": null, "sort_type": "price", "limit": 20, "currency": "UZS" }
 
 → { "status": "success",
-    "data": { "next_token": "…", "count": 41, "trip_type": "RT", "offers": [ … ] } }
+    "data": { "search_status": "In process", "next_token": "…", "count": 5,
+              "trip_type": "RT", "offers": [ … ] } }
 ```
 
-Klient `offers/` ni takliflar to'plangunicha yoki `next_token` tugaguncha so'rashda
-davom etadi. `data` ichidagi maydonlar (shu jumladan `offers[]` elementlari) GTS
-qanday bersa shunday — tarjima siqilmaydi, pul formati o'zgartirilmaydi, maydonlar
-qayta nomlanmaydi.
+Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
+qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
+`"success"` → tugadi). Klient `search_status === "success"` bo'lguncha yoki
+`next_token` tugaguncha so'rashda davom etadi. Qolgan barcha maydonlar (shu
+jumladan `offers[]` elementlari) GTS qanday bersa shunday — tarjima siqilmaydi,
+pul formati o'zgartirilmaydi, maydonlar qayta nomlanmaydi.
 
 > **Qidiruv holatsiz.** `request_id` — **GTS'niki**; takliflar bizda saqlanmaydi va
 > keshlanmaydi ([PROJECT.md](PROJECT.md) D2). `sort_type`, `limit`, `next_token` va
