@@ -262,8 +262,8 @@ Qidiruv **to'liq stateless** (D2): biz na taklifni, na qidiruv holatini saqlaymi
 | Qadam | Nima bo'ladi |
 |---|---|
 | `search/` | So'rov GTS'ga uzatiladi; GTS bergan `request_id` javobda qaytariladi. Biz hech qayerga yozmaymiz |
-| `offers/` | `request_id`, `next_token`, `limit`, `sort`, `currency` GTS parametrlariga o'giriladi; GTS javobi normallashtiriladi (envelope, pul formati, maydon nomlari) va qaytariladi |
-| `search_state`, qisman natija | GTS'dan kelganicha uzatiladi — bizda progress hisoblagichi yo'q |
+| `offers/` | `request_id`, `next_token`, `sort_type`, `limit`, `currency` GTS'ga aynan uzatiladi; GTS javobining `data` qismi **upstream shaklda, kelganicha** qaytariladi — faqat GTS envelope'i bizning envelope'ga almashadi (API.md §20, 2026-08-12 qarori) |
+| Qisman natija | GTS'dan kelganicha uzatiladi — bizda progress hisoblagichi yo'q |
 | Taklif muddati | **GTS tomonda** tugaydi; uning xatosi `409 offer_expired` ga o'giriladi ([API.md](API.md) §3) |
 
 **Nega kesh qurmaymiz.** GTS `request_id` va `offer_id` bo'yicha o'z keshini yuritadi

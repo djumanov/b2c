@@ -1,0 +1,365 @@
+"""``POST /public/flight/search|offers/`` — the passthrough, end to end.
+
+The full chain under test: gate (cached ``product_settings``) → active
+credential decrypted from Postgres → GTS session signed in and cached in
+Redis → the body forwarded verbatim → GTS's ``data`` returned inside our
+envelope. And the promise underneath it all, D2: **a search writes nothing**
+— the row-count check at the bottom holds the module to it.
+
+``respx`` intercepts the outbound ``httpx`` transport; the ``api`` fixture
+speaks ASGI, which respx leaves alone.
+"""
+
+from typing import Any
+
+import httpx
+import pytest
+import respx
+from httpx import AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.crypto import encrypt
+from app.db.base import Base
+from app.modules.integrations.models import GtsCredential
+from app.modules.settings import cache as settings_cache
+
+SEARCH = "/api/v1/public/flight/search/"
+OFFERS = "/api/v1/public/flight/offers/"
+GTS = "https://gts.test"
+
+SEARCH_BODY: dict[str, Any] = {
+    "directions": [
+        {"departure": "TAS", "arrival": "IST", "departure_date": "2026-09-14"}
+    ],
+    "adt": 1,
+    "chd": 0,
+    "inf": 0,
+    "ins": 0,
+    "class": "E",
+    "direct": False,
+}
+
+
+def _envelope(data: Any) -> dict[str, Any]:
+    return {"status": "success", "message": "Все ок.", "code": 0, "data": data}
+
+
+def _mock_signin() -> respx.Route:
+    return respx.post(f"{GTS}/v1/auth/signin/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope({"session_key": "session-abc", "timeout_minutes": 360}),
+        )
+    )
+
+
+def _mock_search(
+    request_id: str = "6c62dcec-9334-11ee-8688-5169d0acfb81",
+) -> respx.Route:
+    return respx.post(f"{GTS}/v1/content/search/").mock(
+        return_value=httpx.Response(200, json=_envelope({"request_id": request_id}))
+    )
+
+
+async def _activate_credential(session: AsyncSession) -> None:
+    ciphertext, key_version = encrypt("gts-secret-1a2b")
+    session.add(
+        GtsCredential(
+            label="Prod agent",
+            base_url=GTS,
+            email="agent@brand.uz",
+            password=ciphertext,
+            key_version=key_version,
+            is_active=True,
+        )
+    )
+    await session.commit()
+
+
+async def _enable_flight() -> None:
+    """Seed the cached document the gate reads, deterministically."""
+    await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
+
+
+# --- the happy path ------------------------------------------------------------------
+
+
+@respx.mock
+async def test_a_search_passes_through_and_returns_gts_request_id(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+    search = _mock_search()
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"status", "data", "errors", "meta"}
+    assert body["data"] == {"request_id": "6c62dcec-9334-11ee-8688-5169d0acfb81"}
+    assert signin.call_count == 1
+    # The body reached GTS verbatim.
+    import json as jsonlib
+
+    assert jsonlib.loads(search.calls.last.request.content) == SEARCH_BODY
+    assert search.calls.last.request.headers["cookie"] == "sessionid=session-abc"
+
+
+@respx.mock
+async def test_a_second_search_reuses_the_session(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """One machine-account login serves many searches — the Redis cache."""
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+    search = _mock_search()
+
+    await api.post(SEARCH, json=SEARCH_BODY)
+    await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert signin.call_count == 1
+    assert search.call_count == 2
+
+
+@respx.mock
+async def test_a_session_that_died_early_is_renewed_mid_request(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """Somebody signed into the GTS panel with the same account (``is_single``)."""
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+    search = respx.post(f"{GTS}/v1/content/search/").mock(
+        side_effect=[
+            httpx.Response(401),
+            httpx.Response(200, json=_envelope({"request_id": "r-2"})),
+        ]
+    )
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"request_id": "r-2"}
+    assert search.call_count == 2
+    assert signin.call_count == 2
+
+
+@respx.mock
+async def test_offers_pass_through_untouched(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    gts_offers = {
+        "request_id": "r-1",
+        "next_token": "c27b666f",
+        "count": 41,
+        "trip_type": "RT",
+        "offers": [{"offer_id": "o-1", "price_info": {"price": 221.86}}],
+    }
+    route = respx.post(f"{GTS}/v1/content/offers/").mock(
+        return_value=httpx.Response(200, json=_envelope(gts_offers))
+    )
+
+    response = await api.post(
+        OFFERS,
+        json={
+            "request_id": "r-1",
+            "next_token": None,
+            "sort_type": "price",
+            "limit": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == gts_offers
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """§20's ``(✓)``: optional auth forgives absence, never a bad token."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+
+    anonymous = await api.post(SEARCH, json=SEARCH_BODY)
+    garbage = await api.post(
+        SEARCH, json=SEARCH_BODY, headers={"Authorization": "Bearer not-a-token"}
+    )
+
+    assert anonymous.status_code == 200
+    assert garbage.status_code == 401
+
+
+# --- the gate and the missing credential ---------------------------------------------
+
+
+@respx.mock
+async def test_a_disabled_vertical_is_404_before_gts_is_touched(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await settings_cache.write({"products": [{"code": "flight", "enabled": False}]})
+    signin = _mock_signin()
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 404
+    assert response.json()["errors"][0]["code"] == "not_found"
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_no_active_credential_is_a_502_naming_configuration(
+    api: AsyncClient,
+) -> None:
+    await _enable_flight()
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 502
+    error = response.json()["errors"][0]
+    assert error["code"] == "upstream_error"
+    assert "not configured" in error["message"]
+
+
+# --- upstream failures ---------------------------------------------------------------
+
+
+@respx.mock
+async def test_a_gts_error_wearing_http_200_is_a_502_with_its_code_kept(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/search/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "error",
+                "message": [{"message": "no providers", "data": "none"}],
+                "code": -21,
+                "data": None,
+            },
+        )
+    )
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["errors"][0]["message"] == "no providers"
+    assert body["meta"]["upstream"] == {"code": -21, "message": "no providers"}
+
+
+@respx.mock
+async def test_a_search_timeout_is_a_504(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/search/").mock(side_effect=httpx.ReadTimeout)
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 504
+    assert response.json()["errors"][0]["code"] == "upstream_timeout"
+
+
+@respx.mock
+async def test_a_signin_timeout_is_a_504_too(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    respx.post(f"{GTS}/v1/auth/signin/").mock(side_effect=httpx.ConnectTimeout)
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 504
+
+
+# --- our own refusals ----------------------------------------------------------------
+
+
+@respx.mock
+async def test_junk_is_a_422_before_a_session_is_spent(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+
+    response = await api.post(SEARCH, json={**SEARCH_BODY, "adt": 0})
+
+    assert response.status_code == 422
+    error = response.json()["errors"][0]
+    assert error["code"] == "validation"
+    assert error["field"] == "adt"
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """API.md §14 — the tighter ``search`` bucket, stacked on ``public``."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+
+    last = None
+    for _ in range(31):
+        last = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert last is not None
+    assert last.status_code == 429
+    assert last.json()["errors"][0]["code"] == "rate_limited"
+    assert "Retry-After" in last.headers
+
+
+@pytest.mark.parametrize("path", [SEARCH, OFFERS])
+async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
+    response = await api.post(path.rstrip("/"), json={})
+
+    assert response.status_code == 404
+
+
+# --- D2: a search writes nothing -----------------------------------------------------
+
+
+@respx.mock
+async def test_a_search_leaves_every_table_exactly_as_it_found_it(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """The regression guard PHASES.md §4 asks for, on the database side."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+
+    async def counts() -> dict[str, int]:
+        result = {}
+        for table in Base.metadata.sorted_tables:
+            count = await session.scalar(select(func.count()).select_from(table))
+            result[table.name] = count
+        return result
+
+    before = await counts()
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+    after = await counts()
+
+    assert response.status_code == 200
+    assert after == before

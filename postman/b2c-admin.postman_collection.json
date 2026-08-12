@@ -944,6 +944,64 @@
               "response": []
             }
           ]
+        },
+        {
+          "name": "Flight",
+          "description": "API.md §20 — the search flow, a **live passthrough** to GTS `/v1/content/*` through the installation's active credential. Request and response shapes are GTS's own, verbatim: the body is forwarded after a light shape check, and GTS's `data` comes back untouched inside our envelope.\n\nAuth is **optional** — anonymous searches are welcome; a presented but invalid token is still a 401. Rate limited to 30 requests per minute (the `search` bucket) on top of the public 120.\n\nGated by `product_settings`, not a feature flag: a vertical the installation does not sell answers 404. No active GTS credential → 502. Nothing is stored on our side (D2): GTS keeps the only cache, keyed by `request_id`.",
+          "item": [
+            {
+              "name": "POST flight/search",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"directions\": [\n        {\n            \"departure\": \"TAS\",\n            \"arrival\": \"IST\",\n            \"departure_date\": \"2026-09-14\"\n        }\n    ],\n    \"adt\": 1,\n    \"chd\": 0,\n    \"inf\": 0,\n    \"ins\": 0,\n    \"class\": \"E\",\n    \"direct\": false\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/flight/search/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "flight", "search", ""]
+                },
+                "description": "Starts a search; GTS answers immediately with `data.request_id` (an opaque string — keep it verbatim for `offers/`). Providers keep answering in the background. Extra GTS fields (`flexible`, `airlines`, `passengers_ids`, …) pass through as sent."
+              },
+              "response": []
+            },
+            {
+              "name": "POST flight/offers",
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"request_id\": \"{{request_id}}\",\n    \"next_token\": null,\n    \"sort_type\": \"price\",\n    \"limit\": 20,\n    \"currency\": \"UZS\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/public/flight/offers/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["public", "flight", "offers", ""]
+                },
+                "description": "Pages through the offers of a search. Cursor pagination via `next_token` (`null` on the first page); keep polling while results are still arriving. `data` — `offers[]`, `count`, `trip_type`, `next_token` — is GTS's shape, untouched."
+              },
+              "response": []
+            }
+          ]
         }
       ]
     },

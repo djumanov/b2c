@@ -416,6 +416,22 @@ async def feature_enabled(flag: str) -> bool:
     return bool(flags.get(flag, defaults.FEATURE_DEFAULTS.get(flag, False)))
 
 
+async def product_enabled(code: str) -> bool:
+    """Is this vertical switched on? (API.md §28 — read-only from the panel.)
+
+    The `features` twin for verticals, session-less off the same cached
+    document. The gate that calls this has already refused unknown codes
+    against the product registry, so ``code`` is trusted to be real. A cached
+    document without a ``products`` key — a partially seeded test cache or one
+    written before this key existed — reads as enabled, mirroring the seed,
+    which enables every vertical (settings/models.py).
+    """
+    items = (await _document()).get("products")
+    if items is None:
+        return True
+    return any(item.get("code") == code and bool(item.get("enabled")) for item in items)
+
+
 async def mail_brand() -> MailBrand:
     """How this installation signs the mail it sends (`providers.notifications`).
 
@@ -468,6 +484,7 @@ __all__ = [
     "get_products",
     "get_site",
     "mail_brand",
+    "product_enabled",
     "purge_cache",
     "site_config",
     "update_branding",
