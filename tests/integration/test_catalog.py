@@ -28,6 +28,7 @@ from app.modules.integrations.models import DEFAULT_BASE_URL, GtsCredential
 
 DOCUMENT_TYPES = "/api/v1/public/catalog/document-types/"
 COUNTRIES = "/api/v1/public/catalog/countries/"
+AIRPORTS = "/api/v1/public/catalog/airports/"
 
 #: Kept whole and Cyrillic on purpose: it is what GTS really sends, and the
 #: contract says §26 hands it on unchanged (API.md §7).
@@ -56,6 +57,15 @@ GTS_COUNTRY = {
 }
 
 
+GTS_AIRPORT = {
+    "code": "TAS",
+    "name": "Islam Karimov Tashkent International",
+    "city": "Tashkent",
+    "country": "UZ",
+    "translations": {"ru": "Ташкент", "uz": "Toshkent", "en": "Tashkent"},
+}
+
+
 def _envelope(data: Any) -> dict[str, Any]:
     return {
         "status": "success",
@@ -75,6 +85,14 @@ def _mock_document_types(base_url: str = DEFAULT_BASE_URL) -> respx.Route:
 def _mock_countries(base_url: str = DEFAULT_BASE_URL) -> respx.Route:
     return respx.get(f"{base_url}/static/country").mock(
         return_value=httpx.Response(200, json=_envelope([GTS_COUNTRY]))
+    )
+
+
+def _mock_airports(
+    search: str = "TAS", base_url: str = DEFAULT_BASE_URL
+) -> respx.Route:
+    return respx.get(f"{base_url}/static/airports/{search}").mock(
+        return_value=httpx.Response(200, json=_envelope([GTS_AIRPORT]))
     )
 
 
@@ -157,6 +175,28 @@ async def test_the_answer_may_be_cached_for_a_day(api: AsyncClient) -> None:
     assert response.headers["Cache-Control"] == "public, max-age=86400"
 
 
+@respx.mock
+async def test_airports_arrive_inside_our_envelope(api: AsyncClient) -> None:
+    _mock_airports()
+
+    response = await api.get(AIRPORTS, params={"q": "TAS"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"status", "data", "errors", "meta"}
+    assert body["data"] == [GTS_AIRPORT]
+
+
+@respx.mock
+async def test_airports_need_no_token(api: AsyncClient) -> None:
+    _mock_airports()
+
+    response = await api.get(AIRPORTS, params={"q": "TAS"})
+
+    assert response.status_code == 200
+    assert "authorization" not in {key.lower() for key in response.request.headers}
+
+
 # --- the cache -----------------------------------------------------------------------
 
 
@@ -180,6 +220,31 @@ async def test_each_country_filter_is_cached_separately(api: AsyncClient) -> Non
     await api.get(DOCUMENT_TYPES)
 
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_every_airport_search_reaches_gts(api: AsyncClient) -> None:
+    """The inverse of the promise above: a live proxy, never a cache.
+
+    A free-text ``q`` would make an unbounded Redis key, so airports are not
+    cached at all (API.md §26) — two identical requests mean two GTS calls.
+    """
+    route = _mock_airports()
+
+    first = await api.get(AIRPORTS, params={"q": "TAS"})
+    second = await api.get(AIRPORTS, params={"q": "TAS"})
+
+    assert first.json()["data"] == second.json()["data"]
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_airports_carry_no_cache_control(api: AsyncClient) -> None:
+    _mock_airports()
+
+    response = await api.get(AIRPORTS, params={"q": "TAS"})
+
+    assert "cache-control" not in response.headers
 
 
 # --- where the base URL comes from ---------------------------------------------------
@@ -230,6 +295,35 @@ async def test_an_invalid_country_is_rejected_before_gts_is_called(
     assert response.status_code == 422
     assert response.json()["errors"][0]["code"] == "validation"
     assert route.call_count == 0
+
+
+@respx.mock
+@pytest.mark.parametrize("q", [None, "T", "x" * 65])
+async def test_a_bad_search_is_rejected_before_gts_is_called(
+    api: AsyncClient, q: str | None
+) -> None:
+    """Missing, one keystroke, or a pasted essay — none of them leaves the app."""
+    route = respx.get(url__regex=rf"{DEFAULT_BASE_URL}/static/airports/.*").mock(
+        return_value=httpx.Response(200, json=_envelope([]))
+    )
+
+    response = await api.get(AIRPORTS, params={"q": q} if q is not None else None)
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "validation"
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_an_airport_upstream_failure_is_502(api: AsyncClient) -> None:
+    respx.get(f"{DEFAULT_BASE_URL}/static/airports/TAS").mock(
+        return_value=httpx.Response(500)
+    )
+
+    response = await api.get(AIRPORTS, params={"q": "TAS"})
+
+    assert response.status_code == 502
+    assert response.json()["errors"][0]["code"] == "upstream_error"
 
 
 @respx.mock
@@ -286,7 +380,7 @@ async def test_a_failure_is_not_cached(api: AsyncClient) -> None:
     assert route.call_count == 2
 
 
-@pytest.mark.parametrize("path", [DOCUMENT_TYPES, COUNTRIES])
+@pytest.mark.parametrize("path", [DOCUMENT_TYPES, COUNTRIES, AIRPORTS])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     """API.md §1, and not a 307 — a redirect would drop the query string."""
     response = await api.get(path.rstrip("/"))

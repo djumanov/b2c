@@ -9,14 +9,18 @@ GTS credential cannot render a passenger form.
 
 **No retry.** API.md §12 allows an idempotent ``GET`` two retries with backoff,
 but that policy belongs with the shared client, next to the 401-relogin dance.
-Here a 24-hour cache sits in front (``modules/catalog/cache.py``), so a
-transient failure reaches one request in thousands rather than every one.
+For ``document_types``/``countries`` a 24-hour cache sits in front
+(``modules/catalog/cache.py``), so a transient failure reaches one request in
+thousands rather than every one. ``airports`` is uncached — a free-text search
+term makes an unbounded cache key — so its failures do reach the caller, and
+that is fine for an autocomplete the user simply retypes into.
 
 The GTS envelope stops at this file. Callers get the ``data`` list and nothing
 else (ARCHITECTURE.md §7).
 """
 
 from typing import Any, Final
+from urllib.parse import quote
 
 import httpx
 
@@ -48,6 +52,16 @@ async def document_types(
 async def countries(base_url: str) -> list[dict[str, Any]]:
     """The country list — used for citizenship and phone codes."""
     return await _get("country", base_url=base_url)
+
+
+async def airports(base_url: str, *, search: str) -> list[dict[str, Any]]:
+    """Airport autocomplete for the flight search form.
+
+    ``search`` is user input landing in a **path segment** — the only place in
+    this file that happens — so it is percent-encoded with nothing held safe:
+    a stray ``/``, ``?`` or ``#`` must reach GTS as data, not as URL structure.
+    """
+    return await _get(f"airports/{quote(search, safe='')}", base_url=base_url)
 
 
 async def _get(
@@ -116,4 +130,4 @@ async def _get(
     return items
 
 
-__all__ = ["countries", "document_types"]
+__all__ = ["airports", "countries", "document_types"]

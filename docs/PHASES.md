@@ -162,6 +162,10 @@ Bu faza chegarasini surgani uchun nima qilingani ochiq yozilsin:
   o'zgarish, 2-faza emas.
 - `airlines/`, `currencies/`, `places/`, `stations/` tegilmadi va o'z fazasida
   qoladi.
+- `airports/` ham oldinga tortildi (2026-08-12): aviachipta qidiruv formasiga
+  aeroport avtoto'ldirish kerak, GTS `/static/airports/{search}` esa xuddi
+  shu auth'siz servisda. Farqi — **keshsiz** jonli proxy: erkin matnli `q`
+  chegarasiz kesh kalitini keltirib chiqarardi (API.md §26).
 
 **2.7 · §19 `profile/cards/` — qayta ko'rildi (2026-08-11): endi 1-fazada.**
 Dastlab bo'lim 2-fazaga surilgan edi, chunki karta provayderning karta-token API'si

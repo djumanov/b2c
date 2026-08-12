@@ -1,4 +1,4 @@
-"""Cache, then GTS. The whole module is these two functions.
+"""Cache, then GTS — except ``airports``, which is GTS every time.
 
 Items are handed on **exactly as GTS sends them** — API.md §7 exempts §26 from
 the usual translation-collapsing, because these lists are not our content and
@@ -8,6 +8,10 @@ vocabulary. The GTS *envelope* is still stripped, in the provider.
 The cache is read before the base URL is looked up, so a hit costs no database
 round trip: ``AsyncSession`` does not take a connection until its first
 statement.
+
+``airports`` never touches the cache: its key would have to include the
+free-text search term, and "nothing a caller sends can shape a Redis key"
+(``cache.py``). It is a live proxy, per API.md §26.
 """
 
 from typing import Any
@@ -45,4 +49,9 @@ async def countries(session: AsyncSession) -> list[dict[str, Any]]:
     return items
 
 
-__all__ = ["countries", "document_types"]
+async def airports(session: AsyncSession, *, search: str) -> list[dict[str, Any]]:
+    base_url = await integrations_service.gts_base_url(session)
+    return await gts_static.airports(base_url, search=search)
+
+
+__all__ = ["airports", "countries", "document_types"]

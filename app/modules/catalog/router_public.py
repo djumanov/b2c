@@ -3,7 +3,10 @@
 What a passenger form is filled in from: the document types a traveller can
 carry and the countries they can hold. The object the client picks here is
 what ``passengers.document_type`` and ``citizenship`` store verbatim
-(STATUS.md §4.75).
+(STATUS.md §4.75). ``airports/`` feeds the flight search form's autocomplete
+and, unlike the other two, is an **uncached** live proxy — no Redis entry and
+no ``Cache-Control``, because a free-text ``q`` would make an unbounded cache
+key (API.md §26).
 
 **No authentication**, and none is declared: a visitor who has not signed in
 still has to see the form. Only the rate limit on the parent public router
@@ -41,6 +44,19 @@ CountryParam = Annotated[
     ),
 ]
 
+#: Free text, so only length is checked: airport names carry spaces and
+#: non-Latin scripts. The bounds keep a single keystroke and a pasted essay
+#: from reaching GTS at all.
+SearchParam = Annotated[
+    str,
+    Query(
+        alias="q",
+        min_length=2,
+        max_length=64,
+        description="Airport name, city or IATA code fragment, e.g. TAS",
+    ),
+]
+
 
 @router.get("/document-types/", summary="Passenger document types")
 async def get_document_types(
@@ -61,6 +77,14 @@ async def get_countries(
 ) -> list[dict[str, Any]]:
     response.headers["Cache-Control"] = CACHE_CONTROL
     return await service.countries(session)
+
+
+@router.get("/airports/", summary="Airport search (autocomplete)")
+async def get_airports(
+    session: SessionDep,
+    q: SearchParam,
+) -> list[dict[str, Any]]:
+    return await service.airports(session, search=q)
 
 
 __all__ = ["CACHE_CONTROL", "router"]

@@ -18,7 +18,7 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
-| Endpointlar | 80 ta yo'l / 114 operatsiya (API.md dagi ~150 dan) |
+| Endpointlar | 81 ta yo'l / 115 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 23 ta + `alembic_version` |
 | Migratsiyalar | 22 ta, bitta head (`b5e3d1a7c942`) |
 | Testlar | 663 ta — unit 20 fayl · contract 7 · integration 26 |
@@ -70,7 +70,7 @@ kontrakt testlari.
 | `customers` (profil) | Profil o'qish/tahrir (avatar kodi shu yerda), parol, akkauntni o'chirish (sabablar bilan, arxivga nusxa), sabablar ro'yxati, saqlangan yo'lovchilar CRUD | 5 |
 | `customers` (sabablar, admin) | `deletion_reasons` lug'ati CRUD — `text` JSONB, `sort_order`, holatsiz | 2 |
 | `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
-| `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy, auth yo'q, jadval yo'q | 2 |
+| `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy; `airports/?q=` — keshsiz qidiruv passthrough'i; auth yo'q, jadval yo'q | 3 |
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
@@ -80,12 +80,12 @@ kontrakt testlari.
 | `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
 | `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
 
-> Ustundagi son — **yo'llar** soni (jami — §1 dagi 77).
+> Ustundagi son — **yo'llar** soni (jami — §1 dagi 78).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
 > auth qismida 10 yo'l = 10 operatsiya (hammasi `POST`), profil qismida esa
-> 5 yo'lda 11 ta. `catalog` ning ikkitasida ikkita.
+> 5 yo'lda 11 ta. `catalog` ning uchtasida uchta.
 
 **Jadvallar:** `staff`, `staff_refresh_tokens`, `audit_log`, `uploads`,
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
