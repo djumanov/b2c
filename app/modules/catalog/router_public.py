@@ -46,14 +46,15 @@ CountryParam = Annotated[
 
 #: Free text, so only length is checked: airport names carry spaces and
 #: non-Latin scripts. The bounds keep a single keystroke and a pasted essay
-#: from reaching GTS at all.
+#: from reaching GTS at all. Optional — no ``q`` means the full list.
 SearchParam = Annotated[
-    str,
+    str | None,
     Query(
         alias="q",
         min_length=2,
         max_length=64,
-        description="Airport name, city or IATA code fragment, e.g. TAS",
+        description="Airport name, city or IATA code fragment, e.g. TAS; "
+        "omit for the complete list",
     ),
 ]
 
@@ -82,7 +83,7 @@ async def get_countries(
 @router.get("/airports/", summary="Airport search (autocomplete)")
 async def get_airports(
     session: SessionDep,
-    q: SearchParam,
+    q: SearchParam = None,
 ) -> list[dict[str, Any]]:
     return await service.airports(session, search=q)
 

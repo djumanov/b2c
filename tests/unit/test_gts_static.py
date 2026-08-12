@@ -94,6 +94,18 @@ async def test_airports_returns_the_bare_data_list() -> None:
 
 
 @respx.mock
+async def test_no_search_term_fetches_the_complete_airport_list() -> None:
+    """GTS serves the full catalogue at ``/static/airports`` — no slash."""
+    airports = [{"code": "TAS"}, {"code": "IST"}]
+    route = respx.get(f"{BASE_URL}/static/airports").mock(
+        return_value=httpx.Response(200, json=_envelope(airports))
+    )
+
+    assert await static.airports(BASE_URL) == airports
+    assert route.calls.last.request.url.path == "/static/airports"
+
+
+@respx.mock
 async def test_the_airport_search_term_is_percent_encoded() -> None:
     """User input lands in a path segment; URL structure must not leak in."""
     route = respx.get(url__regex=rf"{BASE_URL}/static/airports/.*").mock(

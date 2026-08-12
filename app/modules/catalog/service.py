@@ -49,7 +49,9 @@ async def countries(session: AsyncSession) -> list[dict[str, Any]]:
     return items
 
 
-async def airports(session: AsyncSession, *, search: str) -> list[dict[str, Any]]:
+async def airports(
+    session: AsyncSession, *, search: str | None = None
+) -> list[dict[str, Any]]:
     base_url = await integrations_service.gts_base_url(session)
     return await gts_static.airports(base_url, search=search)
 
