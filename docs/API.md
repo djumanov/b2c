@@ -916,34 +916,41 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `transfer` | `/offer/`, `/recommended-time/` |
 
 **Qidiruv → takliflar oqimi asinxron.** `search/` darhol `request_id` qaytaradi; provayderlar
-fon rejimida javob beradi. `offers/` sahifalab so'raladi va **qisman natija** qaytishi mumkin:
+fon rejimida javob beradi. `offers/` sahifalab so'raladi va **qisman natija** qaytishi mumkin.
+
+**So'rov va javob shakli — GTS'niki, aynan.** Bu ikki endpoint **jonli passthrough**:
+tana yengil tekshiruvdan so'ng GTS'ga aynan uzatiladi, GTS javobining `data` qismi
+kelganicha (upstream shaklda) bizning envelope ichida qaytadi. Maydon nomlari ham,
+qiymatlari ham GTS kontrakti bilan bir xil — alohida "bizning shakl" yo'q
+(2026-08-12 qarori; avvalgi `from`/`to`/`cabin` shakli bekor qilindi):
 
 ```json
 POST /public/flight/search/
-{ "directions": [ { "from": "TAS", "to": "IST", "date": "2026-09-14" } ],
-  "passengers": { "adt": 1, "chd": 0, "inf": 0 },
-  "cabin": "E", "direct": false }
+{ "directions": [ { "departure": "TAS", "arrival": "IST", "departure_date": "2026-09-14" } ],
+  "adt": 1, "chd": 0, "inf": 0, "ins": 0,
+  "class": "E", "direct": false }
 
-→ { "status": "success", "data": { "request_id": "…", "search_state": "in_progress" } }
+→ { "status": "success", "data": { "request_id": "…" } }
 ```
 
 ```json
 POST /public/flight/offers/
-{ "request_id": "…", "next_token": null, "limit": 20, "sort": "price", "currency": "UZS" }
+{ "request_id": "…", "next_token": null, "sort_type": "price", "limit": 20, "currency": "UZS" }
 
 → { "status": "success",
-    "data": { "search_state": "in_progress", "next_token": "…", "offers": [ … ] } }
+    "data": { "next_token": "…", "count": 41, "trip_type": "RT", "offers": [ … ] } }
 ```
 
-`search_state`: `in_progress` → `completed` | `failed`. Klient `completed` bo'lguncha yoki
-`next_token` tugaguncha so'rashda davom etadi.
+Klient `offers/` ni takliflar to'plangunicha yoki `next_token` tugaguncha so'rashda
+davom etadi. `data` ichidagi maydonlar (shu jumladan `offers[]` elementlari) GTS
+qanday bersa shunday — tarjima siqilmaydi, pul formati o'zgartirilmaydi, maydonlar
+qayta nomlanmaydi.
 
 > **Qidiruv holatsiz.** `request_id` — **GTS'niki**; takliflar bizda saqlanmaydi va
-> keshlanmaydi. `sort`, `limit`, `next_token` va `currency` GTS parametrlariga o'giriladi
-> ([PROJECT.md](PROJECT.md) D2). Amaliy oqibati: **saralash va filtr GTS qo'llaydigan
-> variantlar bilan chegaralangan** — frontend undan tashqariga chiqmasligi kerak.
-> Qo'llanadigan aniq ro'yxat GTS kontrakti bo'yicha aniqlanadi
-> ([ARCHITECTURE.md](ARCHITECTURE.md) §14, A9).
+> keshlanmaydi ([PROJECT.md](PROJECT.md) D2). `sort_type`, `limit`, `next_token` va
+> `currency` GTS'ga aynan uzatiladi. Amaliy oqibati: **saralash va filtr GTS
+> qo'llaydigan variantlar bilan chegaralangan** — frontend undan tashqariga
+> chiqmasligi kerak ([ARCHITECTURE.md](ARCHITECTURE.md) §14, A9).
 
 **Muddat tugashi**: taklif va `request_id` ning amal muddati cheklangan. Muddati o'tgan
 taklif bilan `verify/` yoki `booking/` chaqirilsa → `409 offer_expired`, klient qidiruvni

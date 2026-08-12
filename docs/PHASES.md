@@ -427,11 +427,11 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 
 | # | Bo'lak | Izoh |
 |---|---|---|
-| 1 | `providers/gts/` — klient, sessiya menejeri, ACL | Sessiya Redis'da, **qulf ostida**; 401 da bitta avtomatik takror ([ARCHITECTURE.md](ARCHITECTURE.md) §7). Bu yerda `POST /admin/integrations/gts/test/` ham ulanadi (§2.13) |
-| 2 | Xato va status xaritalari | GTS xatoda ham HTTP 200 qaytaradi; asl matn `message` da, asl kod `meta.upstream` da (`API.md` §3) |
+| 1 | `providers/gts/` — klient, sessiya menejeri, ACL — **✅ 2026-08-12 (qisman)** | Sessiya Redis'da, **qulf ostida**; 401/403 da bitta avtomatik takror ([ARCHITECTURE.md](ARCHITECTURE.md) §7). `client.py` qurildi; `POST /admin/integrations/gts/test/` probe'i **hali qolgan** (§2.13). Sessiya cookie nomi (`sessionid`) — jonli GTS'da tekshiriladigan taxmin (STATUS.md §3) |
+| 2 | Xato va status xaritalari — **✅ xato xaritasi 2026-08-12** | GTS xatoda ham HTTP 200 qaytaradi; asl matn `message` da (ro'yxat shaklidagi `message` ham), asl kod `meta.upstream` da (`API.md` §3). **Status xaritasi** (BO/PW/TI→kanonik) `orders` bilan, 6-bo'lakda |
 | 3 | `catalog` + beat sinxronizatsiyasi | Uzoq Redis TTL, ikkala yuzaga faqat o'qish |
-| 4 | `ProductAdapter` porti + `flight` adapteri | Port **hozir** loyihalanadi, lekin faqat `flight` amalga oshiriladi ([ARCHITECTURE.md](ARCHITECTURE.md) §13.8) |
-| 5 | `products` — holatsiz qidiruv oqimi | **Hech narsa saqlanmaydi** (D2); regressiya testi bilan qo'riqlanadi |
+| 4 | `ProductAdapter` porti + `flight` adapteri — **✅ 2026-08-12 (search+offers)** | Port loyihalandi (flow metodlariga `GtsClient` per-call uzatiladi), `flight` adapteri passthrough sifatida qurildi ([ARCHITECTURE.md](ARCHITECTURE.md) §13.8). `verify`/`book` saga bilan keladi |
+| 5 | `products` — holatsiz qidiruv oqimi — **✅ 2026-08-12 (search+offers)** | **Hech narsa saqlanmaydi** (D2); `tests/contract/test_search_passthrough.py` qo'riqlaydi. Generik `/{product}/` router, gate `product_settings` orqali, `search` limiti 30/daq |
 | 6 | `orders` — lokal yozuv, status xaritasi, `available_actions` | `available_actions` **server tomonda** hisoblanadi |
 | 7a | `PaymentProvider` porti + registry | Migratsiyasiz, marshrutsiz. Port **hozir** loyihalanadi: `dict` qaytishlar dataclass'ga, `handle_callback` xom baytlarni oladi, `verify()` qo'shiladi (§2.13) |
 | 7b | `payments` yadrosi — jadvallar, o'qish endpointlari, admin ro'yxati | Provayder chaqiruvisiz, nol adapter bilan yashil |

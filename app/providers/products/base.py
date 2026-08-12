@@ -23,6 +23,8 @@ is implemented in phase 2 (ARCHITECTURE.md §13.8).
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from app.providers.gts.base import GtsClient
+
 
 class ProductCode(StrEnum):
     """The five verticals of the first release (PROJECT.md §8)."""
@@ -60,10 +62,13 @@ class FlowStep(StrEnum):
 class ProductAdapter(Protocol):
     """What every vertical implements.
 
-    Adapters are **stateless**. Nothing here writes an offer to Postgres or
-    Redis: GTS caches by ``request_id`` and we pass through (ARCHITECTURE.md
-    D2, §9). An adapter translates a request into the GTS call its vertical
-    uses and normalises the answer — envelope, money format, field names.
+    Adapters are **stateless singletons**. Nothing here writes an offer to
+    Postgres or Redis: GTS caches by ``request_id`` and we pass through
+    (ARCHITECTURE.md D2, §9). The authenticated ``GtsClient`` is handed in per
+    call rather than held by the adapter — the credential it wraps comes from
+    the request's own DB session, which an adapter must not know about. An
+    adapter validates the request lightly and forwards it in GTS's own shape
+    (API.md §20).
     """
 
     code: ProductCode
@@ -72,19 +77,23 @@ class ProductAdapter(Protocol):
         """The steps this vertical serves; anything else is ``404``."""
         ...
 
-    async def search(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def search(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Start a search. Returns GTS's ``request_id`` immediately."""
         ...
 
-    async def offers(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def offers(self, client: GtsClient, params: dict[str, Any]) -> dict[str, Any]:
         """Page through offers — a passthrough to GTS (ARCHITECTURE.md §9)."""
         ...
 
-    async def verify(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def verify(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Re-check price and availability before booking."""
         ...
 
-    async def book(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def book(self, client: GtsClient, payload: dict[str, Any]) -> dict[str, Any]:
         """Hold the booking on the GTS side. The saga takes over from here."""
         ...
 

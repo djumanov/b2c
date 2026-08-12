@@ -17,11 +17,11 @@ takrorlamaydi.
 
 | | |
 |---|---|
-| Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14) |
-| Endpointlar | 81 ta yo'l / 115 operatsiya (API.md dagi ~150 dan) |
+| Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti va aviachipta qidiruvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5 — qisman) |
+| Endpointlar | 83 ta yo'l / 117 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 23 ta + `alembic_version` |
 | Migratsiyalar | 22 ta, bitta head (`b5e3d1a7c942`) |
-| Testlar | 663 ta — unit 20 fayl · contract 7 · integration 26 |
+| Testlar | 733 ta — unit 24 fayl · contract 8 · integration 28 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -72,6 +72,9 @@ kontrakt testlari.
 | `customers` (social) | `social/{provider}/` — Google ID token tekshiruvi, topiladi yoki yaratiladi | 1 |
 | `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy; `airports/?q=` — keshsiz qidiruv passthrough'i; auth yo'q, jadval yo'q | 3 |
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
+| `providers/gts/client.py` | Autentifikatsiyalangan GTS klienti: sessiya Redis'da (`gts:session:{id}:{updated_at}`), qayta kirish **qulf ostida**, 401/403 da bitta avtomatik takror, xato xaritasi (HTTP 200 ichidagi xato ham). Sessiya `sessionid` cookie sifatida yuboriladi — **taxmin**, jonli GTS'da tekshirilsin | — |
+| `providers/products/flight.py` | `flight` adapteri: `search`+`offers`, sof passthrough — tana yengil tekshiruvdan so'ng GTS'ga aynan, javob `data` si kelganicha (API.md §20, 2026-08-12 qarori) | — |
+| `products` (public) | `POST /public/{product}/search/` va `offers/` — generik router, adapter registry orqali; gate `product_settings` (bayroq emas), 30/daq `search` limiti, auth ixtiyoriy; credential yo'q → `502`. Hech narsa saqlamaydi (D2), `test_search_passthrough.py` qo'riqlaydi | 2 |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
@@ -80,7 +83,7 @@ kontrakt testlari.
 | `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
 | `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
 
-> Ustundagi son — **yo'llar** soni (jami — §1 dagi 78).
+> Ustundagi son — **yo'llar** soni (jami — §1 dagi 80).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
 > beshtasi `GET`+`PATCH` juftligi (`products/` faqat `GET`, `cache/purge/`
 > faqat `POST`); `integrations` ning to'qqizta yo'lida 14 ta. `customers` ning
@@ -107,10 +110,28 @@ To'liq reja — [PHASES.md](PHASES.md).
 |---|---|---|
 | 7 | `tests/e2e/test_phase1_acceptance.py` | Uchala qabul mezoni toza baza ustida, uchidan-uchiga |
 
+**2-fazadan boshlab yuborilgani (2026-08-12):** GTS klienti + sessiya menejeri
+(`providers/gts/client.py`), `flight` adapteri va `products` moduli —
+`search/` va `offers/` jonli passthrough sifatida ishlaydi. Jonli GTS'da
+tekshirilishi kerak bo'lgan **ikkita taxmin** kodda belgilangan:
+
+- sessiya `Cookie: sessionid={session_key}` sifatida yuboriladi (Django
+  default; Postman kolleksiyasi cookie jar'ga tayanadi va nomini aytmaydi) —
+  noto'g'ri chiqsa `client.py` dagi `_SESSION_COOKIE` yagona burama;
+- o'lgan sessiya HTTP `401` **yoki** `403` deb qabul qilinadi — jonli javob
+  ko'rilgach toraytirilsin. GTS akkauntida `white_list` (server IP) va
+  `is_single` (bitta sessiya — panelga kirish backend sessiyasini o'ldiradi)
+  bayroqlari ham ishlab chiqarishda muhim.
+
 **2-fazaga qoldirilgan, ya'ni bugun `404` qaytaradigan yo'llar:**
 
 - `POST /admin/integrations/gts/test/` — probe `providers/gts/` ga tushadi
-  (2-fazaning 1-bo'lagi) va 2FA holatini alohida ko'rsatishi kerak (D1).
+  (2-fazaning 1-bo'lagi qurildi, probe'ning o'zi hali yo'q) va 2FA holatini
+  alohida ko'rsatishi kerak (D1).
+- `POST /public/flight/verify|upsell|booking/` va boshqa vertikallar —
+  adapter e'lon qilmagan qadam `404` (registry gate orqali). Idempotent
+  `GET` uchun ikki takror (API.md §12) birinchi `GET` iste'molchisi bilan
+  keladi.
 - `POST /admin/integrations/payments/{code}/test/` — Payme va Click
   adapterlari bilan birga (2-fazaning 7-bo'lagi). Bugungi `PaymentProvider`
   portida sinash uchun chaqiriladigan metod yo'q: har biri haqiqiy to'lovni
@@ -118,10 +139,11 @@ To'liq reja — [PHASES.md](PHASES.md).
   da shunday.
 - `POST /public/auth/devices/` — API.md §41, push bilan birga.
 
-**Seam'lar 2-faza uchun tayyor**, va qabul mezoni 5-bo'lakdagi bilan bir xil:
-2-faza `providers/gts/client.py` va `providers/payments/{payme,click}.py`
-qo'shadi, `integrations` ga **tegmaydi**. `gts_base_url()` shu mezonni buzmaydi
-— uni 2-faza emas, `catalog` (1-faza, [PHASES.md](PHASES.md) §2.6) qo'shdi.
+**Seam'lar ishladi**: `providers/gts/client.py` qo'shildi va `integrations`
+ga **tegilmadi** — mezon bajarildi (`active_credential()` orqali o'qiydi,
+xolos). `providers/payments/{payme,click}.py` uchun ham mezon o'sha.
+`gts_base_url()` ni 2-faza emas, `catalog` (1-faza, [PHASES.md](PHASES.md)
+§2.6) qo'shgan edi.
 
 | Seam | Nima qaytaradi |
 |---|---|

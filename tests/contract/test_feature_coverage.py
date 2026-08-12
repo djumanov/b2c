@@ -66,6 +66,10 @@ CORE_PREFIXES: tuple[str, ...] = (
     f"{API_PREFIX}/public/content/privacy-policy/",
     f"{API_PREFIX}/public/content/terms/",
     f"{API_PREFIX}/public/content/about/",
+    # The search flow — the docstring's ``/public/{product}/…`` case. Gated by
+    # ``product_settings`` through the products router's own dependency, which
+    # this sweep cannot see; the flag machinery it looks for does not apply.
+    f"{API_PREFIX}/public/{{product}}/",
 )
 
 
