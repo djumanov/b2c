@@ -1354,7 +1354,6 @@ GET /admin/integrations/gts/credentials/
       { "id": "9f2c…", "label": "Prod agent", "is_active": true,
         "base_url": "https://api2.globaltravel.space",
         "email": "agent@brand.uz", "password": "••••••••",
-        "agent_uid": "17c4…5695",
         "created_at": "…", "updated_at": "…" },
       { "id": "1a7b…", "label": "Zaxira", "is_active": false, … }
     ],
@@ -1364,8 +1363,6 @@ GET /admin/integrations/gts/credentials/
 - `label` — owner beradigan nom, ro'yxat ichida takrorlanmaydi.
 - `base_url` — har bir credential o'ziniki bilan turadi, shunda prod va sinov muhiti
   yonma-yon saqlanadi va bitta amal bilan almashadi.
-- `agent_uid` — GTS ba'zi endpointlarda `agent-uid` sarlavhasi sifatida so'raydi;
-  majburiy emas.
 - **Birinchi qo'shilgan credential o'zi tanlangan bo'ladi** — nol yozuvda "qaysi biri
   ishlatiladi?" degan savol umuman tug'ilmasligi uchun.
 - `activate/` **sinovdan o'tgani shart emas**: `test/` yiqilishi GTS tomondagi sababdan

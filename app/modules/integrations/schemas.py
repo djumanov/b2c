@@ -17,7 +17,6 @@ from app.providers.social.base import SocialProviderCode
 
 Label = Annotated[str, Field(min_length=1, max_length=64)]
 GtsPassword = Annotated[str, Field(min_length=1, max_length=128)]
-AgentUid = Annotated[str, Field(max_length=64)]
 
 
 def _clean_base_url(value: str) -> str:
@@ -35,7 +34,6 @@ class CredentialCreateIn(BaseModel):
     email: EmailStr
     password: GtsPassword
     base_url: str = DEFAULT_BASE_URL
-    agent_uid: AgentUid | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -55,7 +53,6 @@ class CredentialUpdateIn(BaseModel):
     email: EmailStr | None = None
     password: GtsPassword | None = None
     base_url: str | None = None
-    agent_uid: AgentUid | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -71,7 +68,6 @@ class CredentialOut(BaseModel):
     base_url: str
     email: str
     password: str
-    agent_uid: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime

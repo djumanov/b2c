@@ -85,7 +85,6 @@ class ActiveGtsCredential:
     base_url: str
     email: str
     password: str
-    agent_uid: str | None
     updated_at: datetime
 
     def __repr__(self) -> str:
@@ -107,7 +106,6 @@ def _aud(row: GtsCredential) -> dict[str, Any]:
         "label": row.label,
         "email": row.email,
         "base_url": row.base_url,
-        "agent_uid": row.agent_uid,
         "is_active": row.is_active,
     }
 
@@ -120,7 +118,6 @@ def _out(row: GtsCredential) -> CredentialOut:
         email=row.email,
         # This path never decrypts, so it cannot leak the password by accident.
         password=MASKED_PASSWORD,
-        agent_uid=mask_secret(row.agent_uid) if row.agent_uid else None,
         is_active=row.is_active,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -178,7 +175,6 @@ async def create_credential(
         email=str(data.email),
         password=ciphertext,
         key_version=key_version,
-        agent_uid=data.agent_uid or None,
         is_active=await repository.count(session) == 0,
     )
     session.add(row)
@@ -204,8 +200,6 @@ async def update_credential(
         row.email = str(data.email)
     if data.base_url is not None:
         row.base_url = data.base_url
-    if data.agent_uid is not None:
-        row.agent_uid = data.agent_uid or None
     if data.password is not None:
         row.password, row.key_version = encrypt(data.password)
     elif needs_reencryption(row.key_version):
@@ -295,7 +289,6 @@ async def active_credential(session: AsyncSession) -> ActiveGtsCredential | None
         base_url=row.base_url,
         email=row.email,
         password=decrypt(row.password, row.key_version),
-        agent_uid=row.agent_uid,
         updated_at=row.updated_at,
     )
 
