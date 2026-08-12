@@ -13,6 +13,7 @@ look like oversights next to the rest of the codebase and both are deliberate
 """
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -79,6 +80,45 @@ async def test_countries_returns_the_bare_data_list() -> None:
     )
 
     assert await static.countries(BASE_URL) == [{"code": "UZ"}]
+
+
+@respx.mock
+async def test_airports_returns_the_bare_data_list() -> None:
+    airports = [{"code": "TAS", "name": "Tashkent"}]
+    route = respx.get(f"{BASE_URL}/static/airports/TAS").mock(
+        return_value=httpx.Response(200, json=_envelope(airports))
+    )
+
+    assert await static.airports(BASE_URL, search="TAS") == airports
+    assert route.calls.last.request.url.path == "/static/airports/TAS"
+
+
+@respx.mock
+async def test_the_airport_search_term_is_percent_encoded() -> None:
+    """User input lands in a path segment; URL structure must not leak in."""
+    route = respx.get(url__regex=rf"{BASE_URL}/static/airports/.*").mock(
+        return_value=httpx.Response(200, json=_envelope([]))
+    )
+
+    await static.airports(BASE_URL, search="foo/bar?x")
+
+    assert route.calls.last.request.url.raw_path.endswith(
+        b"/static/airports/foo%2Fbar%3Fx"
+    )
+
+
+@respx.mock
+async def test_a_non_latin_search_term_survives_the_trip() -> None:
+    route = respx.get(url__regex=rf"{BASE_URL}/static/airports/.*").mock(
+        return_value=httpx.Response(200, json=_envelope([]))
+    )
+
+    await static.airports(BASE_URL, search="Ташкент")
+
+    encoded = quote("Ташкент", safe="")
+    assert route.calls.last.request.url.raw_path.endswith(
+        f"/static/airports/{encoded}".encode()
+    )
 
 
 # --- the two details that read like mistakes -----------------------------------------
