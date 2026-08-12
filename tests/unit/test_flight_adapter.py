@@ -29,10 +29,16 @@ SEARCH_BODY: dict[str, Any] = {
 
 
 class RecordingClient:
-    """A ``GtsClient`` that remembers the one call made through it."""
+    """A ``GtsClient`` that remembers the one call made through it.
 
-    def __init__(self, data: dict[str, Any]) -> None:
+    ``post`` answers with the bare data (like the real client); a caller of
+    ``post_envelope`` gets the same data wrapped in a GTS envelope whose
+    status is ``self.status``.
+    """
+
+    def __init__(self, data: dict[str, Any], *, status: str = "success") -> None:
         self.data = data
+        self.status = status
         self.calls: list[tuple[str, dict[str, Any], float | None]] = []
 
     async def get(
@@ -49,6 +55,12 @@ class RecordingClient:
     ) -> dict[str, Any]:
         self.calls.append((path, json, timeout))
         return self.data
+
+    async def post_envelope(
+        self, path: str, *, json: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
+        self.calls.append((path, json, timeout))
+        return {"status": self.status, "message": "…", "code": 0, "data": self.data}
 
 
 def test_the_adapter_satisfies_the_port() -> None:
@@ -138,7 +150,7 @@ async def test_an_answer_without_a_request_id_is_refused() -> None:
 # --- offers --------------------------------------------------------------------------
 
 
-async def test_offers_are_passed_through_untouched() -> None:
+async def test_offers_are_passed_through_with_the_search_status() -> None:
     gts_answer = {
         "request_id": "r-1",
         "next_token": "t-2",
@@ -146,7 +158,7 @@ async def test_offers_are_passed_through_untouched() -> None:
         "trip_type": "RT",
         "offers": [{"offer_id": "o-1", "price_info": {"price": 221.86}}],
     }
-    client = RecordingClient(gts_answer)
+    client = RecordingClient(gts_answer, status="success")
     params = {
         "request_id": "r-1",
         "next_token": None,
@@ -160,7 +172,21 @@ async def test_offers_are_passed_through_untouched() -> None:
     assert path == "/v1/content/offers/"
     assert sent is params
     assert timeout == GtsTimeouts.SEARCH_SECONDS
-    assert result is gts_answer
+    assert result == {**gts_answer, "search_status": "success"}
+
+
+async def test_a_running_search_reports_in_process_with_partial_offers() -> None:
+    """GTS answers ``status: "In process"`` with results already inside —
+    that is a state to relay, never an error (observed live, 2026-08-12)."""
+    client = RecordingClient(
+        {"request_id": "r-1", "offers": [{"offer_id": "o-1"}], "next_token": "t"},
+        status="In process",
+    )
+
+    result = await FlightAdapter().offers(client, {"request_id": "r-1"})
+
+    assert result["search_status"] == "In process"
+    assert result["offers"] == [{"offer_id": "o-1"}]
 
 
 async def test_offers_without_a_request_id_fail_before_gts() -> None:

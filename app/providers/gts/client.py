@@ -4,15 +4,19 @@ Everything ``/static/*`` is not: these calls act **as the installation's own
 GTS agent account** (``/v1/…``), so a session has to exist before the first
 request and has to survive every worker asking for it at once.
 
-How the session works (ARCHITECTURE.md §7, GTS.md §3):
+How the session works (ARCHITECTURE.md §7, GTS.md §3; verified against live
+GTS on 2026-08-12):
 
-* ``POST /v1/auth/signin/`` returns ``session_key`` and ``timeout_minutes``
-  (typically 360). GTS then expects the key back as its session cookie —
-  there is no Authorization header anywhere in its protocol.
-* The key lives in Redis under ``gts:session:{credential_id}:{updated_at}``.
-  Deriving the key from the credential row means switching the active
-  credential or changing its password needs **no invalidation**: the new
-  Redis key is simply empty and the old one dies on its TTL.
+* ``POST /v1/auth/signin/`` returns ``session_key``, ``token`` and
+  ``timeout_minutes`` (typically 360). GTS then expects **both** values back
+  as cookies — ``esession={session_key}; token={token}`` — on every ``/v1/``
+  call; either one alone is a 401, and there is no Authorization header
+  anywhere in its protocol.
+* The ready cookie-header string lives in Redis under
+  ``gts:session:{credential_id}:{updated_at}``. Deriving the key from the
+  credential row means switching the active credential or changing its
+  password needs **no invalidation**: the new Redis key is simply empty and
+  the old one dies on its TTL.
 * **Re-login is taken under a lock** (``SET NX``): every worker notices the
   empty key at the same moment, and without the lock GTS would see a burst of
   logins from one machine account. Losers poll for the winner's key.
@@ -42,11 +46,6 @@ from app.modules.integrations.service import ActiveGtsCredential
 from app.providers.gts.base import GtsClient, GtsTimeouts
 
 logger = get_logger(__name__)
-
-#: GTS is a Django service and the collection relies on the cookie jar, so the
-#: session rides under Django's default cookie name. **Assumption** — the one
-#: knob to turn if live GTS answers 401 to a fresh session (STATUS.md).
-_SESSION_COOKIE: Final = "sessionid"
 
 #: Re-login this many seconds before GTS would have expired the session, so a
 #: request never sets out with a key that dies in flight.
@@ -80,11 +79,13 @@ class GtsSessionManager:
         self._lock_key = f"gts:session:lock:{credential.id}:{stamp}"
 
     async def token(self) -> str:
-        """A live session key, signing in under the lock if there is none.
+        """A live session, as the ready ``Cookie`` header value.
 
-        Losers poll rather than wait on the lock: if the winner dies (the lock
-        TTL expires) or its sign-in fails, the next caller through the loop
-        takes the lock and signs in itself, bounded by the deadline.
+        The stored string is ``esession=…; token=…`` — assembled once at
+        sign-in so no caller ever parses it. Losers poll rather than wait on
+        the lock: if the winner dies (the lock TTL expires) or its sign-in
+        fails, the next caller through the loop takes the lock and signs in
+        itself, bounded by the deadline.
         """
         redis = get_redis()
         deadline = time.monotonic() + _WAIT_DEADLINE_SECONDS
@@ -99,9 +100,9 @@ class GtsSessionManager:
                     cached = await redis.get(self._key)
                     if cached:
                         return str(cached)
-                    session_key, ttl = await self._signin()
-                    await redis.set(self._key, session_key, ex=ttl)
-                    return session_key
+                    cookie, ttl = await self._signin()
+                    await redis.set(self._key, cookie, ex=ttl)
+                    return cookie
                 finally:
                     await redis.delete(self._lock_key)
             if time.monotonic() >= deadline:
@@ -116,10 +117,13 @@ class GtsSessionManager:
         await get_redis().delete(self._key)
 
     async def _signin(self) -> tuple[str, int]:
-        """One ``POST /v1/auth/signin/``; returns ``(session_key, ttl_seconds)``.
+        """One ``POST /v1/auth/signin/`` → ``(cookie_header_value, ttl_seconds)``.
 
-        ``follow_redirects`` stays **off**, unlike ``static.py``: this request
-        carries the account password and must not follow it anywhere.
+        GTS's answer carries the session in **two** fields, ``session_key``
+        and ``token``, and its ``/v1/`` endpoints demand both back as cookies
+        (verified live: either alone is a 401). ``follow_redirects`` stays
+        **off**, unlike ``static.py``: this request carries the account
+        password and must not follow it anywhere.
         """
         credential = self._credential
         url = f"{credential.base_url.rstrip('/')}/v1/auth/signin/"
@@ -141,9 +145,16 @@ class GtsSessionManager:
 
         data = _translate("auth/signin", response)
         session_key = data.get("session_key")
-        if not isinstance(session_key, str) or not session_key:
+        token = data.get("token")
+        if (
+            not isinstance(session_key, str)
+            or not session_key
+            or not isinstance(token, str)
+            or not token
+        ):
             raise UpstreamError("the GTS sign-in returned an unexpected shape")
-        return session_key, _session_ttl(data.get("timeout_minutes"))
+        cookie = f"esession={session_key}; token={token}"
+        return cookie, _session_ttl(data.get("timeout_minutes"))
 
 
 class GtsHttpClient:
@@ -178,6 +189,20 @@ class GtsHttpClient:
             "POST", path, params=None, json=json, timeout=timeout
         )
 
+    async def post_envelope(
+        self, path: str, *, json: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
+        """Like ``post``, but the whole GTS envelope comes back.
+
+        For the calls whose ``status`` is a **state**, not a verdict: a
+        running search answers ``offers/`` with ``status: "In process"`` and
+        partial results already in ``data`` (observed live, 2026-08-12).
+        Only ``status: "error"`` is a failure here.
+        """
+        return await self._request(
+            "POST", path, params=None, json=json, timeout=timeout, envelope=True
+        )
+
     async def _request(
         self,
         method: str,
@@ -186,10 +211,11 @@ class GtsHttpClient:
         params: dict[str, Any] | None,
         json: dict[str, Any] | None,
         timeout: float | None,
+        envelope: bool = False,
     ) -> dict[str, Any]:
         for attempt in (1, 2):
-            session_key = await self._session.token()
-            headers = {"Cookie": f"{_SESSION_COOKIE}={session_key}"}
+            # The manager hands back the ready ``esession=…; token=…`` pair.
+            headers = {"Cookie": await self._session.token()}
             request_id = request_id_var.get()
             if request_id:
                 # ARCHITECTURE.md §7: our request id travels outward, so a GTS
@@ -223,7 +249,7 @@ class GtsHttpClient:
                 )
                 await self._session.invalidate()
                 continue
-            return _translate(path, response)
+            return _translate(path, response, envelope=envelope)
         raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -238,22 +264,29 @@ def _session_ttl(timeout_minutes: object) -> int:
     ``expired_time`` is ignored: it is a naive timestamp in GTS's own clock,
     and parsing it would import clock-skew bugs the margin already covers.
     """
-    if not isinstance(timeout_minutes, int | str):
+    # Live GTS answers with a float (``360.0``); the collection showed an int.
+    if not isinstance(timeout_minutes, int | float | str):
         return _FALLBACK_TTL_SECONDS
     try:
-        minutes = int(timeout_minutes)
-    except ValueError:
+        minutes = int(float(timeout_minutes))
+    except (ValueError, OverflowError):
         return _FALLBACK_TTL_SECONDS
     if minutes <= 0:
         return _FALLBACK_TTL_SECONDS
     return max(60, minutes * 60 - _TTL_MARGIN_SECONDS)
 
 
-def _translate(path: str, response: httpx.Response) -> dict[str, Any]:
+def _translate(
+    path: str, response: httpx.Response, *, envelope: bool = False
+) -> dict[str, Any]:
     """The anti-corruption layer — ``static._get``'s twin for ``/v1/``.
 
     Every way GTS can disappoint becomes a typed ``AppError``, including the
-    failure that arrives as HTTP 200 with ``status: "error"``.
+    failure that arrives as HTTP 200 with ``status: "error"``. With
+    ``envelope=True`` the whole payload is returned and only ``"error"`` is a
+    failure — any other status (``"success"``, ``"In process"``, whatever GTS
+    invents next) is a state the caller wants to see; without it the caller
+    gets the bare ``data`` and anything but ``"success"`` is refused.
     """
     if response.status_code != httpx.codes.OK:
         logger.warning("gts_http_error", path=path, status=response.status_code)
@@ -267,7 +300,9 @@ def _translate(path: str, response: httpx.Response) -> dict[str, Any]:
         logger.warning("gts_unparsable", path=path)
         raise UpstreamError("GTS returned a body we cannot read") from exc
 
-    if not isinstance(payload, dict) or payload.get("status") != "success":
+    status = payload.get("status") if isinstance(payload, dict) else None
+    rejected = status == "error" if envelope else status != "success"
+    if not isinstance(payload, dict) or rejected:
         upstream_message = None
         upstream_code = None
         if isinstance(payload, dict):
@@ -284,7 +319,7 @@ def _translate(path: str, response: httpx.Response) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise UpstreamError("GTS returned an unexpected shape")
 
-    result: dict[str, Any] = data
+    result: dict[str, Any] = payload if envelope else data
     return result
 
 

@@ -85,5 +85,15 @@ class GtsClient(Protocol):
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]: ...
 
+    async def post_envelope(
+        self, path: str, *, json: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
+        """The whole GTS envelope, for calls whose ``status`` is a state.
+
+        A running search answers ``offers/`` with ``status: "In process"``
+        and partial results already in ``data``; only ``"error"`` fails.
+        """
+        ...
+
 
 __all__ = ["GtsClient", "GtsSession", "GtsTimeouts", "OrderStatus"]

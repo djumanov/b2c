@@ -41,19 +41,27 @@ def _credential(
     )
 
 
+#: What ``token()`` should hand back for the default mock below.
+EXPECTED_COOKIE = "esession=f771d913-3428-ec7e-9d65-72ef9c8783aa; token=tok-fernet-1"
+
+
 def _signin_response(
-    session_key: str = "f771d913342bec7e9d6572ef9c8783",
+    session_key: str = "f771d913-3428-ec7e-9d65-72ef9c8783aa",
     timeout_minutes: Any = 360,
+    token: Any = "tok-fernet-1",
 ) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "session_key": session_key,
+        "expired_time": "2026-08-01T18:00:00.000000",
+        "timeout_minutes": timeout_minutes,
+    }
+    if token is not None:
+        data["token"] = token
     return {
         "status": "success",
         "message": "Все ок.",
         "code": 0,
-        "data": {
-            "session_key": session_key,
-            "expired_time": "2026-08-01T18:00:00.000000",
-            "timeout_minutes": timeout_minutes,
-        },
+        "data": data,
     }
 
 
@@ -90,7 +98,7 @@ async def test_a_miss_signs_in_once_and_writes_the_derived_key(
 
     token = await GtsSessionManager(credential).token()
 
-    assert token == "f771d913342bec7e9d6572ef9c8783"
+    assert token == EXPECTED_COOKIE
     assert route.call_count == 1
     key = f"gts:session:{credential.id}:{credential.updated_at.isoformat()}"
     assert await fake_redis.get(key) == token
@@ -127,6 +135,31 @@ async def test_garbage_timeout_minutes_falls_back_to_thirty_minutes(
 
     key = f"gts:session:{credential.id}:{credential.updated_at.isoformat()}"
     assert await fake_redis.ttl(key) == 30 * 60
+
+
+@respx.mock
+async def test_a_float_timeout_minutes_is_honoured(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Live GTS answers ``360.0``; the collection showed an int. Both count."""
+    credential = _credential()
+    _mock_signin(timeout_minutes=360.0)
+
+    await GtsSessionManager(credential).token()
+
+    key = f"gts:session:{credential.id}:{credential.updated_at.isoformat()}"
+    assert await fake_redis.ttl(key) == 360 * 60 - 300
+
+
+@respx.mock
+async def test_a_signin_without_the_token_field_is_refused(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Half a session is no session: /v1/ 401s without both cookies."""
+    _mock_signin(token=None)
+
+    with pytest.raises(UpstreamError):
+        await GtsSessionManager(_credential()).token()
 
 
 @respx.mock
@@ -177,7 +210,7 @@ async def test_concurrent_callers_produce_one_login(
 
     tokens = await asyncio.gather(*(manager.token() for _ in range(5)))
 
-    assert set(tokens) == {"f771d913342bec7e9d6572ef9c8783"}
+    assert set(tokens) == {EXPECTED_COOKIE}
     assert route.call_count == 1
 
 
@@ -215,7 +248,7 @@ async def test_a_dead_winner_does_not_strand_the_losers(
 
     token = await GtsSessionManager(credential).token()
 
-    assert token == "f771d913342bec7e9d6572ef9c8783"
+    assert token == EXPECTED_COOKIE
     assert route.call_count == 1
 
 
@@ -292,7 +325,7 @@ async def test_a_failed_signin_releases_the_lock_for_the_next_caller(
         await manager.token()
     token = await manager.token()
 
-    assert token == "f771d913342bec7e9d6572ef9c8783"
+    assert token == EXPECTED_COOKIE
     assert route.call_count == 2
 
 

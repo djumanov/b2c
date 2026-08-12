@@ -95,10 +95,20 @@ class FlightAdapter:
         return data
 
     async def offers(self, client: GtsClient, params: dict[str, Any]) -> dict[str, Any]:
+        """One page of offers, plus where the search stands.
+
+        GTS reports progress in its envelope's ``status`` — ``"In process"``
+        while providers are still answering (with partial results already in
+        ``data``), ``"success"`` when done. The envelope is ours to strip, so
+        that one field rides on as ``search_status``, verbatim: the client
+        polls until it says ``"success"``.
+        """
         _validated(_FlightOffersIn, params)
-        return await client.post(
+        payload = await client.post_envelope(
             "/v1/content/offers/", json=params, timeout=GtsTimeouts.SEARCH_SECONDS
         )
+        data: dict[str, Any] = payload["data"]
+        return {**data, "search_status": payload.get("status")}
 
     async def verify(
         self, client: GtsClient, payload: dict[str, Any]
