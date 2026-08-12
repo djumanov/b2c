@@ -1167,7 +1167,7 @@ keshlanadi.
 | Metod | Yo'l | Izoh |
 |---|---|---|
 | `GET` | `/public/catalog/places/` | Shahar/aeroport avtoto'ldirish; `?q=`, `?type=` |
-| `GET` | `/public/catalog/airports/` | Aeroport qidiruvi (avtoto'ldirish); `?q=` |
+| `GET` | `/public/catalog/airports/` | Aeroport qidiruvi (avtoto'ldirish); `?q=` ixtiyoriy — berilmasa to'liq ro'yxat |
 | `GET` | `/public/catalog/stations/` | Temir yo'l stansiyalari; `?q=` |
 | `GET` | `/public/catalog/document-types/` | Hujjat turlari; `?country=` (ISO 3166-1 alpha-2) |
 | `GET` | `/public/catalog/countries/` | Davlatlar — kod, telefon kodi va maskasi, bayroq |
@@ -1187,7 +1187,9 @@ katalog — [PHASES.md](PHASES.md) §2.6.
 `airports/` ham jonli proxy, lekin **keshsiz**: har bir so'rov GTS'ga boradi va javob
 Redis'da saqlanmaydi, uzun `Cache-Control` ham qo'yilmaydi. Erkin matnli `q` chegarasiz
 kesh kalitini keltirib chiqarardi — §12 dagi "qidiruv natijalari bizda keshlanmaydi"
-qoidasining ruhi shu yerga ham tegishli. `q` majburiy, 2–64 belgi.
+qoidasining ruhi shu yerga ham tegishli. `q` ixtiyoriy: berilsa 2–64 belgi va GTS
+`/static/airports/{q}` bo'yicha qidiradi; berilmasa GTS'ning **to'liq aeroportlar
+ro'yxati** kelganicha qaytadi.
 
 Ular ishlashi uchun GTS credential'i kiritilgan bo'lishi **shart emas**; aktiv
 credential bo'lsa (§29), uning `base_url` i ishlatiladi.
@@ -1354,7 +1356,6 @@ GET /admin/integrations/gts/credentials/
       { "id": "9f2c…", "label": "Prod agent", "is_active": true,
         "base_url": "https://api2.globaltravel.space",
         "email": "agent@brand.uz", "password": "••••••••",
-        "agent_uid": "17c4…5695",
         "created_at": "…", "updated_at": "…" },
       { "id": "1a7b…", "label": "Zaxira", "is_active": false, … }
     ],
@@ -1364,8 +1365,6 @@ GET /admin/integrations/gts/credentials/
 - `label` — owner beradigan nom, ro'yxat ichida takrorlanmaydi.
 - `base_url` — har bir credential o'ziniki bilan turadi, shunda prod va sinov muhiti
   yonma-yon saqlanadi va bitta amal bilan almashadi.
-- `agent_uid` — GTS ba'zi endpointlarda `agent-uid` sarlavhasi sifatida so'raydi;
-  majburiy emas.
 - **Birinchi qo'shilgan credential o'zi tanlangan bo'ladi** — nol yozuvda "qaysi biri
   ishlatiladi?" degan savol umuman tug'ilmasligi uchun.
 - `activate/` **sinovdan o'tgani shart emas**: `test/` yiqilishi GTS tomondagi sababdan

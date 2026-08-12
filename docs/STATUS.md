@@ -20,7 +20,7 @@ takrorlamaydi.
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti va aviachipta qidiruvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5 — qisman) |
 | Endpointlar | 83 ta yo'l / 117 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 23 ta + `alembic_version` |
-| Migratsiyalar | 22 ta, bitta head (`b5e3d1a7c942`) |
+| Migratsiyalar | 25 ta, bitta head (`182e01999182`) |
 | Testlar | 733 ta — unit 24 fayl · contract 8 · integration 28 |
 | Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
 

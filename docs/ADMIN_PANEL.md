@@ -205,7 +205,7 @@ O'qish — har qanday admin; **yozish — faqat owner**.
 | `GET/PATCH/DELETE` | `integrations/gts/credentials/{id}/` | o'qish admin, yozish owner |
 | `POST` | `integrations/gts/credentials/{id}/activate/` | owner |
 
-- Maydonlar: `label` (unikal), `email`, `password`, `base_url`, `agent_uid`.
+- Maydonlar: `label` (unikal), `email`, `password`, `base_url`.
 - **Ro'yxat, bittasi aktiv.** Birinchi yaratilgani avtomatik aktiv bo'ladi.
   `activate/` boshqasini aktivlashtiradi. UI: radio/badge bilan aktivini
   ko'rsating.

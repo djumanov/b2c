@@ -60,7 +60,6 @@ async def gts_installation(
         base_url=GTS,
         email="agent@brand.uz",
         password="gts-secret-1a2b",
-        agent_uid=None,
         updated_at=dt.datetime(2026, 8, 1, 12, 0, 0, tzinfo=dt.UTC),
     )
 

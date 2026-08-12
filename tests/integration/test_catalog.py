@@ -188,6 +188,34 @@ async def test_airports_arrive_inside_our_envelope(api: AsyncClient) -> None:
 
 
 @respx.mock
+async def test_omitting_q_returns_the_complete_airport_list(
+    api: AsyncClient,
+) -> None:
+    """No search term → GTS's full catalogue, still a live passthrough."""
+    route = respx.get(f"{DEFAULT_BASE_URL}/static/airports").mock(
+        return_value=httpx.Response(200, json=_envelope([GTS_AIRPORT, {"code": "IST"}]))
+    )
+
+    response = await api.get(AIRPORTS)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == [GTS_AIRPORT, {"code": "IST"}]
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_the_full_list_is_not_cached_either(api: AsyncClient) -> None:
+    route = respx.get(f"{DEFAULT_BASE_URL}/static/airports").mock(
+        return_value=httpx.Response(200, json=_envelope([GTS_AIRPORT]))
+    )
+
+    await api.get(AIRPORTS)
+    await api.get(AIRPORTS)
+
+    assert route.call_count == 2
+
+
+@respx.mock
 async def test_airports_need_no_token(api: AsyncClient) -> None:
     _mock_airports()
 
@@ -298,16 +326,18 @@ async def test_an_invalid_country_is_rejected_before_gts_is_called(
 
 
 @respx.mock
-@pytest.mark.parametrize("q", [None, "T", "x" * 65])
+@pytest.mark.parametrize("q", ["T", "x" * 65])
 async def test_a_bad_search_is_rejected_before_gts_is_called(
-    api: AsyncClient, q: str | None
+    api: AsyncClient, q: str
 ) -> None:
-    """Missing, one keystroke, or a pasted essay — none of them leaves the app."""
-    route = respx.get(url__regex=rf"{DEFAULT_BASE_URL}/static/airports/.*").mock(
+    """One keystroke or a pasted essay — neither leaves the app.
+
+    A *missing* ``q`` is not among them: that is the full-list request."""
+    route = respx.get(url__regex=rf"{DEFAULT_BASE_URL}/static/airports.*").mock(
         return_value=httpx.Response(200, json=_envelope([]))
     )
 
-    response = await api.get(AIRPORTS, params={"q": q} if q is not None else None)
+    response = await api.get(AIRPORTS, params={"q": q})
 
     assert response.status_code == 422
     assert response.json()["errors"][0]["code"] == "validation"

@@ -54,13 +54,17 @@ async def countries(base_url: str) -> list[dict[str, Any]]:
     return await _get("country", base_url=base_url)
 
 
-async def airports(base_url: str, *, search: str) -> list[dict[str, Any]]:
+async def airports(base_url: str, *, search: str | None = None) -> list[dict[str, Any]]:
     """Airport autocomplete for the flight search form.
 
-    ``search`` is user input landing in a **path segment** — the only place in
-    this file that happens — so it is percent-encoded with nothing held safe:
-    a stray ``/``, ``?`` or ``#`` must reach GTS as data, not as URL structure.
+    Without ``search`` GTS answers with its **complete airport list**
+    (``/static/airports``). With one, ``search`` is user input landing in a
+    **path segment** — the only place in this file that happens — so it is
+    percent-encoded with nothing held safe: a stray ``/``, ``?`` or ``#``
+    must reach GTS as data, not as URL structure.
     """
+    if search is None:
+        return await _get("airports", base_url=base_url)
     return await _get(f"airports/{quote(search, safe='')}", base_url=base_url)
 
 

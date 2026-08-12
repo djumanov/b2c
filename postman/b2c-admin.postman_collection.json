@@ -935,7 +935,7 @@
                     {
                       "key": "q",
                       "value": "TAS",
-                      "description": "Airport name, city or IATA code fragment — 2 to 64 characters, anything else is a 422. Free text: spaces and non-Latin scripts are fine."
+                      "description": "Optional. Airport name, city or IATA code fragment — 2 to 64 characters when present, anything else is a 422. Free text: spaces and non-Latin scripts are fine. Omit the parameter entirely to get GTS's complete airport list."
                     }
                   ]
                 },
@@ -1590,7 +1590,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"label\": \"Production\",\n  \"email\": \"agent@example.uz\",\n  \"password\": \"gts-account-password\",\n  \"base_url\": \"https://api2.globaltravel.space\",\n  \"agent_uid\": \"\"\n}",
+                  "raw": "{\n  \"label\": \"Production\",\n  \"email\": \"agent@example.uz\",\n  \"password\": \"gts-account-password\",\n  \"base_url\": \"https://api2.globaltravel.space\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"

@@ -63,11 +63,6 @@ class GtsCredential(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: retyping every credential (ARCHITECTURE.md §10).
     key_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    #: GTS asks for this as an ``agent-uid`` header on some endpoints. It
-    #: belongs to the account, so it travels with it rather than sitting in a
-    #: setting that would have to be changed in step.
-    agent_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )

@@ -37,7 +37,6 @@ def _credential(
         base_url=BASE_URL,
         email="agent@brand.uz",
         password="gts-secret-1a2b",
-        agent_uid=None,
         updated_at=updated_at,
     )
 
