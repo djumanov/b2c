@@ -67,7 +67,7 @@ def test_the_adapter_satisfies_the_port() -> None:
     adapter: ProductAdapter = FlightAdapter()
 
     assert adapter.code == "flight"
-    assert adapter.supports() == {FlowStep.SEARCH, FlowStep.OFFERS}
+    assert adapter.supports() == {FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL}
 
 
 # --- search --------------------------------------------------------------------------
@@ -196,4 +196,70 @@ async def test_offers_without_a_request_id_fail_before_gts() -> None:
         await FlightAdapter().offers(client, {"next_token": None, "limit": 20})
 
     assert caught.value.field == "request_id"
+    assert client.calls == []
+
+
+# --- upsell --------------------------------------------------------------------------
+
+
+async def test_upsell_is_passed_through_with_the_search_status() -> None:
+    """GTS's own ``status``/``code`` sit *inside* ``data`` and must survive
+    next to our ``search_status`` — nobody gets to deduplicate them."""
+    gts_answer = {
+        "request_id": "r-1",
+        "status": "success",
+        "code": "100",
+        "trip_type": "OW",
+        "currency": "USD",
+        "offers": [
+            {"offer_id": "u-1", "price_info": {"price": 108.67}},
+            {"offer_id": "u-2", "price_info": {"price": 158.67}},
+        ],
+    }
+    client = RecordingClient(gts_answer, status="success")
+    payload = {"request_id": "r-1", "offer_id": "o-1", "new_field": 7}
+
+    result = await FlightAdapter().upsell(client, payload)
+
+    path, sent, timeout = client.calls[0]
+    assert path == "/v1/content/upsell/"
+    assert sent is payload
+    assert timeout == GtsTimeouts.SEARCH_SECONDS
+    assert result == {**gts_answer, "search_status": "success"}
+
+
+async def test_an_upsell_during_a_running_search_is_relayed_not_failed() -> None:
+    """An offer can carry ``upsell: true`` while the search still polls —
+    the envelope's status is a state here too, exactly as for offers."""
+    client = RecordingClient(
+        {"request_id": "r-1", "offers": [{"offer_id": "u-1"}]},
+        status="In process",
+    )
+
+    result = await FlightAdapter().upsell(
+        client, {"request_id": "r-1", "offer_id": "o-1"}
+    )
+
+    assert result["search_status"] == "In process"
+    assert result["offers"] == [{"offer_id": "u-1"}]
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({}, "request_id"),
+        ({"request_id": ""}, "request_id"),
+        ({"request_id": "r-1"}, "offer_id"),
+        ({"request_id": "r-1", "offer_id": ""}, "offer_id"),
+    ],
+)
+async def test_upsell_junk_fails_before_a_session_is_spent(
+    payload: dict[str, Any], field: str
+) -> None:
+    client = RecordingClient({})
+
+    with pytest.raises(ValidationFailed) as caught:
+        await FlightAdapter().upsell(client, payload)
+
+    assert caught.value.field == field
     assert client.calls == []

@@ -53,6 +53,7 @@ class FlowStep(StrEnum):
     ADDITIONAL_SERVICES = "additional-services"
     #: insurance
     CALCULATE = "calculate"
+    #: flight and insurance
     UPSELL = "upsell"
     #: transfer
     RECOMMENDED_TIME = "recommended-time"
@@ -85,6 +86,12 @@ class ProductAdapter(Protocol):
 
     async def offers(self, client: GtsClient, params: dict[str, Any]) -> dict[str, Any]:
         """Page through offers — a passthrough to GTS (ARCHITECTURE.md §9)."""
+        ...
+
+    async def upsell(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fare variants of one offer — a passthrough like ``offers``."""
         ...
 
     async def verify(

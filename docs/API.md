@@ -902,7 +902,7 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/search/` | (✓) | Qidiruvni boshlaydi → `request_id` |
 | `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
-| `POST` | `/public/{product}/upsell/` | (✓) | Qo'shimcha xizmatlar (mavjud vertikallarda) |
+| `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
 | `POST` | `/public/{product}/booking/` | ✓ | Bron → buyurtma va `payment_id` |
 
 **Vertikalga xos qo'shimcha qadamlar:**
@@ -944,12 +944,30 @@ POST /public/flight/offers/
               "trip_type": "RT", "offers": [ … ] } }
 ```
 
+```json
+POST /public/flight/upsell/
+{ "request_id": "…", "offer_id": "…" }
+
+→ { "status": "success",
+    "data": { "search_status": "success", "request_id": "…",
+              "status": "success", "code": "100",
+              "trip_type": "RT", "currency": "UZS",
+              "offers": [ … ] } }
+```
+
+`upsell/` — `offers/` javobida `upsell: true` bayrog'i bilan kelgan taklifning
+**tarif variantlari** (branded fare'lar): marshrut o'zgarmaydi, javobdagi har bir
+variant **yangi `offer_id`** bilan keladi va `verify/`/`booking/`da aynan shu
+`offer_id` ishlatiladi. `data.status` va `data.code` — GTS javobining **o'z ichki
+maydonlari**, ular tegilmasdan o'tadi; bizning qo'shimchamiz faqat `search_status`.
+
 Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
 qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
-`"success"` → tugadi). Klient `search_status === "success"` bo'lguncha yoki
-`next_token` tugaguncha so'rashda davom etadi. Qolgan barcha maydonlar (shu
-jumladan `offers[]` elementlari) GTS qanday bersa shunday — tarjima siqilmaydi,
-pul formati o'zgartirilmaydi, maydonlar qayta nomlanmaydi.
+`"success"` → tugadi). U `offers/`da ham, `upsell/`da ham yuradi. Klient
+`search_status === "success"` bo'lguncha yoki `next_token` tugaguncha so'rashda
+davom etadi. Qolgan barcha maydonlar (shu jumladan `offers[]` elementlari) GTS
+qanday bersa shunday — tarjima siqilmaydi, pul formati o'zgartirilmaydi,
+maydonlar qayta nomlanmaydi.
 
 `search/` javobida ham bitta qo'shimcha maydon bor: **`fun_fact`** — panel
 kiritgan qiziqarli faktlardan (§30) tasodifiy bittasi. Qiymati — `?lang=`

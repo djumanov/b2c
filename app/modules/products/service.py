@@ -65,4 +65,10 @@ async def offers(
     return await adapter.offers(await _client(session), params)
 
 
-__all__ = ["offers", "search"]
+async def upsell(
+    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+) -> dict[str, Any]:
+    return await adapter.upsell(await _client(session), payload)
+
+
+__all__ = ["offers", "search", "upsell"]

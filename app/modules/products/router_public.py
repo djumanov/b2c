@@ -93,4 +93,18 @@ async def offers(
     return await service.offers(session, adapter, payload)
 
 
+@router.post(
+    "/upsell/",
+    summary="Fare variants of a chosen offer",
+    dependencies=[Depends(RateLimit("search"))],
+)
+async def upsell(
+    payload: dict[str, Any],
+    session: SessionDep,
+    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.UPSELL))],
+    _customer: OptionalCustomer,
+) -> dict[str, Any]:
+    return await service.upsell(session, adapter, payload)
+
+
 __all__ = ["RequireProductStep", "router"]
