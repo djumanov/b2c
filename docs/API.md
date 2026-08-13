@@ -961,9 +961,23 @@ variant **yangi `offer_id`** bilan keladi va `verify/`/`booking/`da aynan shu
 `offer_id` ishlatiladi. `data.status` va `data.code` — GTS javobining **o'z ichki
 maydonlari**, ular tegilmasdan o'tadi; bizning qo'shimchamiz faqat `search_status`.
 
+```json
+POST /public/flight/verify/
+{ "request_id": "…", "offer_id": "…" }
+
+→ { "status": "success",
+    "data": { "search_status": "success", "status": "success",
+              "request_id": "…", "offer_id": "…",
+              "code": "100", "verified": true } }
+```
+
+`verify/` — tanlangan taklifning narxi va mavjudligini bron oldidan qayta
+tekshirish; so'rov shakli `upsell/`niki bilan bir xil, javob GTS'niki aynan
+(`verified` bayrog'i bilan).
+
 Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
 qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
-`"success"` → tugadi). U `offers/`da ham, `upsell/`da ham yuradi. Klient
+`"success"` → tugadi). U `offers/`, `upsell/` va `verify/`da yuradi. Klient
 `search_status === "success"` bo'lguncha yoki `next_token` tugaguncha so'rashda
 davom etadi. Qolgan barcha maydonlar (shu jumladan `offers[]` elementlari) GTS
 qanday bersa shunday — tarjima siqilmaydi, pul formati o'zgartirilmaydi,
@@ -985,9 +999,12 @@ saqlanmaydi/keshlanmaydi — D2 buzilmaydi.
 > qo'llaydigan variantlar bilan chegaralangan** — frontend undan tashqariga
 > chiqmasligi kerak ([ARCHITECTURE.md](ARCHITECTURE.md) §14, A9).
 
-**Muddat tugashi**: taklif va `request_id` ning amal muddati cheklangan. Muddati o'tgan
-taklif bilan `verify/` yoki `booking/` chaqirilsa → `409 offer_expired`, klient qidiruvni
-qaytadan boshlaydi.
+**Muddat tugashi**: taklif va `request_id` ning amal muddati cheklangan — GTS keshi
+bilan birga tugaydi. Muddati o'tgan taklif bilan `verify/` chaqirilsa GTS o'z xatosini
+qaytaradi va u **aynan relay qilinadi** — `502 upstream_error`, GTS matni
+`meta.upstream`da (2026-08-13 qarori: passthrough'da mapping yo'q, biz o'tkazgichmiz).
+Klient bu holda qidiruvni qaytadan boshlaydi. `booking/`dagi `409 offer_expired`
+saga bilan ko'rib chiqiladi.
 
 > `booking/` **auth talab qiladi** — mehmon sifatida xarid yo'q ([PROJECT.md](PROJECT.md) D4).
 

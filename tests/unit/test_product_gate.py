@@ -11,10 +11,12 @@ Driven through the real app: the routes exist, only Redis (faked) is touched —
 the gate answers before any handler could want a database.
 """
 
+import pytest
 from httpx import AsyncClient
 
 from app.modules.settings import cache
 from app.modules.settings import service as settings_service
+from app.providers.products.base import FlowStep, ProductCode, registry
 
 
 async def _cache_products(items: list[dict[str, object]]) -> None:
@@ -86,13 +88,26 @@ async def test_an_unimplemented_vertical_is_the_same_404(client: AsyncClient) ->
     assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
 
 
-async def test_an_undeclared_step_is_the_same_404(client: AsyncClient) -> None:
-    """The flight adapter declares search and offers — verify comes later."""
-    await _cache_products([{"code": "flight", "enabled": True}])
+async def test_an_undeclared_step_is_the_same_404(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flight`` now declares the whole pre-booking flow, so the step branch
+    is proven with a stub vertical that only searches. The gate answers off
+    ``supports()`` alone — no handler is reached, so no flow methods exist."""
 
-    response = await client.post("/api/v1/public/flight/verify/", json={})
+    class _SearchOnly:
+        code = ProductCode.ESIM
+
+        def supports(self) -> frozenset[FlowStep]:
+            return frozenset({FlowStep.SEARCH})
+
+    monkeypatch.setitem(registry._adapters, ProductCode.ESIM, _SearchOnly())  # type: ignore[arg-type]
+    await _cache_products([{"code": "esim", "enabled": True}])
+
+    response = await client.post("/api/v1/public/esim/verify/", json={})
 
     assert response.status_code == 404
+    assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
 
 
 async def test_switching_a_vertical_off_needs_no_restart(client: AsyncClient) -> None:

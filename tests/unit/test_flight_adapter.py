@@ -67,7 +67,12 @@ def test_the_adapter_satisfies_the_port() -> None:
     adapter: ProductAdapter = FlightAdapter()
 
     assert adapter.code == "flight"
-    assert adapter.supports() == {FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL}
+    assert adapter.supports() == {
+        FlowStep.SEARCH,
+        FlowStep.OFFERS,
+        FlowStep.UPSELL,
+        FlowStep.VERIFY,
+    }
 
 
 # --- search --------------------------------------------------------------------------
@@ -260,6 +265,64 @@ async def test_upsell_junk_fails_before_a_session_is_spent(
 
     with pytest.raises(ValidationFailed) as caught:
         await FlightAdapter().upsell(client, payload)
+
+    assert caught.value.field == field
+    assert client.calls == []
+
+
+# --- verify --------------------------------------------------------------------------
+
+
+async def test_verify_is_passed_through_with_the_search_status() -> None:
+    gts_answer = {
+        "status": "success",
+        "request_id": "r-1",
+        "offer_id": "o-1",
+        "code": "100",
+        "verified": True,
+    }
+    client = RecordingClient(gts_answer, status="success")
+    payload = {"request_id": "r-1", "offer_id": "o-1", "new_field": 7}
+
+    result = await FlightAdapter().verify(client, payload)
+
+    path, sent, timeout = client.calls[0]
+    assert path == "/v1/content/verify/"
+    assert sent is payload
+    assert timeout == GtsTimeouts.SEARCH_SECONDS
+    assert result == {**gts_answer, "search_status": "success"}
+
+
+async def test_a_verify_during_a_running_search_is_relayed_not_failed() -> None:
+    client = RecordingClient(
+        {"request_id": "r-1", "offer_id": "o-1", "verified": True},
+        status="In process",
+    )
+
+    result = await FlightAdapter().verify(
+        client, {"request_id": "r-1", "offer_id": "o-1"}
+    )
+
+    assert result["search_status"] == "In process"
+    assert result["verified"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({}, "request_id"),
+        ({"request_id": ""}, "request_id"),
+        ({"request_id": "r-1"}, "offer_id"),
+        ({"request_id": "r-1", "offer_id": ""}, "offer_id"),
+    ],
+)
+async def test_verify_junk_fails_before_a_session_is_spent(
+    payload: dict[str, Any], field: str
+) -> None:
+    client = RecordingClient({})
+
+    with pytest.raises(ValidationFailed) as caught:
+        await FlightAdapter().verify(client, payload)
 
     assert caught.value.field == field
     assert client.calls == []

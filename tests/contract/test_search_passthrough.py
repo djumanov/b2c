@@ -2,9 +2,10 @@
 test PHASES.md §4 names.
 
 The claim is bigger than "we did not mean to cache": after a full search →
-offers → upsell round trip, Redis may hold only the things the platform itself
-needs — the site-config document, rate-limit counters, the GTS session — and
-GTS's ``request_id`` and ``offer_id`` must appear in **no key and no value**.
+offers → upsell → verify round trip, Redis may hold only the things the
+platform itself needs — the site-config document, rate-limit counters, the GTS
+session — and GTS's ``request_id`` and ``offer_id`` must appear in **no key
+and no value**.
 A cache of ours would have to leave a trace here; this sweep is how it would
 be caught.
 
@@ -33,6 +34,7 @@ from app.modules.settings import cache as settings_cache
 SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
+VERIFY = "/api/v1/public/flight/verify/"
 GTS = "https://gts.test"
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
 OFFER_ID = "7cc212c0-c91d-4931-8ff6-4231b7da27c0"
@@ -134,6 +136,20 @@ def _mock_gts() -> respx.Route:
             ),
         )
     )
+    respx.post(f"{GTS}/v1/content/verify/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {
+                    "status": "success",
+                    "request_id": REQUEST_ID,
+                    "offer_id": OFFER_ID,
+                    "code": "100",
+                    "verified": True,
+                }
+            ),
+        )
+    )
     return search_route
 
 
@@ -152,6 +168,9 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     upsell = await client.post(
         UPSELL, json={"request_id": REQUEST_ID, "offer_id": OFFER_ID}
     )
+    verify = await client.post(
+        VERIFY, json={"request_id": REQUEST_ID, "offer_id": OFFER_ID}
+    )
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
@@ -161,6 +180,8 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     assert offers.json()["data"]["offers"] == [{"offer_id": OFFER_ID, "upsell": True}]
     assert upsell.status_code == 200
     assert upsell.json()["data"]["offers"] == [{"offer_id": "u-1"}]
+    assert verify.status_code == 200
+    assert verify.json()["data"]["verified"] is True
 
     # ...and no trace on the way down: only the platform's own keys exist,
     # and neither GTS identifier is in any of them, key or value.

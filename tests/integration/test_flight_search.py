@@ -28,6 +28,7 @@ from app.modules.settings import cache as settings_cache
 SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
+VERIFY = "/api/v1/public/flight/verify/"
 GTS = "https://gts.test"
 
 SEARCH_BODY: dict[str, Any] = {
@@ -223,6 +224,31 @@ async def test_upsell_passes_through_untouched(
 
     assert response.status_code == 200
     assert response.json()["data"] == {**gts_upsell, "search_status": "success"}
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_verify_passes_through_untouched(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    gts_verify = {
+        "status": "success",
+        "request_id": "r-1",
+        "offer_id": "o-1",
+        "code": "100",
+        "verified": True,
+    }
+    route = respx.post(f"{GTS}/v1/content/verify/").mock(
+        return_value=httpx.Response(200, json=_envelope(gts_verify))
+    )
+
+    response = await api.post(VERIFY, json={"request_id": "r-1", "offer_id": "o-1"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {**gts_verify, "search_status": "success"}
     assert route.call_count == 1
 
 
@@ -500,7 +526,7 @@ async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
     assert "Retry-After" in last.headers
 
 
-@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL])
+@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     response = await api.post(path.rstrip("/"), json={})
 
