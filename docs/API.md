@@ -930,7 +930,9 @@ POST /public/flight/search/
   "adt": 1, "chd": 0, "inf": 0, "ins": 0,
   "class": "E", "direct": false }
 
-→ { "status": "success", "data": { "request_id": "…" } }
+→ { "status": "success",
+    "data": { "request_id": "…",
+              "fun_fact": { "text": "Boeing 747 qanotida 6 million detal bor.", "lang": "uz" } } }
 ```
 
 ```json
@@ -948,6 +950,14 @@ qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijal
 `next_token` tugaguncha so'rashda davom etadi. Qolgan barcha maydonlar (shu
 jumladan `offers[]` elementlari) GTS qanday bersa shunday — tarjima siqilmaydi,
 pul formati o'zgartirilmaydi, maydonlar qayta nomlanmaydi.
+
+`search/` javobida ham bitta qo'shimcha maydon bor: **`fun_fact`** — panel
+kiritgan qiziqarli faktlardan (§30) tasodifiy bittasi, `?lang=` bo'yicha
+tarjima qilingan holda (§7): `{ "text": …, "lang": … }`. Maqsad — klient
+`offers/` so'rovlari davom etar ekan foydalanuvchini band qilib turish. Chop
+etilgan fakt bo'lmasa qiymat `null`; maydon hozircha faqat `flight`da bor.
+Fakt bizning kontent, GTS javobiga aralashmaydi va hech qayerda
+saqlanmaydi/keshlanmaydi — D2 buzilmaydi.
 
 > **Qidiruv holatsiz.** `request_id` — **GTS'niki**; takliflar bizda saqlanmaydi va
 > keshlanmaydi ([PROJECT.md](PROJECT.md) D2). `sort_type`, `limit`, `next_token` va
@@ -1516,6 +1526,7 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 | Blog | `/admin/content/blogs/` | `admin` | CRUD; `?status=draft\|published`, `?category=` |
 | Aksiyalar | `/admin/content/promotions/` | `admin` | CRUD; `placement`, `starts_at`, `ends_at` |
 | FAQ | `/admin/content/faq/` | `admin` | CRUD; `question`/`answer` obyektlar, `category` — erkin kod; `?status=`, `?category=` |
+| Qiziqarli faktlar | `/admin/content/fun-facts/` | `admin` | CRUD; `text` obyekt; `?status=`; tartib yo'q — qidiruv javobi tasodifiy tanlaydi (§20) |
 | Kontaktlar | `/admin/content/contacts/` | `admin` | CRUD — ofis nuqtalari, koordinatalar |
 | Sahifalar | `/admin/content/{page}/` | `admin` | `GET`/`PUT` + `publish`/`unpublish`; `{page}` ∈ `privacy-policy`, `terms`, `about` — "Sahifa tanasi"ga qarang |
 | Bannerlar | `/admin/content/banners/` | `admin` | CRUD; `?placement=` |
@@ -1530,9 +1541,12 @@ SMS va push shu resursning qismi bo'ladi, lekin birinchi relizga kirmaydi (§41)
 | `POST` | `/admin/content/{resource}/reorder/` | Tartibni o'zgartirish (`[{id, order}]`) |
 
 `reorder/` faqat tartiblangan resurslarga tegishli (faq, bannerlar, mashhur
-yo'nalishlar) — sahifalar tartiblanmaydi. `{resource}/{id}/publish/` shakli
-sahifalarga tegishli emas — ular `id` emas, nom bilan yashaydi ("Sahifa
-tanasi"ga qarang).
+yo'nalishlar) — sahifalar va qiziqarli faktlar tartiblanmaydi.
+`{resource}/{id}/publish/` shakli sahifalarga tegishli emas — ular `id` emas,
+nom bilan yashaydi ("Sahifa tanasi"ga qarang).
+
+Qiziqarli faktlar bayroq olmaydi: o'chirish tugmasi — hech narsa chop
+etmaslik; bo'sh ro'yxatda `search/` javobidagi `fun_fact` `null` bo'ladi (§20).
 
 Tarjima qilinadigan maydonlar obyekt sifatida keladi va shunday yuboriladi:
 

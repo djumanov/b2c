@@ -6,6 +6,11 @@ the stateless adapter: the active GTS credential is decrypted by
 module), wrapped into a ready ``GtsClient``, and handed to the adapter. No
 state, no cache — the regression tests hold this module to D2.
 
+The flight search response gets one addition on its way out: ``fun_fact``, a
+random published fact from the cms module (through its service, never its
+models — ARCHITECTURE.md §4), for the client to show while polling
+``offers/`` (API.md §20).
+
 **No active credential is a 502**, not a 404: the product *is* enabled on this
 installation, so pretending the resource does not exist would lie to the
 client. It is the "the thing behind us cannot serve" case, and
@@ -20,10 +25,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import UpstreamError
+from app.modules.cms import service as cms_service
 from app.modules.integrations import service as integrations_service
 from app.providers.gts.base import GtsClient
 from app.providers.gts.client import client_for
-from app.providers.products.base import ProductAdapter
+from app.providers.products.base import ProductAdapter, ProductCode
 
 
 async def _client(session: AsyncSession) -> GtsClient:
@@ -36,9 +42,21 @@ async def _client(session: AsyncSession) -> GtsClient:
 
 
 async def search(
-    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+    session: AsyncSession,
+    adapter: ProductAdapter,
+    payload: dict[str, Any],
+    *,
+    requested: str | None = None,
 ) -> dict[str, Any]:
-    return await adapter.search(await _client(session), payload)
+    data = await adapter.search(await _client(session), payload)
+    if adapter.code != ProductCode.FLIGHT:
+        return data
+    # Our one addition to the passthrough (API.md §20): a random published
+    # fact for the client to show while it polls ``offers/``. Read here and
+    # not in the adapter — adapters are forbidden the session. A read leaves
+    # no trace, so D2 holds.
+    fact = await cms_service.random_fun_fact(session, requested=requested)
+    return {**data, "fun_fact": fact.model_dump() if fact else None}
 
 
 async def offers(

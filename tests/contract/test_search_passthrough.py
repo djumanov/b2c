@@ -8,7 +8,9 @@ the site-config document, rate-limit counters, the GTS session — and GTS's
 have to leave a trace here; this sweep is how it would be caught.
 
 No Postgres: the credential lookup is patched at its documented seam
-(``integrations.service.active_credential``), everything else is real.
+(``integrations.service.active_credential``), and so is the fun-fact read
+(``cms.service.random_fun_fact`` — the search response's one addition,
+API.md §20); everything else is real.
 """
 
 import datetime as dt
@@ -72,6 +74,13 @@ async def gts_installation(
         products_service.integrations_service, "active_credential", fixed_credential
     )
     assert products_service.integrations_service is integrations_service
+
+    # The fun-fact read is the search path's only Postgres query — patched at
+    # the same kind of seam, so this suite stays databaseless.
+    async def no_fun_fact(session: object, *, requested: str | None = None) -> None:
+        return None
+
+    monkeypatch.setattr(products_service.cms_service, "random_fun_fact", no_fun_fact)
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
     return credential
 
@@ -125,9 +134,10 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
         OFFERS, json={"request_id": REQUEST_ID, "next_token": None, "limit": 20}
     )
 
-    # Byte-for-byte passthrough on the way out.
+    # Byte-for-byte passthrough on the way out — plus our one addition,
+    # ``fun_fact`` (API.md §20), null here because nothing is published.
     assert search.status_code == 200
-    assert search.json()["data"] == {"request_id": REQUEST_ID}
+    assert search.json()["data"] == {"request_id": REQUEST_ID, "fun_fact": None}
     assert offers.status_code == 200
     assert offers.json()["data"]["offers"] == [{"offer_id": "o-1"}]
 

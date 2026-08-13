@@ -23,7 +23,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 
-from app.api.deps import OptionalCustomer, RateLimit
+from app.api.deps import LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
 from app.api.errors import NotFound
 from app.db.session import SessionDep
@@ -71,8 +71,12 @@ async def search(
     session: SessionDep,
     adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.SEARCH))],
     _customer: OptionalCustomer,
+    language: LanguageDep,
 ) -> dict[str, Any]:
-    return await service.search(session, adapter, payload)
+    # ``language`` picks the language of ``fun_fact`` — our one addition to
+    # the search passthrough (API.md §20). ``offers/`` takes no language: its
+    # response is GTS's verbatim.
+    return await service.search(session, adapter, payload, requested=language.requested)
 
 
 @router.post(

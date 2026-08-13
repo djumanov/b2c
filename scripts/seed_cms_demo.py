@@ -1,5 +1,5 @@
-"""Seed demo content: CMS pages/FAQ, profile deletion reasons, the site's
-company contacts, leads support contact and available currencies, in
+"""Seed demo content: CMS pages/FAQ/fun facts, profile deletion reasons, the
+site's company contacts, leads support contact and available currencies, in
 uz / ru / en.
 
 Operational tooling, not application code — it drives the cms, customers and
@@ -9,11 +9,11 @@ can serve it straight away.
 
 Safe to run twice — locally and on the demo server alike. Pages are matched
 by slug and always **updated** to match ``PAGES`` below (this is demo
-content, meant to be kept current, not an admin's own edit). FAQ entries and
-deletion reasons are matched by their Uzbek text, site settings and
-currencies by still being at their untouched defaults — those are left
-untouched once set, since there is no seed-vs-edited distinction to draw for
-them.
+content, meant to be kept current, not an admin's own edit). FAQ entries,
+fun facts and deletion reasons are matched by their Uzbek text, site
+settings and currencies by still being at their untouched defaults — those
+are left untouched once set, since there is no seed-vs-edited distinction to
+draw for them.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -30,9 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repository import exists_live
 from app.db.session import dispose_engine, get_sessionmaker
 from app.modules.cms import service as cms_service
-from app.modules.cms.models import ContentStatus, Faq
+from app.modules.cms.models import ContentStatus, Faq, FunFact
 from app.modules.cms.models import Page as PageModel
-from app.modules.cms.schemas import FaqIn, FixedPageIn
+from app.modules.cms.schemas import FaqIn, FixedPageIn, FunFactIn
 from app.modules.customers import service as customers_service
 from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
@@ -712,6 +712,100 @@ FAQS: list[dict] = [
 ]
 
 
+# --- fun facts (the flight search response's fun_fact field, API.md §20) ----------
+
+FUN_FACTS: list[dict[str, str]] = [
+    {
+        "uz": "Boeing 747 taxminan 6 million detaldan yig'iladi.",
+        "ru": "Boeing 747 собирается примерно из 6 миллионов деталей.",
+        "en": "A Boeing 747 is assembled from about 6 million parts.",
+    },
+    {
+        "uz": (
+            "Har lahzada havoda o'rtacha bir millionga yaqin odam parvoz qilib yuradi."
+        ),
+        "ru": ("В каждый момент времени в воздухе находится около миллиона человек."),
+        "en": ("At any given moment, roughly a million people are up in the air."),
+    },
+    {
+        "uz": (
+            "Dunyodagi eng qisqa muntazam reys Shotlandiyada — parvoz "
+            "atigi 90 soniyacha davom etadi."
+        ),
+        "ru": (
+            "Самый короткий регулярный рейс в мире — в Шотландии: полёт "
+            "длится всего около 90 секунд."
+        ),
+        "en": (
+            "The world's shortest scheduled flight is in Scotland — it "
+            "lasts only about 90 seconds."
+        ),
+    },
+    {
+        "uz": (
+            "Parvoz balandligida samolyot tashqarisidagi havo harorati "
+            "taxminan −55 °C bo'ladi."
+        ),
+        "ru": ("На крейсерской высоте температура воздуха за бортом — около −55 °C."),
+        "en": ("At cruising altitude, the air outside the plane is about −55 °C."),
+    },
+    {
+        "uz": (
+            "Uchuvchi va yordamchi uchuvchi odatda har xil taom yeydi — "
+            "ikkalasi birdan zaharlanib qolmasligi uchun."
+        ),
+        "ru": (
+            "Пилот и второй пилот обычно едят разные блюда — чтобы оба "
+            "не отравились одновременно."
+        ),
+        "en": (
+            "The pilot and co-pilot usually eat different meals, so "
+            "they can't both get food poisoning at once."
+        ),
+    },
+    {
+        "uz": (
+            '"Qora quti" aslida qora emas — topish oson bo\'lishi uchun '
+            "to'q sariq rangga bo'yaladi."
+        ),
+        "ru": (
+            "«Чёрный ящик» на самом деле не чёрный — его красят в "
+            "ярко-оранжевый, чтобы легче найти."
+        ),
+        "en": (
+            "The \"black box\" isn't black at all — it's painted bright "
+            "orange so it's easier to find."
+        ),
+    },
+    {
+        "uz": (
+            "Airbus A380 ichidagi elektr simlarining umumiy uzunligi "
+            "500 kilometrdan oshadi."
+        ),
+        "ru": ("Общая длина электропроводки в Airbus A380 превышает 500 километров."),
+        "en": ("The wiring inside an Airbus A380 runs to more than 500 kilometres."),
+    },
+    {
+        "uz": ("Samolyot salonidagi havo har 2–3 daqiqada to'liq yangilanib turadi."),
+        "ru": ("Воздух в салоне самолёта полностью обновляется каждые 2–3 минуты."),
+        "en": ("The cabin air on a plane is completely refreshed every 2–3 minutes."),
+    },
+]
+
+
+async def seed_fun_facts(session: AsyncSession) -> None:
+    for spec in FUN_FACTS:
+        text_uz = spec["uz"]
+        if await exists_live(session, FunFact, FunFact.text["uz"].astext == text_uz):
+            print(f"fun fact {text_uz!r}: already exists, skipped")
+            continue
+        created = await cms_service.create_fun_fact(session, FunFactIn(text=spec))
+        await cms_service.set_fun_fact_status(
+            session, created.id, ContentStatus.PUBLISHED
+        )
+        print(f"fun fact {text_uz!r}: created and published")
+
+
 # --- site settings (company contacts for /public/content/about/) ----------------
 
 SITE_SETTINGS = {
@@ -865,6 +959,7 @@ async def main() -> None:
     async with get_sessionmaker()() as session:
         await seed_pages(session)
         await seed_faqs(session)
+        await seed_fun_facts(session)
         await seed_deletion_reasons(session)
         await seed_site_settings(session)
         await seed_support_contact(session)

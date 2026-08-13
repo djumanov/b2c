@@ -289,6 +289,22 @@ Uchta slug: `privacy-policy`, `terms`, `about`. Har birida:
   markdown bo'lsin). PUT tillarni birlashtiradi.
 - Hali yozilmagan sahifada GET → 404 — bo'sh editor ko'rsating.
 
+### 8.3 Qiziqarli faktlar — bayroqsiz
+
+Aviatsiya/sayohat haqidagi faktlar; `flight` qidiruv javobi chop etilganlardan
+tasodifiy bittasini qaytaradi (API.md §20). Bayroq yo'q — o'chirish tugmasi
+hech narsa chop etmaslik.
+
+| Metod | Yo'l | Izoh |
+|---|---|---|
+| `GET` | `content/fun-facts/` | `?status=draft|published` |
+| `POST` | `content/fun-facts/` | 201, **draft** bo'lib yaratiladi |
+| `GET/PATCH/DELETE` | `content/fun-facts/{id}/` | |
+| `POST` | `content/fun-facts/{id}/publish/` \| `unpublish/` | idempotent |
+
+- `text` — tarjimali obyekt (majburiy, kamida bitta tilda qiymat).
+- Tartiblash yo'q (`reorder/` yo'q) — tanlash tasodifiy, tartib ma'nosiz.
+
 ---
 
 ## 9. Murojaatlar (`leads/*`) — `leads` bayrog'i ostida

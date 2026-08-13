@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-11 · `feat/passenger-catalog-objects`
+**Oxirgi yangilanish:** 2026-08-13 · `feat/flight-search-fun-fact`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,11 +18,11 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti va aviachipta qidiruvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5 — qisman) |
-| Endpointlar | 83 ta yo'l / 117 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 23 ta + `alembic_version` |
-| Migratsiyalar | 25 ta, bitta head (`182e01999182`) |
-| Testlar | 733 ta — unit 24 fayl · contract 8 · integration 28 |
-| Gate'lar | ruff · mypy strict · pytest — hammasi yashil |
+| Endpointlar | 86 ta yo'l / 123 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 27 ta + `alembic_version` |
+| Migratsiyalar | 26 ta, bitta head (`49b3b6e5cc3a`) |
+| Testlar | 750 ta — unit 24 fayl · contract 8 · integration 30 |
+| Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — fun-fact ishiga aloqasiz |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
 
@@ -78,6 +78,7 @@ kontrakt testlari.
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
+| `cms` (qiziqarli faktlar) | `fun_facts` — `text` JSONB, publish/unpublish, bayroqsiz va tartibsiz; `flight` qidiruv javobidagi `fun_fact` maydonini boqadi (API.md §20). Admin CRUD `/admin/content/fun-facts/` | 4 |
 | `cms` (sahifalar) | Qat'iy uchlik — `privacy-policy`, `terms`, `about` — har biri o'z endpointi bilan (Swagger'da frontend/mobil ko'radi): admin `GET`/`PUT` (upsert, tillarni birlashtiradi) + publish/unpublish, public `GET`; draft ham yozilmagan ham bir xil `404`. Umumiy `pages/{slug}` CRUD olib tashlandi. Yadro — bayroqsiz (API.md §28) | 12 |
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
 | `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
@@ -94,7 +95,8 @@ kontrakt testlari.
 `branding`, `site`, `languages`, `currencies`, `features`, `product_settings`,
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
 `email_otps`, `passengers`, `payment_providers`, `social_credentials`,
-`customer_cards`, `faqs`, `pages`, `leads`, `support_topics`.
+`customer_cards`, `deleted_customers`, `deletion_reasons`, `faqs`,
+`fun_facts`, `pages`, `leads`, `leads_support_contact`, `support_topics`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -263,6 +265,7 @@ tug'ilmasligi uchun.
 | 73 | `deletion_reasons` lug'ati — `text` JSONB + `sort_order`, **holatsiz va bayroqsiz** | FAQ'dagi draft/publish tahririy ehtiyoj uchun edi; besh qatorlik lug'atga yashirish = soft delete yetadi. O'chirish oqimini o'chirib bo'lmagani uchun uning lug'atiga `RequireFeature` ham ma'nosiz |
 | 74 | `support_topics` — murojaat formasining mavzu lug'ati, №73 naqshida (`name` JSONB + `sort_order`, holatsiz); murojaat **matnni** saqlaydi, `topic_id` emas | Klient tanlangan mavzuning siqilgan matnini mavjud `topic` maydonida yuboradi — lead kontrakti o'zgarmadi, №71 dagi verbatim tamoyili takrorlanadi. Bu G1 ni bekor qilmaydi: sxema emas, tanlov ro'yxati xolos. `leads` moduli ichida, `leads` bayrog'i ostida |
 | 75 | `passengers.citizenship` va `document_type` — §26 katalog obyekti **aynan kelganicha, JSONB**; tekshiruv faqat `"code"`/`"type"` bo'sh bo'lmagan satr ekani. №39 va №68 ni **qisman bekor qiladi** — enum/CHECK hali ham yo'q, eski satr qiymatlar migratsiyada NULL | UI yo'lovchini nomi tarjimalari va bayrog'i bilan ko'rsatadi — kodning o'zi (`"UZ"`, `"PSP"`) buni bermaydi, ikkinchi lug'atni qo'lda yuritish esa §26 rad etgan yo'l. Obyekt verbatim saqlanadi: GTS katalogni o'zgartirsa ham saqlangan nusxa o'z holicha o'qilaveradi. Identifikator kaliti tekshiriladi, chunki bron oqimi ertaga GTS'ga kod yuborishi kerak bo'ladi |
+| 76 | `fun_fact` (2026-08-13): maydon `search/` javobida **doim bor**, fakt yo'q bo'lsa `null` — bayroq yo'q; tanlash SQL'da `ORDER BY random()`; o'qish `products/service.py` da `adapter.code == FLIGHT` sharti bilan, adapterda emas | Bo'sh jadval allaqachon o'chirish tugmasi — bayroq o'sha simga ikkinchi kalit bo'lardi. Adapter sessiyani olmaydi (`providers/products/base.py`), shuning uchun o'qish service qatlamida; boshqa vertikallar tegilmaydi. Fakt hech qayerda keshlanmaydi — passthrough testining Redis supurgisi shunday talab qiladi |
 
 ---
 

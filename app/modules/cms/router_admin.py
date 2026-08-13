@@ -24,6 +24,9 @@ from app.modules.cms.schemas import (
     FaqIn,
     FaqUpdateIn,
     FixedPageIn,
+    FunFactAdminOut,
+    FunFactIn,
+    FunFactUpdateIn,
     PageAdminOut,
     ReorderItemIn,
 )
@@ -95,6 +98,61 @@ async def unpublish_faq(id: uuid.UUID, session: SessionDep) -> FaqAdminOut:
     return await service.set_faq_status(session, id, ContentStatus.DRAFT)
 
 
+# --- fun facts -------------------------------------------------------------------
+
+# No feature flag: the off-switch is publishing nothing — the flight search
+# response's ``fun_fact`` is then ``null`` (API.md §20, §30). No ``reorder/``
+# either: selection is random, an order would answer nothing.
+fun_facts_router = enveloped_router(
+    prefix="/content/fun-facts",
+    tags=["cms"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@fun_facts_router.get("/", summary="List fun facts")
+async def list_fun_facts(
+    session: SessionDep,
+    pagination: PaginationDep,
+    query: ListQueryDep,
+    status: StatusParam = None,
+) -> Page[FunFactAdminOut]:
+    return await service.list_fun_facts_admin(session, pagination, query, status=status)
+
+
+@fun_facts_router.post("/", status_code=201, summary="Add a fun fact (as a draft)")
+async def create_fun_fact(data: FunFactIn, session: SessionDep) -> FunFactAdminOut:
+    return await service.create_fun_fact(session, data)
+
+
+@fun_facts_router.get("/{id}/", summary="One fun fact")
+async def get_fun_fact(id: uuid.UUID, session: SessionDep) -> FunFactAdminOut:
+    return await service.get_fun_fact(session, id)
+
+
+@fun_facts_router.patch("/{id}/", summary="Change the fact's text")
+async def update_fun_fact(
+    id: uuid.UUID, data: FunFactUpdateIn, session: SessionDep
+) -> FunFactAdminOut:
+    return await service.update_fun_fact(session, id, data)
+
+
+@fun_facts_router.delete("/{id}/", status_code=204, summary="Remove a fun fact")
+async def delete_fun_fact(id: uuid.UUID, session: SessionDep) -> Response:
+    await service.delete_fun_fact(session, id)
+    return Response(status_code=204)
+
+
+@fun_facts_router.post("/{id}/publish/", summary="Publish a fun fact")
+async def publish_fun_fact(id: uuid.UUID, session: SessionDep) -> FunFactAdminOut:
+    return await service.set_fun_fact_status(session, id, ContentStatus.PUBLISHED)
+
+
+@fun_facts_router.post("/{id}/unpublish/", summary="Take a fun fact off the site")
+async def unpublish_fun_fact(id: uuid.UUID, session: SessionDep) -> FunFactAdminOut:
+    return await service.set_fun_fact_status(session, id, ContentStatus.DRAFT)
+
+
 # --- static pages ----------------------------------------------------------------
 
 pages_router = enveloped_router(
@@ -157,4 +215,4 @@ for _slug in service.FIXED_PAGE_SLUGS:
     _register_page(_slug, _PAGE_LABELS[_slug])
 
 
-__all__ = ["faq_router", "pages_router"]
+__all__ = ["faq_router", "fun_facts_router", "pages_router"]
