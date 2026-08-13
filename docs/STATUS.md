@@ -114,7 +114,7 @@ To'liq reja — [PHASES.md](PHASES.md).
 
 **2-fazadan boshlab yuborilgani (2026-08-12):** GTS klienti + sessiya menejeri
 (`providers/gts/client.py`), `flight` adapteri va `products` moduli —
-`search/`, `offers/` va `upsell/` jonli passthrough sifatida ishlaydi. **Jonli GTS'da
+`search/`, `offers/`, `upsell/` va `verify/` jonli passthrough sifatida ishlaydi. **Jonli GTS'da
 tekshirildi (2026-08-12)**:
 
 - sessiya **ikkita cookie** bilan yuriladi: `esession={session_key}` va
@@ -132,7 +132,7 @@ tekshirildi (2026-08-12)**:
 - `POST /admin/integrations/gts/test/` — probe `providers/gts/` ga tushadi
   (2-fazaning 1-bo'lagi qurildi, probe'ning o'zi hali yo'q) va 2FA holatini
   alohida ko'rsatishi kerak (D1).
-- `POST /public/flight/verify|booking/` va boshqa vertikallar —
+- `POST /public/flight/booking/` va boshqa vertikallar —
   adapter e'lon qilmagan qadam `404` (registry gate orqali). Idempotent
   `GET` uchun ikki takror (API.md §12) birinchi `GET` iste'molchisi bilan
   keladi.

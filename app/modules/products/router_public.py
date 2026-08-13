@@ -107,4 +107,18 @@ async def upsell(
     return await service.upsell(session, adapter, payload)
 
 
+@router.post(
+    "/verify/",
+    summary="Re-check price and availability of an offer",
+    dependencies=[Depends(RateLimit("search"))],
+)
+async def verify(
+    payload: dict[str, Any],
+    session: SessionDep,
+    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.VERIFY))],
+    _customer: OptionalCustomer,
+) -> dict[str, Any]:
+    return await service.verify(session, adapter, payload)
+
+
 __all__ = ["RequireProductStep", "router"]

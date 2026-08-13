@@ -71,4 +71,10 @@ async def upsell(
     return await adapter.upsell(await _client(session), payload)
 
 
-__all__ = ["offers", "search", "upsell"]
+async def verify(
+    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+) -> dict[str, Any]:
+    return await adapter.verify(await _client(session), payload)
+
+
+__all__ = ["offers", "search", "upsell", "verify"]

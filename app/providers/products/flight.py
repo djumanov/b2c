@@ -12,8 +12,8 @@ holds no field map — only the two things a pipe still owes its caller:
 * **A shape check on the way back.** ``search/`` without a ``request_id`` is
   not an answer, whatever the envelope said.
 
-Only ``search``, ``offers`` and ``upsell`` exist yet; ``verify``/``book`` land
-with the booking saga (PHASES.md §4).
+The whole pre-booking flow exists — ``search``, ``offers``, ``upsell``,
+``verify``; only ``book`` lands with the booking saga (PHASES.md §4).
 """
 
 import datetime as dt
@@ -60,8 +60,12 @@ class _FlightOffersIn(BaseModel):
     request_id: str = Field(min_length=1)
 
 
-class _FlightUpsellIn(BaseModel):
-    """An upsell names one offer of one search — both IDs are GTS's."""
+class _FlightOfferRefIn(BaseModel):
+    """Names one offer of one search — both IDs are GTS's.
+
+    The shape ``upsell`` and ``verify`` share (and ``rules``/``seat-map``
+    later, if they keep to GTS's pattern).
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -89,7 +93,9 @@ class FlightAdapter:
     code = ProductCode.FLIGHT
 
     def supports(self) -> frozenset[FlowStep]:
-        return frozenset({FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL})
+        return frozenset(
+            {FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL, FlowStep.VERIFY}
+        )
 
     async def search(
         self, client: GtsClient, payload: dict[str, Any]
@@ -131,7 +137,7 @@ class FlightAdapter:
         ``"success"``. GTS's own ``status``/``code`` *inside* ``data`` ride
         through untouched.
         """
-        _validated(_FlightUpsellIn, payload)
+        _validated(_FlightOfferRefIn, payload)
         envelope = await client.post_envelope(
             "/v1/content/upsell/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
         )
@@ -141,7 +147,18 @@ class FlightAdapter:
     async def verify(
         self, client: GtsClient, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        raise NotImplementedError("verify lands with the booking saga")
+        """Re-check price and availability of one offer before booking.
+
+        The same pipe as ``upsell``: an expired offer comes back as GTS's own
+        error and is relayed as ``upstream_error`` — no mapping in between
+        (API.md §20, decision of 2026-08-13).
+        """
+        _validated(_FlightOfferRefIn, payload)
+        envelope = await client.post_envelope(
+            "/v1/content/verify/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
+        )
+        data: dict[str, Any] = envelope["data"]
+        return {**data, "search_status": envelope.get("status")}
 
     async def book(self, client: GtsClient, payload: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("booking lands with the booking saga")
