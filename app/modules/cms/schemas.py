@@ -75,6 +75,46 @@ class FaqPublicOut(BaseModel):
     lang: str | None
 
 
+# --- fun facts -------------------------------------------------------------------
+
+
+class FunFactIn(BaseModel):
+    text: Translated
+
+    @field_validator("text")
+    @classmethod
+    def _known_languages(cls, value: Translated) -> Translated:
+        return _check_translated(value)
+
+
+class FunFactUpdateIn(BaseModel):
+    text: Translated | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _known_languages(cls, value: Translated | None) -> Translated | None:
+        return None if value is None else _check_translated(value)
+
+
+class FunFactAdminOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    text: Translated
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FunFactPublicOut(BaseModel):
+    """No ``id``: the fact rides inside the flight search response (API.md
+    §20) and the client does nothing with it beyond showing the text."""
+
+    text: str
+    #: The language the text actually came back in (API.md §7).
+    lang: str | None
+
+
 # --- pages -----------------------------------------------------------------------
 
 
@@ -149,6 +189,10 @@ __all__ = [
     "FaqPublicOut",
     "FaqUpdateIn",
     "FixedPageIn",
+    "FunFactAdminOut",
+    "FunFactIn",
+    "FunFactPublicOut",
+    "FunFactUpdateIn",
     "PageAdminOut",
     "PagePublicOut",
     "ReorderItemIn",

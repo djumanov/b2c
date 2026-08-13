@@ -26,7 +26,7 @@ from app.api.listing import (
 from app.core import i18n
 from app.core.logging import get_logger
 from app.db.repository import get_live_or_404, live
-from app.modules.cms.models import ContentStatus, Faq
+from app.modules.cms.models import ContentStatus, Faq, FunFact
 from app.modules.cms.models import Page as PageModel
 from app.modules.cms.schemas import (
     AboutPageOut,
@@ -35,6 +35,10 @@ from app.modules.cms.schemas import (
     FaqPublicOut,
     FaqUpdateIn,
     FixedPageIn,
+    FunFactAdminOut,
+    FunFactIn,
+    FunFactPublicOut,
+    FunFactUpdateIn,
     PageAdminOut,
     PagePublicOut,
     ReorderItemIn,
@@ -198,6 +202,121 @@ async def list_faq_public(
     return items
 
 
+# --- fun facts, admin (API.md §30) -------------------------------------------------
+
+_FUN_FACT_ORDERING: OrderingMap = {
+    "created_at": FunFact.created_at,
+}
+
+
+async def list_fun_facts_admin(
+    session: AsyncSession,
+    pagination: Pagination,
+    query: ListQuery,
+    *,
+    status: str | None = None,
+) -> Page[FunFactAdminOut]:
+    stmt = live(FunFact)
+    if status is not None:
+        stmt = stmt.where(FunFact.status == status)
+    # No ``apply_search``: the only text is JSONB, which takes no plain ILIKE,
+    # and there is no category code to search instead.
+    stmt = apply_created_range(stmt, query, FunFact.created_at)
+    stmt = apply_ordering(
+        stmt,
+        query,
+        allowed=_FUN_FACT_ORDERING,
+        default="created_at",
+        tiebreak=FunFact.id,
+    )
+    rows, total = await paginate(session, stmt, pagination)
+    return page(
+        [FunFactAdminOut.model_validate(row) for row in rows], pagination, total
+    )
+
+
+async def create_fun_fact(session: AsyncSession, data: FunFactIn) -> FunFactAdminOut:
+    fact = FunFact(text=data.text, status=ContentStatus.DRAFT)
+    session.add(fact)
+    await session.commit()
+    await session.refresh(fact)
+    logger.info("fun_fact_created", fun_fact_id=str(fact.id))
+    return FunFactAdminOut.model_validate(fact)
+
+
+async def get_fun_fact(session: AsyncSession, fact_id: uuid.UUID) -> FunFactAdminOut:
+    return FunFactAdminOut.model_validate(await _require_fun_fact(session, fact_id))
+
+
+async def update_fun_fact(
+    session: AsyncSession, fact_id: uuid.UUID, data: FunFactUpdateIn
+) -> FunFactAdminOut:
+    fact = await _require_fun_fact(session, fact_id)
+    # Translated fields merge per language, so one language can be edited
+    # without resending the others (the same PATCH semantics as the FAQ).
+    if data.text is not None:
+        fact.text = {**fact.text, **data.text}
+    await session.commit()
+    await session.refresh(fact)
+    return FunFactAdminOut.model_validate(fact)
+
+
+async def delete_fun_fact(session: AsyncSession, fact_id: uuid.UUID) -> None:
+    fact = await _require_fun_fact(session, fact_id)
+    fact.soft_delete()
+    await session.commit()
+    logger.info("fun_fact_deleted", fun_fact_id=str(fact.id))
+
+
+async def set_fun_fact_status(
+    session: AsyncSession, fact_id: uuid.UUID, status: ContentStatus
+) -> FunFactAdminOut:
+    """Publish or unpublish — idempotent, like the flag it flips."""
+    fact = await _require_fun_fact(session, fact_id)
+    fact.status = status
+    await session.commit()
+    await session.refresh(fact)
+    logger.info("fun_fact_status_set", fun_fact_id=str(fact.id), status=str(status))
+    return FunFactAdminOut.model_validate(fact)
+
+
+async def _require_fun_fact(session: AsyncSession, fact_id: uuid.UUID) -> FunFact:
+    return await get_live_or_404(session, FunFact, fact_id, name="Fun fact")
+
+
+# --- fun facts, public (API.md §20) -------------------------------------------------
+
+
+async def random_fun_fact(
+    session: AsyncSession, *, requested: str | None
+) -> FunFactPublicOut | None:
+    """A random published fact, collapsed to one language — the door the
+    products module calls to dress the flight search response (API.md §20).
+
+    ``None`` when nothing is published, or the drawn row has nothing readable
+    in any language — the response field is then ``null``, which is also the
+    installation's off-switch: there is deliberately no feature flag.
+    """
+    row = await session.scalar(
+        live(FunFact)
+        .where(FunFact.status == ContentStatus.PUBLISHED)
+        .order_by(func.random())
+        .limit(1)
+    )
+    if row is None:
+        return None
+    languages = await settings_service.get_languages(session)
+    resolved = i18n.resolve(
+        row.text,
+        requested=requested,
+        default=languages.default,
+        available=languages.available,
+    )
+    if resolved.value is None:
+        return None
+    return FunFactPublicOut(text=resolved.value, lang=resolved.lang)
+
+
 # --- pages, admin (API.md §30) ---------------------------------------------------
 
 #: The whole set of static pages. Each has its own route on both surfaces so
@@ -337,16 +456,23 @@ async def get_about_page_public(
 __all__ = [
     "FIXED_PAGE_SLUGS",
     "create_faq",
+    "create_fun_fact",
     "delete_faq",
+    "delete_fun_fact",
     "get_about_page_public",
     "get_faq",
     "get_fixed_page_admin",
+    "get_fun_fact",
     "get_page_public",
     "list_faq_admin",
     "list_faq_public",
+    "list_fun_facts_admin",
+    "random_fun_fact",
     "reorder_faq",
     "set_faq_status",
     "set_fixed_page_status",
+    "set_fun_fact_status",
     "update_faq",
+    "update_fun_fact",
     "upsert_fixed_page",
 ]

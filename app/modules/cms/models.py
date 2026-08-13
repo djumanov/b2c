@@ -9,6 +9,7 @@ open, the public surface only ever sees what has been published.
 import enum
 
 from sqlalchemy import CheckConstraint, Integer, String, text
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +50,26 @@ class Faq(Entity):
     )
 
 
+class FunFact(Entity):
+    """One aviation/travel fact; the flight search response shows a random
+    published one while the client polls ``offers/`` (API.md §20, §30).
+
+    No ``sort_order``: selection is random, so an order would answer a
+    question nobody asks. The ``text`` attribute shadows sqlalchemy's
+    ``text()`` inside this class body — hence the ``sql_text`` alias.
+    """
+
+    __tablename__ = "fun_facts"
+    __table_args__ = (_status_check(),)
+
+    text: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=sql_text(f"'{ContentStatus.DRAFT}'")
+    )
+
+
 class Page(Entity):
     """A static page — the fixed set ``service.FIXED_PAGE_SLUGS``.
 
@@ -79,4 +100,4 @@ class Page(Entity):
     )
 
 
-__all__ = ["ContentStatus", "Faq", "Page"]
+__all__ = ["ContentStatus", "Faq", "FunFact", "Page"]

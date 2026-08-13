@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt
 from app.db.base import Base
+from app.modules.cms.models import ContentStatus, FunFact
 from app.modules.integrations.models import GtsCredential
 from app.modules.settings import cache as settings_cache
 
@@ -105,7 +106,12 @@ async def test_a_search_passes_through_and_returns_gts_request_id(
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"status", "data", "errors", "meta"}
-    assert body["data"] == {"request_id": "6c62dcec-9334-11ee-8688-5169d0acfb81"}
+    # ``fun_fact`` is our one addition to the passthrough (API.md §20) —
+    # null here because nothing is published.
+    assert body["data"] == {
+        "request_id": "6c62dcec-9334-11ee-8688-5169d0acfb81",
+        "fun_fact": None,
+    }
     assert signin.call_count == 1
     # The body reached GTS verbatim.
     import json as jsonlib
@@ -150,7 +156,7 @@ async def test_a_session_that_died_early_is_renewed_mid_request(
     response = await api.post(SEARCH, json=SEARCH_BODY)
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"request_id": "r-2"}
+    assert response.json()["data"] == {"request_id": "r-2", "fun_fact": None}
     assert search.call_count == 2
     assert signin.call_count == 2
 
@@ -234,6 +240,111 @@ async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
 
     assert anonymous.status_code == 200
     assert garbage.status_code == 401
+
+
+# --- the fun fact (API.md §20) --------------------------------------------------------
+
+FACT_TEXT = {
+    "uz": "Boeing 747 qanotida 6 million detal bor.",
+    "ru": "В крыле Boeing 747 шесть миллионов деталей.",
+}
+
+
+async def _seed_fact(
+    session: AsyncSession,
+    text: dict[str, str] = FACT_TEXT,
+    *,
+    status: str = ContentStatus.PUBLISHED,
+    deleted: bool = False,
+) -> FunFact:
+    fact = FunFact(text=text, status=status)
+    if deleted:
+        fact.soft_delete()
+    session.add(fact)
+    await session.commit()
+    return fact
+
+
+@respx.mock
+async def test_the_one_published_fact_rides_the_search_response(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """Drafts and soft-deleted rows never surface — with exactly one live
+    published fact, the random draw is deterministic."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+    await _seed_fact(session)
+    await _seed_fact(session, {"uz": "Qoralama fakt."}, status=ContentStatus.DRAFT)
+    await _seed_fact(session, {"uz": "O'chirilgan fakt."}, deleted=True)
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["fun_fact"] == {
+        "text": FACT_TEXT["uz"],
+        "lang": "uz",
+    }
+
+
+@respx.mock
+async def test_the_fact_speaks_the_requested_language_and_falls_back(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+    await _seed_fact(session)  # uz + ru, no en
+
+    russian = await api.post(f"{SEARCH}?lang=ru", json=SEARCH_BODY)
+    assert russian.json()["data"]["fun_fact"] == {
+        "text": FACT_TEXT["ru"],
+        "lang": "ru",
+    }
+
+    # No English translation: the chain falls back and says where it landed.
+    english = await api.post(f"{SEARCH}?lang=en", json=SEARCH_BODY)
+    assert english.json()["data"]["fun_fact"] == {
+        "text": FACT_TEXT["uz"],
+        "lang": "uz",
+    }
+
+
+@respx.mock
+async def test_a_random_fact_is_always_one_of_the_published(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+    texts = {f"Fakt {n}." for n in range(3)}
+    for text in texts:
+        await _seed_fact(session, {"uz": text})
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.json()["data"]["fun_fact"]["text"] in texts
+
+
+@respx.mock
+async def test_no_published_fact_means_null_not_an_error(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """The off-switch: an installation that publishes nothing shows nothing —
+    there is deliberately no feature flag (API.md §30)."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    _mock_search()
+    await _seed_fact(session, status=ContentStatus.DRAFT)
+
+    response = await api.post(SEARCH, json=SEARCH_BODY)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["fun_fact"] is None
 
 
 # --- the gate and the missing credential ---------------------------------------------
