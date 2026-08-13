@@ -282,10 +282,7 @@ async def test_the_one_published_fact_rides_the_search_response(
     response = await api.post(SEARCH, json=SEARCH_BODY)
 
     assert response.status_code == 200
-    assert response.json()["data"]["fun_fact"] == {
-        "text": FACT_TEXT["uz"],
-        "lang": "uz",
-    }
+    assert response.json()["data"]["fun_fact"] == FACT_TEXT["uz"]
 
 
 @respx.mock
@@ -299,17 +296,11 @@ async def test_the_fact_speaks_the_requested_language_and_falls_back(
     await _seed_fact(session)  # uz + ru, no en
 
     russian = await api.post(f"{SEARCH}?lang=ru", json=SEARCH_BODY)
-    assert russian.json()["data"]["fun_fact"] == {
-        "text": FACT_TEXT["ru"],
-        "lang": "ru",
-    }
+    assert russian.json()["data"]["fun_fact"] == FACT_TEXT["ru"]
 
-    # No English translation: the chain falls back and says where it landed.
+    # No English translation: the chain falls back to the site default.
     english = await api.post(f"{SEARCH}?lang=en", json=SEARCH_BODY)
-    assert english.json()["data"]["fun_fact"] == {
-        "text": FACT_TEXT["uz"],
-        "lang": "uz",
-    }
+    assert english.json()["data"]["fun_fact"] == FACT_TEXT["uz"]
 
 
 @respx.mock
@@ -326,7 +317,7 @@ async def test_a_random_fact_is_always_one_of_the_published(
 
     response = await api.post(SEARCH, json=SEARCH_BODY)
 
-    assert response.json()["data"]["fun_fact"]["text"] in texts
+    assert response.json()["data"]["fun_fact"] in texts
 
 
 @respx.mock

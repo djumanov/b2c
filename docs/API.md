@@ -932,7 +932,7 @@ POST /public/flight/search/
 
 → { "status": "success",
     "data": { "request_id": "…",
-              "fun_fact": { "text": "Boeing 747 qanotida 6 million detal bor.", "lang": "uz" } } }
+              "fun_fact": "Boeing 747 qanotida 6 million detal bor." } }
 ```
 
 ```json
@@ -952,10 +952,12 @@ jumladan `offers[]` elementlari) GTS qanday bersa shunday — tarjima siqilmaydi
 pul formati o'zgartirilmaydi, maydonlar qayta nomlanmaydi.
 
 `search/` javobida ham bitta qo'shimcha maydon bor: **`fun_fact`** — panel
-kiritgan qiziqarli faktlardan (§30) tasodifiy bittasi, `?lang=` bo'yicha
-tarjima qilingan holda (§7): `{ "text": …, "lang": … }`. Maqsad — klient
-`offers/` so'rovlari davom etar ekan foydalanuvchini band qilib turish. Chop
-etilgan fakt bo'lmasa qiymat `null`; maydon hozircha faqat `flight`da bor.
+kiritgan qiziqarli faktlardan (§30) tasodifiy bittasi. Qiymati — `?lang=`
+bo'yicha (§7 zanjiri) tanlangan tarjima matnining o'zi, **oddiy satr**. Bu
+§7'dagi `{value, lang}` aks-sado shakliga ataylab qilingan istisno: klient
+matnni ko'rsatishdan boshqa hech narsa qilmaydi. Maqsad — klient `offers/`
+so'rovlari davom etar ekan foydalanuvchini band qilib turish. Chop etilgan
+fakt bo'lmasa qiymat `null`; maydon hozircha faqat `flight`da bor.
 Fakt bizning kontent, GTS javobiga aralashmaydi va hech qayerda
 saqlanmaydi/keshlanmaydi — D2 buzilmaydi.
 

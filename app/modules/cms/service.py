@@ -37,7 +37,6 @@ from app.modules.cms.schemas import (
     FixedPageIn,
     FunFactAdminOut,
     FunFactIn,
-    FunFactPublicOut,
     FunFactUpdateIn,
     PageAdminOut,
     PagePublicOut,
@@ -289,9 +288,12 @@ async def _require_fun_fact(session: AsyncSession, fact_id: uuid.UUID) -> FunFac
 
 async def random_fun_fact(
     session: AsyncSession, *, requested: str | None
-) -> FunFactPublicOut | None:
+) -> str | None:
     """A random published fact, collapsed to one language — the door the
     products module calls to dress the flight search response (API.md §20).
+
+    Returns the bare text: the response field is a plain string, a deliberate
+    exception to the §7 ``{value, lang}`` echo shape.
 
     ``None`` when nothing is published, or the drawn row has nothing readable
     in any language — the response field is then ``null``, which is also the
@@ -312,9 +314,7 @@ async def random_fun_fact(
         default=languages.default,
         available=languages.available,
     )
-    if resolved.value is None:
-        return None
-    return FunFactPublicOut(text=resolved.value, lang=resolved.lang)
+    return resolved.value
 
 
 # --- pages, admin (API.md §30) ---------------------------------------------------

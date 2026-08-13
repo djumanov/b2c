@@ -56,7 +56,7 @@ async def search(
     # not in the adapter — adapters are forbidden the session. A read leaves
     # no trace, so D2 holds.
     fact = await cms_service.random_fun_fact(session, requested=requested)
-    return {**data, "fun_fact": fact.model_dump() if fact else None}
+    return {**data, "fun_fact": fact}
 
 
 async def offers(
