@@ -27,6 +27,7 @@ from app.modules.settings import cache as settings_cache
 
 SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
+UPSELL = "/api/v1/public/flight/upsell/"
 GTS = "https://gts.test"
 
 SEARCH_BODY: dict[str, Any] = {
@@ -191,6 +192,37 @@ async def test_offers_pass_through_untouched(
 
     assert response.status_code == 200
     assert response.json()["data"] == {**gts_offers, "search_status": "success"}
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_upsell_passes_through_untouched(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """Fare variants of one offer — GTS's inner ``status``/``code`` survive
+    next to our ``search_status``."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    gts_upsell = {
+        "request_id": "r-1",
+        "status": "success",
+        "code": "100",
+        "trip_type": "OW",
+        "currency": "USD",
+        "offers": [
+            {"offer_id": "u-1", "price_info": {"price": 108.67}},
+            {"offer_id": "u-2", "price_info": {"price": 158.67}},
+        ],
+    }
+    route = respx.post(f"{GTS}/v1/content/upsell/").mock(
+        return_value=httpx.Response(200, json=_envelope(gts_upsell))
+    )
+
+    response = await api.post(UPSELL, json={"request_id": "r-1", "offer_id": "o-1"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {**gts_upsell, "search_status": "success"}
     assert route.call_count == 1
 
 
@@ -468,7 +500,7 @@ async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
     assert "Retry-After" in last.headers
 
 
-@pytest.mark.parametrize("path", [SEARCH, OFFERS])
+@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     response = await api.post(path.rstrip("/"), json={})
 

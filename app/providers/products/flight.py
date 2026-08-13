@@ -12,8 +12,8 @@ holds no field map — only the two things a pipe still owes its caller:
 * **A shape check on the way back.** ``search/`` without a ``request_id`` is
   not an answer, whatever the envelope said.
 
-Only ``search`` and ``offers`` exist yet; ``verify``/``book`` land with the
-booking saga (PHASES.md §4).
+Only ``search``, ``offers`` and ``upsell`` exist yet; ``verify``/``book`` land
+with the booking saga (PHASES.md §4).
 """
 
 import datetime as dt
@@ -60,6 +60,15 @@ class _FlightOffersIn(BaseModel):
     request_id: str = Field(min_length=1)
 
 
+class _FlightUpsellIn(BaseModel):
+    """An upsell names one offer of one search — both IDs are GTS's."""
+
+    model_config = ConfigDict(extra="allow")
+
+    request_id: str = Field(min_length=1)
+    offer_id: str = Field(min_length=1)
+
+
 def _validated(model: type[BaseModel], payload: dict[str, Any]) -> None:
     """Run the shape check, turning pydantic's error into our catalogue's.
 
@@ -80,7 +89,7 @@ class FlightAdapter:
     code = ProductCode.FLIGHT
 
     def supports(self) -> frozenset[FlowStep]:
-        return frozenset({FlowStep.SEARCH, FlowStep.OFFERS})
+        return frozenset({FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL})
 
     async def search(
         self, client: GtsClient, payload: dict[str, Any]
@@ -109,6 +118,25 @@ class FlightAdapter:
         )
         data: dict[str, Any] = payload["data"]
         return {**data, "search_status": payload.get("status")}
+
+    async def upsell(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fare variants (branded fares) of one offer — new ``offer_id``s.
+
+        An offer arrives flagged ``upsell: true`` while the search may still
+        be ``"In process"``, so the envelope's ``status`` is a state here just
+        as it is for ``offers`` — hence ``post_envelope`` and the same
+        ``search_status`` relay, not a failure on anything short of
+        ``"success"``. GTS's own ``status``/``code`` *inside* ``data`` ride
+        through untouched.
+        """
+        _validated(_FlightUpsellIn, payload)
+        envelope = await client.post_envelope(
+            "/v1/content/upsell/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
+        )
+        data: dict[str, Any] = envelope["data"]
+        return {**data, "search_status": envelope.get("status")}
 
     async def verify(
         self, client: GtsClient, payload: dict[str, Any]

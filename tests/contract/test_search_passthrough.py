@@ -2,10 +2,11 @@
 test PHASES.md §4 names.
 
 The claim is bigger than "we did not mean to cache": after a full search →
-offers round trip, Redis may hold only the things the platform itself needs —
-the site-config document, rate-limit counters, the GTS session — and GTS's
-``request_id`` must appear in **no key and no value**. A cache of ours would
-have to leave a trace here; this sweep is how it would be caught.
+offers → upsell round trip, Redis may hold only the things the platform itself
+needs — the site-config document, rate-limit counters, the GTS session — and
+GTS's ``request_id`` and ``offer_id`` must appear in **no key and no value**.
+A cache of ours would have to leave a trace here; this sweep is how it would
+be caught.
 
 No Postgres: the credential lookup is patched at its documented seam
 (``integrations.service.active_credential``), and so is the fun-fact read
@@ -31,8 +32,10 @@ from app.modules.settings import cache as settings_cache
 
 SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
+UPSELL = "/api/v1/public/flight/upsell/"
 GTS = "https://gts.test"
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
+OFFER_ID = "7cc212c0-c91d-4931-8ff6-4231b7da27c0"
 
 SEARCH_BODY: dict[str, Any] = {
     "directions": [
@@ -113,7 +116,20 @@ def _mock_gts() -> respx.Route:
                     "request_id": REQUEST_ID,
                     "next_token": None,
                     "count": 1,
-                    "offers": [{"offer_id": "o-1"}],
+                    "offers": [{"offer_id": OFFER_ID, "upsell": True}],
+                }
+            ),
+        )
+    )
+    respx.post(f"{GTS}/v1/content/upsell/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {
+                    "request_id": REQUEST_ID,
+                    "status": "success",
+                    "code": "100",
+                    "offers": [{"offer_id": "u-1"}],
                 }
             ),
         )
@@ -133,23 +149,30 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     offers = await client.post(
         OFFERS, json={"request_id": REQUEST_ID, "next_token": None, "limit": 20}
     )
+    upsell = await client.post(
+        UPSELL, json={"request_id": REQUEST_ID, "offer_id": OFFER_ID}
+    )
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
     assert search.status_code == 200
     assert search.json()["data"] == {"request_id": REQUEST_ID, "fun_fact": None}
     assert offers.status_code == 200
-    assert offers.json()["data"]["offers"] == [{"offer_id": "o-1"}]
+    assert offers.json()["data"]["offers"] == [{"offer_id": OFFER_ID, "upsell": True}]
+    assert upsell.status_code == 200
+    assert upsell.json()["data"]["offers"] == [{"offer_id": "u-1"}]
 
     # ...and no trace on the way down: only the platform's own keys exist,
-    # and the request_id is in none of them, key or value.
+    # and neither GTS identifier is in any of them, key or value.
     keys = await fake_redis.keys("*")
     for key in keys:
         assert ALLOWED_KEY.match(key), f"unexpected Redis key after a search: {key}"
         assert REQUEST_ID not in key
+        assert OFFER_ID not in key
         value = await fake_redis.get(key)
         if value is not None:
             assert REQUEST_ID not in value
+            assert OFFER_ID not in value
 
 
 @respx.mock
