@@ -106,15 +106,6 @@ class FunFactAdminOut(BaseModel):
     updated_at: datetime
 
 
-class FunFactPublicOut(BaseModel):
-    """No ``id``: the fact rides inside the flight search response (API.md
-    §20) and the client does nothing with it beyond showing the text."""
-
-    text: str
-    #: The language the text actually came back in (API.md §7).
-    lang: str | None
-
-
 # --- pages -----------------------------------------------------------------------
 
 
@@ -191,7 +182,6 @@ __all__ = [
     "FixedPageIn",
     "FunFactAdminOut",
     "FunFactIn",
-    "FunFactPublicOut",
     "FunFactUpdateIn",
     "PageAdminOut",
     "PagePublicOut",
