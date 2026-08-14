@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-13 · `feat/flight-search-fun-fact`
+**Oxirgi yangilanish:** 2026-08-14 · `feat/flight-booking-cancel`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,11 +18,11 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti va aviachipta qidiruvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5 — qisman) |
-| Endpointlar | 86 ta yo'l / 123 operatsiya (API.md dagi ~150 dan) |
+| Endpointlar | 90 ta yo'l / 127 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 27 ta + `alembic_version` |
 | Migratsiyalar | 26 ta, bitta head (`49b3b6e5cc3a`) |
-| Testlar | 750 ta — unit 24 fayl · contract 8 · integration 30 |
-| Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — fun-fact ishiga aloqasiz |
+| Testlar | 791 ta — unit 24 fayl · contract 8 · integration 30 |
+| Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — `main` da ham qizil, bron/bekor qilish ishiga aloqasiz |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
 
@@ -73,8 +73,8 @@ kontrakt testlari.
 | `catalog` (public) | `document-types/` va `countries/` — GTS static servisiga keshlangan proxy; `airports/?q=` — keshsiz qidiruv passthrough'i; auth yo'q, jadval yo'q | 3 |
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
 | `providers/gts/client.py` | Autentifikatsiyalangan GTS klienti: sessiya Redis'da (`gts:session:{id}:{updated_at}`), qayta kirish **qulf ostida**, 401/403 da bitta avtomatik takror, xato xaritasi (HTTP 200 ichidagi xato ham). Sessiya `sessionid` cookie sifatida yuboriladi — **taxmin**, jonli GTS'da tekshirilsin | — |
-| `providers/products/flight.py` | `flight` adapteri: `search`+`offers`, sof passthrough — tana yengil tekshiruvdan so'ng GTS'ga aynan, javob `data` si kelganicha (API.md §20, 2026-08-12 qarori) | — |
-| `products` (public) | `POST /public/{product}/search/` va `offers/` — generik router, adapter registry orqali; gate `product_settings` (bayroq emas), 30/daq `search` limiti, auth ixtiyoriy; credential yo'q → `502`. Hech narsa saqlamaydi (D2), `test_search_passthrough.py` qo'riqlaydi | 2 |
+| `providers/products/flight.py` | `flight` adapteri: **butun oqim** — `search`, `offers`, `upsell`, `verify`, `booking`, `cancel`; sof passthrough — tana yengil tekshiruvdan so'ng GTS'ga aynan, javob `data` si kelganicha (API.md §20, 2026-08-12 va 2026-08-14 qarorlari). `booking`/`cancel` timeout'i 15 s (§12), javobga hech narsa qo'shilmaydi; `cancel` da shakl tekshiruvi umuman yo'q | — |
+| `products` (public) | `POST /public/{product}/` oqimining oltita qadami — generik router, adapter registry orqali; gate `product_settings` (bayroq emas), 30/daq `search` limiti, qidiruv qadamlarida auth ixtiyoriy, **`booking/` va `cancel/` da majburiy** (D4); credential yo'q → `502`. Hech narsa saqlamaydi (D2), `test_search_passthrough.py` qo'riqlaydi | 6 |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
@@ -132,10 +132,10 @@ tekshirildi (2026-08-12)**:
 - `POST /admin/integrations/gts/test/` — probe `providers/gts/` ga tushadi
   (2-fazaning 1-bo'lagi qurildi, probe'ning o'zi hali yo'q) va 2FA holatini
   alohida ko'rsatishi kerak (D1).
-- `POST /public/flight/booking/` va boshqa vertikallar —
-  adapter e'lon qilmagan qadam `404` (registry gate orqali). Idempotent
-  `GET` uchun ikki takror (API.md §12) birinchi `GET` iste'molchisi bilan
-  keladi.
+- Boshqa vertikallarning barcha qadamlari — adapter e'lon qilmagan qadam
+  `404` (registry gate orqali). Idempotent `GET` uchun ikki takror
+  (API.md §12) birinchi `GET` iste'molchisi bilan keladi.
+  (`POST /public/flight/booking/` **endi ishlaydi** — 2026-08-14, quyida.)
 - `POST /admin/integrations/payments/{code}/test/` — Payme va Click
   adapterlari bilan birga (2-fazaning 7-bo'lagi). Bugungi `PaymentProvider`
   portida sinash uchun chaqiriladigan metod yo'q: har biri haqiqiy to'lovni
@@ -266,6 +266,9 @@ tug'ilmasligi uchun.
 | 74 | `support_topics` — murojaat formasining mavzu lug'ati, №73 naqshida (`name` JSONB + `sort_order`, holatsiz); murojaat **matnni** saqlaydi, `topic_id` emas | Klient tanlangan mavzuning siqilgan matnini mavjud `topic` maydonida yuboradi — lead kontrakti o'zgarmadi, №71 dagi verbatim tamoyili takrorlanadi. Bu G1 ni bekor qilmaydi: sxema emas, tanlov ro'yxati xolos. `leads` moduli ichida, `leads` bayrog'i ostida |
 | 75 | `passengers.citizenship` va `document_type` — §26 katalog obyekti **aynan kelganicha, JSONB**; tekshiruv faqat `"code"`/`"type"` bo'sh bo'lmagan satr ekani. №39 va №68 ni **qisman bekor qiladi** — enum/CHECK hali ham yo'q, eski satr qiymatlar migratsiyada NULL | UI yo'lovchini nomi tarjimalari va bayrog'i bilan ko'rsatadi — kodning o'zi (`"UZ"`, `"PSP"`) buni bermaydi, ikkinchi lug'atni qo'lda yuritish esa §26 rad etgan yo'l. Obyekt verbatim saqlanadi: GTS katalogni o'zgartirsa ham saqlangan nusxa o'z holicha o'qilaveradi. Identifikator kaliti tekshiriladi, chunki bron oqimi ertaga GTS'ga kod yuborishi kerak bo'ladi |
 | 76 | `fun_fact` (2026-08-13): maydon `search/` javobida **doim bor**, fakt yo'q bo'lsa `null` — bayroq yo'q; tanlash SQL'da `ORDER BY random()`; o'qish `products/service.py` da `adapter.code == FLIGHT` sharti bilan, adapterda emas | Bo'sh jadval allaqachon o'chirish tugmasi — bayroq o'sha simga ikkinchi kalit bo'lardi. Adapter sessiyani olmaydi (`providers/products/base.py`), shuning uchun o'qish service qatlamida; boshqa vertikallar tegilmaydi. Fakt hech qayerda keshlanmaydi — passthrough testining Redis supurgisi shunday talab qiladi |
+| 77 | **`booking/` sagasiz, sof passthrough** (2026-08-14): buyurtma qatori yo'q, `payment_id` yo'q, outbox yo'q — API.md §20 dagi "bron → buyurtma va `payment_id`" tavsifi shunga ko'ra tahrirlandi. PHASES.md 9-bo'lagi (saga) o'z o'rnida qoladi va shu endpoint **ustiga** quriladi | Klientga bugun kerak bo'lgan narsa — GTS oqimini uchidan-uchiga aylanib chiqish; `orders`+`payments`+saga esa uchta modul va eng yuqori xavfli bo'lak. Ularni kutish butun vertikalni to'sib turardi. So'rov shakli saga kelganda ham o'zgarmaydi — faqat javobga bizning maydonlarimiz qo'shiladi, ya'ni bu tashlab yuboriladigan ish emas |
+| 78 | **`cancel/` — oqim qadami** (`POST /public/flight/cancel/`), API.md §21 dagi `orders/{id}/cancel/` emas; so'rov tanasi **umuman tekshirilmaydi** | Lokal buyurtma yozuvi yo'q ekan, `orders/{id}/` yo'lining `{id}` si bizda mavjud emas — bekor qilishni buyurtma resursiga osib bo'lmaydi. Tana tekshirilmasligi ataylab: GTS bronni qaysi maydon bilan nomlashi hujjatlarda yozilmagan, noto'g'ri taxmin esa haqiqiy bekor qilishni GTS ko'rmasdan rad etardi — narxi haqiqiy o'rin |
+| 79 | `booking/` va `cancel/` da **`Idempotency-Key` talab qilinmaydi**, qo'shimcha rate limit ham yo'q — `api/idempotency.py` hamon iste'molchisiz | Bu qadamlar hozir hech qanday holatni o'zgartirmaydi: takroriy so'rov GTS'da ikkinchi bron ochadi, lekin bizda tuzatiladigan yozuv yo'q, ya'ni kalit himoya qiladigan narsaning o'zi yo'q. API.md §10 talabi **pul yo'li** uchun — u saga bilan keladi va o'shanda kalit shu endpointga qo'yiladi. §14 bo'yicha bron "boshqa public" (120/daq), ya'ni public yuzasining limiti yetadi |
 
 ---
 
@@ -448,6 +451,19 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     migratsiyasi**ni talab qiladi — bu alohida bo'lak, SMTP sozlamasining
     ichiga yashiriladigan narsa emas.
     ⚠ Narxi vaqt o'tgani sari oshadi: hozircha qatorlar faqat dev bazasida.
+
+### 2026-08-14 — bron va bekor qilish passthrough sifatida qo'shilganda
+
+14. 🔴 **`POST /public/flight/cancel/` da egalik tekshiruvi yo'q.** Hech narsa
+    saqlanmagani uchun server bronni kim qilganini bilmaydi: token majburiy,
+    lekin GTS identifikatorini bilgan **har qanday** tizimga kirgan mijoz
+    o'sha bronni bekor qila oladi. Bu tanlangan yondashuvning bevosita
+    oqibati (№78), xato emas — lekin **ishlab chiqarishga shu holda
+    chiqmasligi kerak**. Yopiladigan joyi aniq: `orders` moduli (PHASES.md
+    2-faza, 6-bo'lak), u yerda lokal buyurtma yozuvi mijoz↔buyurtma
+    egaligining manbai bo'ladi (ARCHITECTURE.md §14 A1).
+    ⚠ Xavf faqat GTS buyurtma identifikatori taxmin qilinadigan bo'lsa
+    oshadi — jonli tekshiruvda uning shakli ko'rilsin.
 
 ### 2026-08-06 — GTS credential'lari yozilayotganda topilgani
 

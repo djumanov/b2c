@@ -895,6 +895,7 @@ Barcha vertikallar **bir xil naqshda** ishlaydi. `{product}` o'rniga: `flight`, 
 
 ```
 search  →  offers  →  verify  →  booking  →  payment  →  order
+                                         ↘  cancel
 ```
 
 | Metod | Yo'l | Auth | Izoh |
@@ -903,7 +904,14 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
 | `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
-| `POST` | `/public/{product}/booking/` | ✓ | Bron → buyurtma va `payment_id` |
+| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi |
+| `POST` | `/public/{product}/cancel/` | ✓ | Chipta chiqarilmagan bronni bekor qiladi |
+
+> **Zanjirning `payment` va `order` qismi hali qurilmagan.** `booking/` bugun
+> **buyurtma ham, `payment_id` ham qaytarmaydi** — u qolgan qadamlar kabi sof
+> passthrough (2026-08-14 qarori, quyida). Lokal buyurtma yozuvi, to'lov va
+> saga keyinroq shu endpoint **ustiga** quriladi: bron so'rovining shakli
+> o'shanda ham o'zgarmaydi, javobiga bizning maydonlarimiz qo'shiladi.
 
 **Vertikalga xos qo'shimcha qadamlar:**
 
@@ -975,6 +983,42 @@ POST /public/flight/verify/
 tekshirish; so'rov shakli `upsell/`niki bilan bir xil, javob GTS'niki aynan
 (`verified` bayrog'i bilan).
 
+```json
+POST /public/flight/booking/
+{ "request_id": "…", "offer_id": "…", "passengers": [ … ], … }
+
+→ { "status": "success",
+    "data": { … GTS'ning bron javobi aynan … } }
+```
+
+```json
+POST /public/flight/cancel/
+{ … GTS'ning bekor qilish so'rovi aynan … }
+
+→ { "status": "success",
+    "data": { … GTS'ning javobi aynan … } }
+```
+
+`booking/` — `verify/` tozalagan **aynan o'sha `offer_id`** bron qilinadi.
+Server faqat `request_id` va `offer_id` borligini tekshiradi; yo'lovchilar va
+qolgan barcha maydonlar **tekshirilmasdan** GTS'ga o'tadi, chunki qaysi
+maydonlar kerakligini GTS bron kontrakti hal qiladi (yo'lovchi maydonlari —
+§19). Javobga **bitta ham maydon qo'shilmaydi**: `search_status` bu yerda yo'q,
+chunki bron oqimida "In process" holati yo'q.
+
+`cancel/` — GTS hali ushlab turgan bronni bo'shatadi (chipta chiqarilgandan
+keyingi `void`/`refund` hali qurilmagan). So'rov tanasi **umuman
+tekshirilmaydi**: GTS bronni qaysi maydon bilan nomlashi bu yerda qat'iy
+belgilanmagan, noto'g'ri taxmin esa haqiqiy bekor qilishni GTS ko'rmasdan rad
+etardi.
+
+> ⚠ **Bekor qilishda egalik tekshiruvi yo'q.** Hech narsa saqlanmagani uchun
+> server bronni kim qilganini bilmaydi: token talab qilinadi, lekin GTS
+> identifikatorini bilgan **har qanday** tizimga kirgan mijoz o'sha bronni
+> bekor qila oladi. Bu `orders` moduli kelguncha shunday qoladi — o'sha yerda
+> lokal buyurtma yozuvi egalikning manbai bo'ladi
+> ([ARCHITECTURE.md](ARCHITECTURE.md) §14 A1).
+
 Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
 qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
 `"success"` → tugadi). U `offers/`, `upsell/` va `verify/`da yuradi. Klient
@@ -1003,10 +1047,15 @@ saqlanmaydi/keshlanmaydi — D2 buzilmaydi.
 bilan birga tugaydi. Muddati o'tgan taklif bilan `verify/` chaqirilsa GTS o'z xatosini
 qaytaradi va u **aynan relay qilinadi** — `502 upstream_error`, GTS matni
 `meta.upstream`da (2026-08-13 qarori: passthrough'da mapping yo'q, biz o'tkazgichmiz).
-Klient bu holda qidiruvni qaytadan boshlaydi. `booking/`dagi `409 offer_expired`
-saga bilan ko'rib chiqiladi.
+Klient bu holda qidiruvni qaytadan boshlaydi. `booking/` ham xuddi shunday:
+muddati o'tgan taklif bilan bron qilinsa GTS xatosi `502 upstream_error` bo'lib
+relay qilinadi. Katalogdagi `409 offer_expired` hozircha **ishlatilmaydi** —
+passthrough'da mapping yo'q; u saga bilan birga, GTS kodlari xaritasi
+qurilganda joriy etiladi.
 
-> `booking/` **auth talab qiladi** — mehmon sifatida xarid yo'q ([PROJECT.md](PROJECT.md) D4).
+> `booking/` va `cancel/` **auth talab qiladi** — mehmon sifatida xarid yo'q
+> ([PROJECT.md](PROJECT.md) D4). Qolgan qadamlardan farqli, bu ikkisida
+> `Authorization` majburiy.
 
 ---
 
@@ -1022,6 +1071,14 @@ saga bilan ko'rib chiqiladi.
 Buyurtma statuslari (kanonik): `booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
 `voided` · `refunded` · `partially_refunded` · `needs_attention`.
 GTS kodlaridan o'girish — [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+
+> **Bu bo'lim hali qurilmagan.** Lokal buyurtma yozuvi yo'q, shuning uchun
+> yuqoridagi to'rtta yo'l bugun mavjud emas. Aviachipta bronini bekor qilish
+> hozircha §20 dagi `POST /public/flight/cancel/` orqali — u GTS'ga to'g'ridan
+> to'g'ri o'tadi va lokal holatni o'zgartirmaydi, chunki o'zgartiradigan holat
+> yo'q. `orders` moduli kelganda `orders/{id}/cancel/` shu passthrough ustiga
+> quriladi: egalik tekshiruvi, kanonik status va `available_actions` o'shanda
+> paydo bo'ladi.
 
 ---
 

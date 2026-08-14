@@ -91,8 +91,8 @@ async def test_an_unimplemented_vertical_is_the_same_404(client: AsyncClient) ->
 async def test_an_undeclared_step_is_the_same_404(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``flight`` now declares the whole pre-booking flow, so the step branch
-    is proven with a stub vertical that only searches. The gate answers off
+    """``flight`` now declares the whole flow, so the step branch is proven
+    with a stub vertical that only searches. The gate answers off
     ``supports()`` alone — no handler is reached, so no flow methods exist."""
 
     class _SearchOnly:
@@ -108,6 +108,35 @@ async def test_an_undeclared_step_is_the_same_404(
 
     assert response.status_code == 404
     assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
+
+
+@pytest.mark.parametrize("step", ["booking", "cancel"])
+async def test_the_gate_answers_before_the_token_is_asked_for(
+    client: AsyncClient, step: str
+) -> None:
+    """``booking/`` and ``cancel/`` are the two steps that demand a customer,
+    and the gate still runs first: an anonymous caller gets 404, not 401.
+    Otherwise the difference would say which verticals we sell (API.md §41)."""
+    await _cache_products([{"code": "flight", "enabled": False}])
+
+    response = await client.post(f"/api/v1/public/flight/{step}/", json={})
+
+    assert response.status_code == 404
+    assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
+
+
+@pytest.mark.parametrize("step", ["booking", "cancel"])
+async def test_an_enabled_vertical_still_demands_a_customer(
+    client: AsyncClient, step: str
+) -> None:
+    """Past the gate, the two writing steps refuse the anonymous (PROJECT.md
+    D4: no guest purchase). No GTS call can happen — auth fails first."""
+    await _cache_products([{"code": "flight", "enabled": True}])
+
+    response = await client.post(f"/api/v1/public/flight/{step}/", json={})
+
+    assert response.status_code == 401
+    assert response.json()["errors"][0]["code"] == "unauthorized"
 
 
 async def test_switching_a_vertical_off_needs_no_restart(client: AsyncClient) -> None:

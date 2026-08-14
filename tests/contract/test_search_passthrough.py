@@ -2,17 +2,26 @@
 test PHASES.md §4 names.
 
 The claim is bigger than "we did not mean to cache": after a full search →
-offers → upsell → verify round trip, Redis may hold only the things the
-platform itself needs — the site-config document, rate-limit counters, the GTS
-session — and GTS's ``request_id`` and ``offer_id`` must appear in **no key
-and no value**.
+offers → upsell → verify → booking → cancel round trip, Redis may hold only
+the things the platform itself needs — the site-config document, rate-limit
+counters, the GTS session — and GTS's ``request_id`` and ``offer_id`` must
+appear in **no key and no value**.
 A cache of ours would have to leave a trace here; this sweep is how it would
 be caught.
+
+Booking and cancel are in the round trip on purpose. They are the two steps
+that could plausibly want to remember something, and today they must not:
+no order row, no ``Idempotency-Key`` record, nothing (API.md §20, decision of
+2026-08-14). ``ALLOWED_KEY`` below is the whole of what may survive them —
+when the saga lands and an idempotency record becomes legitimate, this regex
+is where that is declared.
 
 No Postgres: the credential lookup is patched at its documented seam
 (``integrations.service.active_credential``), and so is the fun-fact read
 (``cms.service.random_fun_fact`` — the search response's one addition,
-API.md §20); everything else is real.
+API.md §20). Booking and cancel demand a customer, and loading one is the
+other Postgres query on this path, so the principal is overridden at the
+dependency rather than faked into a database; everything else is real.
 """
 
 import datetime as dt
@@ -26,6 +35,8 @@ import pytest
 import respx
 from httpx import AsyncClient
 
+from app.api.deps import Customer, current_customer
+from app.main import app
 from app.modules.integrations import service as integrations_service
 from app.modules.integrations.service import ActiveGtsCredential
 from app.modules.products import service as products_service
@@ -35,7 +46,10 @@ SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
+BOOKING = "/api/v1/public/flight/booking/"
+CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
+ORDER_ID = "1250"
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
 OFFER_ID = "7cc212c0-c91d-4931-8ff6-4231b7da27c0"
 
@@ -88,6 +102,23 @@ async def gts_installation(
     monkeypatch.setattr(products_service.cms_service, "random_fun_fact", no_fun_fact)
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
     return credential
+
+
+@pytest.fixture
+def signed_in() -> Any:
+    """A customer for ``booking/`` and ``cancel/``, without a customers table.
+
+    Overriding the dependency rather than minting a token: ``current_customer``
+    loads the row to catch an account blocked since the token was issued, and
+    that row is the one thing this suite refuses to need.
+    """
+
+    def a_customer() -> Customer:
+        return Customer(id=uuid.uuid4())
+
+    app.dependency_overrides[current_customer] = a_customer
+    yield
+    app.dependency_overrides.pop(current_customer, None)
 
 
 def _envelope(data: Any) -> dict[str, Any]:
@@ -150,6 +181,20 @@ def _mock_gts() -> respx.Route:
             ),
         )
     )
+    respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {"order_id": ORDER_ID, "pnr": "ABCDEF", "status": "BO"},
+            ),
+        )
+    )
+    respx.post(f"{GTS}/v1/content/cancel/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope({"order_id": ORDER_ID, "status": "CB"}),
+        )
+    )
     return search_route
 
 
@@ -158,6 +203,7 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     client: AsyncClient,
     fake_redis: fakeredis.aioredis.FakeRedis,
     gts_installation: ActiveGtsCredential,
+    signed_in: None,
 ) -> None:
     _mock_gts()
 
@@ -171,6 +217,11 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     verify = await client.post(
         VERIFY, json={"request_id": REQUEST_ID, "offer_id": OFFER_ID}
     )
+    booking = await client.post(
+        BOOKING,
+        json={"request_id": REQUEST_ID, "offer_id": OFFER_ID, "passengers": []},
+    )
+    cancel = await client.post(CANCEL, json={"order_id": ORDER_ID})
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
@@ -182,6 +233,16 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     assert upsell.json()["data"]["offers"] == [{"offer_id": "u-1"}]
     assert verify.status_code == 200
     assert verify.json()["data"]["verified"] is True
+    # Booking adds nothing of ours: no ``search_status``, no ``payment_id``,
+    # no order id we minted — GTS's ``data`` and only that.
+    assert booking.status_code == 200
+    assert booking.json()["data"] == {
+        "order_id": ORDER_ID,
+        "pnr": "ABCDEF",
+        "status": "BO",
+    }
+    assert cancel.status_code == 200
+    assert cancel.json()["data"] == {"order_id": ORDER_ID, "status": "CB"}
 
     # ...and no trace on the way down: only the platform's own keys exist,
     # and neither GTS identifier is in any of them, key or value.

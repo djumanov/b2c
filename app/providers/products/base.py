@@ -45,6 +45,8 @@ class FlowStep(StrEnum):
     #: eSIM and transfer replace ``verify`` with this (PROJECT.md §8).
     OFFER = "offer"
     BOOKING = "booking"
+    #: flight — release a booking GTS still holds (GTS.md §4)
+    CANCEL = "cancel"
     #: railway
     TRAINS = "trains"
     TRAIN_DETAILS = "train-details"
@@ -101,7 +103,18 @@ class ProductAdapter(Protocol):
         ...
 
     async def book(self, client: GtsClient, payload: dict[str, Any]) -> dict[str, Any]:
-        """Hold the booking on the GTS side. The saga takes over from here."""
+        """Hold the booking on the GTS side — a passthrough like the rest.
+
+        Nothing of ours is written: no order row, no payment, no saga yet
+        (API.md §20, decision of 2026-08-14). Those are built *on top of* this
+        step later, and the request shape does not change when they are.
+        """
+        ...
+
+    async def cancel(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Release a booking GTS still holds. Nothing of ours is undone."""
         ...
 
 
