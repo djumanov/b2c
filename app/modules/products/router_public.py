@@ -24,17 +24,32 @@ purchase).
 of the principal, so a vertical this installation does not sell answers 404 to
 an anonymous caller rather than 401. Which verticals we sell must not be
 readable from the difference (API.md §41).
+
+**The bodies stay ``dict``, the documentation does not.** Every step carries an
+``openapi_extra`` from ``products/openapi.py`` describing what it sends and
+returns, because a passthrough that annotates nothing publishes a schema that
+teaches nothing. Those schemas are **documentation only** — they never run.
+The check that does run is the adapter's, and it is looser on purpose
+(``providers/products/flight.py``).
 """
 
 from typing import Annotated, Any
 
-from fastapi import Depends
+from fastapi import Depends, Path
 
 from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
 from app.api.errors import NotFound
 from app.db.session import SessionDep
 from app.modules.products import service
+from app.modules.products.openapi import (
+    FLIGHT_BOOKING,
+    FLIGHT_CANCEL,
+    FLIGHT_OFFERS,
+    FLIGHT_SEARCH,
+    FLIGHT_UPSELL,
+    FLIGHT_VERIFY,
+)
 from app.modules.settings import service as settings_service
 from app.providers.products.base import FlowStep, ProductAdapter, registry
 from app.providers.products.flight import FlightAdapter
@@ -59,7 +74,18 @@ class RequireProductStep:
     def __init__(self, step: FlowStep) -> None:
         self.step = step
 
-    async def __call__(self, product: str) -> ProductAdapter:
+    async def __call__(
+        self,
+        product: Annotated[
+            str,
+            Path(
+                description=(
+                    "Vertical code. Today only `flight` answers; the other four "
+                    "arrive in phase 3 and any other value is a 404."
+                )
+            ),
+        ],
+    ) -> ProductAdapter:
         adapter = registry.get(product)
         if adapter is None or self.step not in adapter.supports():
             raise NotFound("This section is not available on this installation")
@@ -72,6 +98,7 @@ class RequireProductStep:
     "/search/",
     summary="Start a search",
     dependencies=[Depends(RateLimit("search"))],
+    openapi_extra=FLIGHT_SEARCH,
 )
 async def search(
     payload: dict[str, Any],
@@ -90,6 +117,7 @@ async def search(
     "/offers/",
     summary="Page through the offers of a search",
     dependencies=[Depends(RateLimit("search"))],
+    openapi_extra=FLIGHT_OFFERS,
 )
 async def offers(
     payload: dict[str, Any],
@@ -104,6 +132,7 @@ async def offers(
     "/upsell/",
     summary="Fare variants of a chosen offer",
     dependencies=[Depends(RateLimit("search"))],
+    openapi_extra=FLIGHT_UPSELL,
 )
 async def upsell(
     payload: dict[str, Any],
@@ -118,6 +147,7 @@ async def upsell(
     "/verify/",
     summary="Re-check price and availability of an offer",
     dependencies=[Depends(RateLimit("search"))],
+    openapi_extra=FLIGHT_VERIFY,
 )
 async def verify(
     payload: dict[str, Any],
@@ -133,7 +163,9 @@ async def verify(
 # bucket and the 10/min payment bucket both describe something else.
 
 
-@router.post("/booking/", summary="Book the verified offer")
+@router.post(
+    "/booking/", summary="Book the verified offer", openapi_extra=FLIGHT_BOOKING
+)
 async def booking(
     payload: dict[str, Any],
     session: SessionDep,
@@ -143,7 +175,11 @@ async def booking(
     return await service.book(session, adapter, payload)
 
 
-@router.post("/cancel/", summary="Cancel a booking that has not been ticketed")
+@router.post(
+    "/cancel/",
+    summary="Cancel a booking that has not been ticketed",
+    openapi_extra=FLIGHT_CANCEL,
+)
 async def cancel(
     payload: dict[str, Any],
     session: SessionDep,

@@ -13,12 +13,21 @@ the shared error responses from API.md §3 are attached.
 
 Webhook operations are skipped — they answer in the payment provider's own
 protocol (API.md §40).
+
+One more repair happens first. ``get_openapi`` finishes by encoding the schema
+with ``exclude_none=True``, which walks into hand-written ``example`` blocks
+and **deletes every ``null``**. That is not cosmetic: the envelope's ``meta``
+is null on success and ``next_token`` is null on a first page, so the surviving
+example teaches the client to omit fields the contract requires. Each route's
+``openapi_extra`` is therefore re-applied afterwards, from the untouched
+original.
 """
 
 from typing import Any, Final
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from app.api.errors import ERROR_STATUS, ErrorCode
 
@@ -146,6 +155,41 @@ def _wrap_operation(operation: dict[str, Any], components: dict[str, Any]) -> No
         responses.setdefault(str(ERROR_STATUS[code]), _error_response(code))
 
 
+def _deep_update(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Merge ``source`` into ``target``, recursing into nested dicts."""
+    for key, value in source.items():
+        current = target.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            _deep_update(current, value)
+        else:
+            target[key] = value
+
+
+def _restore_extras(app: FastAPI, schema: dict[str, Any]) -> None:
+    """Re-apply every ``openapi_extra``, nulls and all.
+
+    ``include_router`` mounts child routers by reference, so a route's own
+    ``path`` lacks its parents' prefixes; ``iter_route_contexts`` resolves the
+    path it is actually served at.
+
+    Must run **before** the envelope wrapping: it puts the raw ``data``-level
+    response schema back, which ``_wrap_operation`` then wraps. Running it
+    afterwards would undo that wrapping.
+    """
+    paths = schema.get("paths", {})
+    for context in iter_route_contexts(app.routes):
+        route = context.route
+        if not isinstance(route, APIRoute) or not route.openapi_extra:
+            continue
+        operations = paths.get(context.path)
+        if not isinstance(operations, dict):
+            continue
+        for method in route.methods or ():
+            operation = operations.get(method.lower())
+            if isinstance(operation, dict):
+                _deep_update(operation, route.openapi_extra)
+
+
 def build_openapi(app: FastAPI) -> dict[str, Any]:
     """Generate the schema, envelope it, and cache it on the app."""
     if app.openapi_schema:
@@ -157,6 +201,7 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
         description=app.description,
         routes=app.routes,
     )
+    _restore_extras(app, schema)
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     components.update(_ENVELOPE_COMPONENTS)
 
