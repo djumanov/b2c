@@ -1057,6 +1057,14 @@ qurilganda joriy etiladi.
 > ([PROJECT.md](PROJECT.md) D4). Qolgan qadamlardan farqli, bu ikkisida
 > `Authorization` majburiy.
 
+**Swagger'da.** Oltala qadamning so'rov va javob sxemasi hamda to'ldirilgan
+misollari `/api/v1/docs` da ham bor. Ular shu bo'limdan qo'lda ko'chirilgan —
+handler'lar `dict` qabul qilib `dict` qaytargani uchun (passthrough) FastAPI
+ularni o'zi chiqara olmaydi. Sxemalar **faqat hujjat**: hech narsani
+tekshirmaydi va hech narsani kesmaydi, `additionalProperties` hamma joyda
+ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
+`app/modules/products/openapi.py` yangilanadi — teskarisi emas.
+
 ---
 
 ## 21. Buyurtmalar
