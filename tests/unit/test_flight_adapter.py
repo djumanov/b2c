@@ -72,6 +72,8 @@ def test_the_adapter_satisfies_the_port() -> None:
         FlowStep.OFFERS,
         FlowStep.UPSELL,
         FlowStep.VERIFY,
+        FlowStep.BOOKING,
+        FlowStep.CANCEL,
     }
 
 
@@ -326,3 +328,114 @@ async def test_verify_junk_fails_before_a_session_is_spent(
 
     assert caught.value.field == field
     assert client.calls == []
+
+
+# --- booking -------------------------------------------------------------------------
+
+
+async def test_booking_is_passed_through_untouched() -> None:
+    """Nothing is added on the way back — no ``search_status``, no order, no
+    ``payment_id``. Booking has no "In process" state to report (API.md §20,
+    decision of 2026-08-14), so the bare ``data`` is the answer."""
+    gts_answer = {
+        "order_id": "1250",
+        "pnr": "ABCDEF",
+        "status": "BO",
+        "total": {"amount": "221.86", "currency": "USD"},
+    }
+    client = RecordingClient(gts_answer)
+    payload = {
+        "request_id": "r-1",
+        "offer_id": "o-1",
+        "passengers": [{"first_name": "ALI", "last_name": "VALIYEV"}],
+        "save_passenger": True,
+    }
+
+    result = await FlightAdapter().book(client, payload)
+
+    path, sent, timeout = client.calls[0]
+    assert path == "/v1/content/booking/"
+    assert sent is payload  # the same object — passengers and all
+    assert timeout == GtsTimeouts.DEFAULT_SECONDS
+    assert result == gts_answer
+
+
+async def test_booking_does_not_borrow_the_search_timeout() -> None:
+    """API.md §12: 40 s is for a fan-out search, 15 s for everything else."""
+    client = RecordingClient({"order_id": "1"})
+
+    await FlightAdapter().book(client, {"request_id": "r-1", "offer_id": "o-1"})
+
+    assert client.calls[0][2] == GtsTimeouts.DEFAULT_SECONDS
+    assert GtsTimeouts.DEFAULT_SECONDS != GtsTimeouts.SEARCH_SECONDS
+
+
+async def test_passenger_fields_are_not_second_guessed() -> None:
+    """Which passenger fields GTS insists on is GTS's contract to state, not
+    ours to guess (STATUS.md, 2-faza kuzatuvi) — an empty list still goes."""
+    client = RecordingClient({"order_id": "1"})
+
+    await FlightAdapter().book(
+        client, {"request_id": "r-1", "offer_id": "o-1", "passengers": []}
+    )
+
+    assert client.calls[0][1]["passengers"] == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({}, "request_id"),
+        ({"request_id": ""}, "request_id"),
+        ({"request_id": "r-1"}, "offer_id"),
+        ({"request_id": "r-1", "offer_id": ""}, "offer_id"),
+    ],
+)
+async def test_booking_junk_fails_before_a_session_is_spent(
+    payload: dict[str, Any], field: str
+) -> None:
+    client = RecordingClient({})
+
+    with pytest.raises(ValidationFailed) as caught:
+        await FlightAdapter().book(client, payload)
+
+    assert caught.value.field == field
+    assert client.calls == []
+
+
+# --- cancel --------------------------------------------------------------------------
+
+
+async def test_cancel_is_passed_through_untouched() -> None:
+    gts_answer = {"order_id": "1250", "status": "CB"}
+    client = RecordingClient(gts_answer)
+    payload = {"order_id": "1250"}
+
+    result = await FlightAdapter().cancel(client, payload)
+
+    path, sent, timeout = client.calls[0]
+    assert path == "/v1/content/cancel/"
+    assert sent is payload
+    assert timeout == GtsTimeouts.DEFAULT_SECONDS
+    assert result == gts_answer
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"booking_id": "1250"},
+        {"order_number": 1250, "anything": {"at": "all"}},
+    ],
+)
+async def test_cancel_forwards_a_body_it_has_never_seen(
+    payload: dict[str, Any],
+) -> None:
+    """The one step with no shape check. Which field names the booking is not
+    written down anywhere we control, and refusing a valid cancellation before
+    GTS sees it costs a real seat — so every body goes through (API.md §20)."""
+    client = RecordingClient({"status": "CB"})
+
+    await FlightAdapter().cancel(client, payload)
+
+    assert client.calls[0][1] is payload

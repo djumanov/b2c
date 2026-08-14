@@ -13,17 +13,24 @@ off — answer the same ``404`` with ``RequireFeature``'s exact message,
 because from outside "we do not sell this" and "this does not exist" must be
 indistinguishable (API.md §41).
 
-**Auth is optional** (§20's ``(✓)``): the search form is public. A presented
-but invalid token still 401s — ``OptionalCustomer`` forgives absence, not
-garbage — and the search rate limit keys on the subject when there is one,
-the IP otherwise.
+**Auth is optional on the search steps** (§20's ``(✓)``): the search form is
+public. A presented but invalid token still 401s — ``OptionalCustomer``
+forgives absence, not garbage — and the search rate limit keys on the subject
+when there is one, the IP otherwise. ``booking/`` and ``cancel/`` are the
+exception and demand a customer (§20's ``✓``, PROJECT.md D4: no guest
+purchase).
+
+**The gate runs before the token** on those two: ``adapter`` is declared ahead
+of the principal, so a vertical this installation does not sell answers 404 to
+an anonymous caller rather than 401. Which verticals we sell must not be
+readable from the difference (API.md §41).
 """
 
 from typing import Annotated, Any
 
 from fastapi import Depends
 
-from app.api.deps import LanguageDep, OptionalCustomer, RateLimit
+from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
 from app.api.errors import NotFound
 from app.db.session import SessionDep
@@ -119,6 +126,35 @@ async def verify(
     _customer: OptionalCustomer,
 ) -> dict[str, Any]:
     return await service.verify(session, adapter, payload)
+
+
+# No ``RateLimit`` on the two below: API.md §14 files booking under "boshqa
+# public", which the public surface already caps at 120/min. The 30/min search
+# bucket and the 10/min payment bucket both describe something else.
+
+
+@router.post("/booking/", summary="Book the verified offer")
+async def booking(
+    payload: dict[str, Any],
+    session: SessionDep,
+    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
+    _customer: CurrentCustomer,
+) -> dict[str, Any]:
+    return await service.book(session, adapter, payload)
+
+
+@router.post("/cancel/", summary="Cancel a booking that has not been ticketed")
+async def cancel(
+    payload: dict[str, Any],
+    session: SessionDep,
+    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.CANCEL))],
+    _customer: CurrentCustomer,
+) -> dict[str, Any]:
+    # The customer is required but unused: with nothing stored there is no
+    # record to check ownership against, so any signed-in customer who knows a
+    # GTS identifier can cancel that booking. This closes with the ``orders``
+    # module (ARCHITECTURE.md §14 A1); STATUS.md §8 carries it meanwhile.
+    return await service.cancel(session, adapter, payload)
 
 
 __all__ = ["RequireProductStep", "router"]

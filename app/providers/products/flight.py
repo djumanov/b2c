@@ -12,8 +12,10 @@ holds no field map — only the two things a pipe still owes its caller:
 * **A shape check on the way back.** ``search/`` without a ``request_id`` is
   not an answer, whatever the envelope said.
 
-The whole pre-booking flow exists — ``search``, ``offers``, ``upsell``,
-``verify``; only ``book`` lands with the booking saga (PHASES.md §4).
+The whole flow exists — ``search``, ``offers``, ``upsell``, ``verify``,
+``book`` and ``cancel``. Booking is a pipe like the rest: it writes no order,
+starts no saga and returns no ``payment_id`` (API.md §20, decision of
+2026-08-14). The saga of PHASES.md §4 is built on top of this step later.
 """
 
 import datetime as dt
@@ -88,13 +90,20 @@ def _validated(model: type[BaseModel], payload: dict[str, Any]) -> None:
 
 
 class FlightAdapter:
-    """Implements ``ProductAdapter`` for ``flight`` — search and offers."""
+    """Implements ``ProductAdapter`` for ``flight`` — the whole flow."""
 
     code = ProductCode.FLIGHT
 
     def supports(self) -> frozenset[FlowStep]:
         return frozenset(
-            {FlowStep.SEARCH, FlowStep.OFFERS, FlowStep.UPSELL, FlowStep.VERIFY}
+            {
+                FlowStep.SEARCH,
+                FlowStep.OFFERS,
+                FlowStep.UPSELL,
+                FlowStep.VERIFY,
+                FlowStep.BOOKING,
+                FlowStep.CANCEL,
+            }
         )
 
     async def search(
@@ -161,7 +170,37 @@ class FlightAdapter:
         return {**data, "search_status": envelope.get("status")}
 
     async def book(self, client: GtsClient, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError("booking lands with the booking saga")
+        """Book the offer ``verify`` cleared — the same ``offer_id``.
+
+        Two departures from the steps above, both deliberate. The response
+        gains **nothing**: there is no ``search_status`` here, because booking
+        has no "In process" state to report — so ``post``, not
+        ``post_envelope``. And the timeout is the ordinary 15 s, not the 40 s
+        a fan-out search needs (API.md §12).
+
+        Passengers ride along unchecked. ``_FlightOfferRefIn`` allows extra
+        keys, and which passenger fields GTS insists on is GTS's contract to
+        state, not ours to guess (STATUS.md, 2-faza kuzatuvi).
+        """
+        _validated(_FlightOfferRefIn, payload)
+        return await client.post(
+            "/v1/content/booking/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
+        )
+
+    async def cancel(
+        self, client: GtsClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Release a booking GTS still holds.
+
+        **No shape check at all** — the one step without one. Which field
+        names the booking is not written down anywhere we control, and a wrong
+        guess would refuse a valid cancellation before GTS ever saw it. Being
+        wrong here costs a real seat, so the pipe simply forwards and lets GTS
+        answer (API.md §20).
+        """
+        return await client.post(
+            "/v1/content/cancel/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
+        )
 
 
 __all__ = ["FlightAdapter"]

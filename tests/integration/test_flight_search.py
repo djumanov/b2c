@@ -22,14 +22,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.crypto import encrypt
 from app.db.base import Base
 from app.modules.cms.models import ContentStatus, FunFact
+from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
 from app.modules.settings import cache as settings_cache
+from tests.integration.conftest import customer_headers_for
 
 SEARCH = "/api/v1/public/flight/search/"
 OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
+BOOKING = "/api/v1/public/flight/booking/"
+CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
+
+BOOKING_BODY: dict[str, Any] = {
+    "request_id": "r-1",
+    "offer_id": "o-1",
+    "passengers": [
+        {
+            "first_name": "ALI",
+            "last_name": "VALIYEV",
+            "birth_date": "1990-04-02",
+            "document_number": "AA1234567",
+        }
+    ],
+    "save_passenger": True,
+}
 
 SEARCH_BODY: dict[str, Any] = {
     "directions": [
@@ -300,6 +318,184 @@ async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
     assert garbage.status_code == 401
 
 
+# --- booking and cancel (API.md §20) -------------------------------------------------
+
+
+@respx.mock
+async def test_booking_passes_through_untouched(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    """Nothing of ours joins the answer: no ``search_status``, no order id we
+    minted, no ``payment_id`` (decision of 2026-08-14)."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    gts_booking = {"order_id": "1250", "pnr": "ABCDEF", "status": "BO"}
+    route = respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(200, json=_envelope(gts_booking))
+    )
+
+    response = await api.post(
+        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == gts_booking
+    assert route.call_count == 1
+    # Passengers and all, byte for byte.
+    import json as jsonlib
+
+    assert jsonlib.loads(route.calls.last.request.content) == BOOKING_BODY
+
+
+@respx.mock
+async def test_cancel_passes_through_untouched(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    gts_cancel = {"order_id": "1250", "status": "CB"}
+    route = respx.post(f"{GTS}/v1/content/cancel/").mock(
+        return_value=httpx.Response(200, json=_envelope(gts_cancel))
+    )
+
+    response = await api.post(
+        CANCEL, json={"order_id": "1250"}, headers=customer_headers_for(customer)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == gts_cancel
+    assert route.call_count == 1
+
+
+@respx.mock
+@pytest.mark.parametrize("path", [BOOKING, CANCEL])
+async def test_the_writing_steps_refuse_the_anonymous(
+    api: AsyncClient, session: AsyncSession, path: str
+) -> None:
+    """The exception to §20's ``(✓)``: no guest purchase (PROJECT.md D4).
+    GTS is never reached — not even a session is signed in."""
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+
+    anonymous = await api.post(path, json=BOOKING_BODY)
+    garbage = await api.post(
+        path, json=BOOKING_BODY, headers={"Authorization": "Bearer not-a-token"}
+    )
+
+    assert anonymous.status_code == 401
+    assert garbage.status_code == 401
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_a_booking_without_an_offer_id_is_422_before_a_session(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+
+    response = await api.post(
+        BOOKING,
+        json={"request_id": "r-1", "passengers": []},
+        headers=customer_headers_for(customer),
+    )
+
+    assert response.status_code == 422
+    error = response.json()["errors"][0]
+    assert error["code"] == "validation"
+    assert error["field"] == "offer_id"
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_a_refused_booking_keeps_the_gts_reason(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    """GTS reports failure inside HTTP 200 (GTS.md §10). No mapping to
+    ``offer_expired`` — a passthrough relays, and the reason must survive."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "error",
+                "code": -104,
+                "message": (
+                    "BOOKING: save_booking 403: user don't have enough credits "
+                    "on account"
+                ),
+                "data": None,
+            },
+        )
+    )
+
+    response = await api.post(
+        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+    )
+
+    assert response.status_code == 502
+    error = response.json()["errors"][0]
+    assert error["code"] == "upstream_error"
+    assert "enough credits" in error["message"]
+    assert response.json()["meta"]["upstream"]["code"] == -104
+
+
+@respx.mock
+async def test_a_booking_timeout_is_a_504(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/booking/").mock(
+        side_effect=httpx.ReadTimeout("too slow")
+    )
+
+    response = await api.post(
+        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+    )
+
+    assert response.status_code == 504
+    assert response.json()["errors"][0]["code"] == "upstream_timeout"
+
+
+@respx.mock
+async def test_a_booking_leaves_every_table_exactly_as_it_found_it(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    """Booking is the step that *would* write, if anything did. It does not:
+    no order, no passenger row, not even the ``save_passenger`` the body asks
+    for — that lands with the module that owns passengers."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(200, json=_envelope({"order_id": "1250"}))
+    )
+
+    async def counts() -> dict[str, int]:
+        result = {}
+        for table in Base.metadata.sorted_tables:
+            count = await session.scalar(select(func.count()).select_from(table))
+            result[table.name] = count
+        return result
+
+    before = await counts()
+    response = await api.post(
+        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+    )
+    after = await counts()
+
+    assert response.status_code == 200
+    assert after == before
+
+
 # --- the fun fact (API.md §20) --------------------------------------------------------
 
 FACT_TEXT = {
@@ -526,7 +722,7 @@ async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
     assert "Retry-After" in last.headers
 
 
-@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY])
+@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY, BOOKING, CANCEL])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     response = await api.post(path.rstrip("/"), json={})
 

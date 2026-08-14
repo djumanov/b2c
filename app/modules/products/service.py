@@ -77,4 +77,19 @@ async def verify(
     return await adapter.verify(await _client(session), payload)
 
 
-__all__ = ["offers", "search", "upsell", "verify"]
+async def book(
+    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+) -> dict[str, Any]:
+    # As thin as the steps above, and for now that is the whole story: no
+    # order row, no payment, no saga (API.md §20, decision of 2026-08-14).
+    # When they arrive they wrap this call; they do not replace it.
+    return await adapter.book(await _client(session), payload)
+
+
+async def cancel(
+    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+) -> dict[str, Any]:
+    return await adapter.cancel(await _client(session), payload)
+
+
+__all__ = ["book", "cancel", "offers", "search", "upsell", "verify"]
