@@ -359,18 +359,18 @@ async def test_cancel_passes_through_untouched(
         Order(
             customer_id=customer.id,
             product="flight",
-            gts_order_id="1250",
+            gts_order_number="61453",
             status="BO",
-            gts_response={"order_id": "1250", "status": "BO"},
+            gts_response={"data": {"order_number": 61453, "status": "BO"}},
         )
     )
     await session.commit()
-    gts_cancel = {"order_id": "1250", "status": "CB"}
+    gts_cancel = {"data": {"order_number": 61453, "status": "CB"}}
     route = respx.post(f"{GTS}/v1/content/cancel/").mock(
         return_value=httpx.Response(200, json=_envelope(gts_cancel))
     )
 
-    body = {"order_id": "1250", "reason": "changed my mind"}
+    body = {"order_number": 61453, "reason": "changed my mind"}
     response = await api.post(CANCEL, json=body, headers=customer_headers_for(customer))
 
     assert response.status_code == 200

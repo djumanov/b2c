@@ -57,7 +57,7 @@ VERIFY = "/api/v1/public/flight/verify/"
 BOOKING = "/api/v1/public/flight/booking/"
 CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
-ORDER_ID = "1250"
+ORDER_NUMBER = 61453
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
 OFFER_ID = "7cc212c0-c91d-4931-8ff6-4231b7da27c0"
 
@@ -124,7 +124,7 @@ async def gts_installation(
         return None
 
     async def any_order(
-        session: object, *, customer_id: uuid.UUID, gts_order_id: str
+        session: object, *, customer_id: uuid.UUID, gts_order_number: str
     ) -> None:
         return None
 
@@ -132,7 +132,9 @@ async def gts_installation(
         return None
 
     monkeypatch.setattr(products_service.orders_service, "record_booking", no_record)
-    monkeypatch.setattr(products_service.orders_service, "owned_by_gts_id", any_order)
+    monkeypatch.setattr(
+        products_service.orders_service, "owned_by_gts_number", any_order
+    )
     monkeypatch.setattr(products_service.orders_service, "apply_cancel", no_op)
 
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
@@ -220,14 +222,18 @@ def _mock_gts() -> respx.Route:
         return_value=httpx.Response(
             200,
             json=_envelope(
-                {"order_id": ORDER_ID, "pnr": "ABCDEF", "status": "BO"},
+                {
+                    "message": "booked",
+                    "request_id": REQUEST_ID,
+                    "data": {"order_number": ORDER_NUMBER, "status": "BO"},
+                },
             ),
         )
     )
     respx.post(f"{GTS}/v1/content/cancel/").mock(
         return_value=httpx.Response(
             200,
-            json=_envelope({"order_id": ORDER_ID, "status": "CB"}),
+            json=_envelope({"data": {"order_number": ORDER_NUMBER, "status": "CB"}}),
         )
     )
     return search_route
@@ -256,7 +262,7 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
         BOOKING,
         json={"request_id": REQUEST_ID, "offer_id": OFFER_ID, "passengers": []},
     )
-    cancel = await client.post(CANCEL, json={"order_id": ORDER_ID})
+    cancel = await client.post(CANCEL, json={"order_number": ORDER_NUMBER})
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
@@ -274,12 +280,14 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     # response (API.md §21).
     assert booking.status_code == 200
     assert booking.json()["data"] == {
-        "order_id": ORDER_ID,
-        "pnr": "ABCDEF",
-        "status": "BO",
+        "message": "booked",
+        "request_id": REQUEST_ID,
+        "data": {"order_number": ORDER_NUMBER, "status": "BO"},
     }
     assert cancel.status_code == 200
-    assert cancel.json()["data"] == {"order_id": ORDER_ID, "status": "CB"}
+    assert cancel.json()["data"] == {
+        "data": {"order_number": ORDER_NUMBER, "status": "CB"}
+    }
 
     # ...and no trace on the way down: only the platform's own keys exist,
     # and neither GTS identifier is in any of them, key or value.

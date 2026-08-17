@@ -29,22 +29,24 @@ async def order_by_id(
     return row
 
 
-async def order_by_gts_id(
-    session: AsyncSession, customer_id: uuid.UUID, gts_order_id: str
+async def order_by_gts_number(
+    session: AsyncSession, customer_id: uuid.UUID, gts_order_number: str
 ) -> Order | None:
     """The ownership check behind ``cancel/`` (API.md §20).
 
-    Scoped by customer like everything else here, so a booking someone else
-    made is indistinguishable from one that does not exist.
+    Keyed on GTS's ``order_number``, because that is what its ``cancel``
+    body names the booking by. Scoped by customer like everything else here,
+    so a booking someone else made is indistinguishable from one that does
+    not exist.
     """
     row: Order | None = await session.scalar(
-        owned_orders(customer_id).where(Order.gts_order_id == gts_order_id)
+        owned_orders(customer_id).where(Order.gts_order_number == gts_order_number)
     )
     return row
 
 
 __all__ = [
-    "order_by_gts_id",
+    "order_by_gts_number",
     "order_by_id",
     "owned_orders",
 ]

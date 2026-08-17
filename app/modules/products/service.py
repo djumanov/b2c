@@ -139,22 +139,24 @@ async def cancel(
 ) -> dict[str, Any]:
     """Release a booking — but only one this customer made (API.md §20).
 
-    ``order_id`` is the one field this step reads, and it is read rather than
-    rewritten: the body still reaches GTS exactly as it arrived, because which
-    fields name a booking upstream is not ours to decide and a wrong guess
-    costs a real seat (``providers/products/flight.py``).
+    ``order_number`` is the one field this step reads — GTS's own cancel body
+    is ``{"order_number": 61453}`` (EASY_GATEWAY collection,
+    ``/content/Cancel``) — and it is read rather than rewritten: the body
+    still reaches GTS exactly as it arrived, because which further fields name
+    a booking upstream is not ours to decide and a wrong guess costs a real
+    seat (``providers/products/flight.py``).
 
     The lookup runs **before** the GTS call, so a booking that is not this
     customer's is refused without touching the seat.
     """
-    order_id = payload.get("order_id") if isinstance(payload, dict) else None
-    if not isinstance(order_id, str | int) or isinstance(order_id, bool):
+    number = payload.get("order_number") if isinstance(payload, dict) else None
+    if not isinstance(number, str | int) or isinstance(number, bool):
         raise ValidationFailed(
-            "Cancelling needs the order_id that booking returned",
-            field="order_id",
+            "Cancelling needs the order_number that booking returned",
+            field="order_number",
         )
-    order = await orders_service.owned_by_gts_id(
-        session, customer_id=customer_id, gts_order_id=str(order_id).strip()
+    order = await orders_service.owned_by_gts_number(
+        session, customer_id=customer_id, gts_order_number=str(number).strip()
     )
     data = await adapter.cancel(await _client(session), payload)
     await orders_service.apply_cancel(session, order, data)
