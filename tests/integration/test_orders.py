@@ -185,8 +185,29 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     assert order["gts_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
     assert order["status"] == "BO"
     assert order["cancelled_at"] is None
+    # The search this came from, carried on the row.
+    assert order["request_id"] == "r-1"
+    assert order["offer_id"] == "o-1"
     # GTS's answer, verbatim and whole — including the fields we never read.
     assert order["data"] == GTS_BOOKING
+    # The list is the whole row, not a summary: it and the detail endpoint
+    # answer with the same keys, so a client never has to fetch {id}/ just to
+    # render a list (API.md §21).
+    detail = await api.get(f"{ORDERS}{order['id']}/", headers=headers)
+    assert detail.json()["data"] == order
+    assert set(order) == {
+        "id",
+        "product",
+        "gts_order_number",
+        "gts_order_uid",
+        "status",
+        "request_id",
+        "offer_id",
+        "created_at",
+        "updated_at",
+        "cancelled_at",
+        "data",
+    }
     # ``id`` is ours and ``gts_order_number`` is theirs — never merged
     # (API.md §21), so a client that confuses them fails loudly here.
     assert uuid.UUID(order["id"]) is not None
