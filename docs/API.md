@@ -986,19 +986,74 @@ tekshirish; so'rov shakli `upsell/`niki bilan bir xil, javob GTS'niki aynan
 
 ```json
 POST /public/flight/booking/
-{ "request_id": "…", "offer_id": "…", "passengers": [ … ], … }
+{ "request_id": "6c62dcec-9334-11ee-8688-5169d0acfb81",
+  "offer_id": "7cc212c0-c91d-4931-8ff6-4231b7da27c0",
+  "passengers": [
+    { "type": "ADT",
+      "first_name": "AZIZ", "last_name": "KARIMOV",
+      "middle_name": "BAXTIYAROVICH",
+      "birth_date": "1995-04-17",
+      "citizenship": { "code": "UZ", "country_eng": "Uzbekistan",
+                       "country_rus": "Узбекистан", "phone_code": 998,
+                       "phone_mask": "(##) ###-##-##", "emoji": "🇺🇿",
+                       "translations": { "uz": "Oʻzbekiston" } },
+      "document_type": { "type": "PSP", "title": "Заграничный паспорт",
+                         "translations": { "uz": "Xorijga chiqish pasporti" },
+                         "rule": "", "iso_code": "", "country": [] },
+      "document_number": "AA1234567",
+      "document_expiry_date": "2030-01-01" },
+    { "type": "CHD",
+      "first_name": "MADINA", "last_name": "KARIMOVA",
+      "birth_date": "2018-09-30",
+      "citizenship": { "code": "UZ", "country_eng": "Uzbekistan" },
+      "document_type": { "type": "BC", "title": "Свидетельство о рождении" },
+      "document_number": "II1234567" }
+  ],
+  "save_passenger": true }
 
 → { "status": "success",
-    "data": { … GTS'ning bron javobi aynan … } }
+    "data": { "order_id": "1250", "pnr": "ABCDEF", "status": "BO",
+              "total": { "amount": "221.86", "currency": "USD" } } }
 ```
+
+**Misoldagi har bir maydon qayerdan olingani:**
+
+| Maydon | Manba |
+|---|---|
+| `request_id`, `offer_id` | Server talab qiladigan yagona ikkitasi — `verify/` tozalagan aynan o'sha taklif |
+| Yo'lovchining qolgan maydonlari | **§19** — mijozning saqlangan yo'lovchisidan aynan ko'chiriladi; `citizenship` va `document_type` §26 katalogidan tanlangan **to'liq obyekt** |
+| `save_passenger` | §19 — bu yo'lovchilarni profilga saqlab qo'yish |
+| `type` (`ADT`/`CHD`/`INF`/`INS`) | GTS'ning **qidiruvdagi** `adt`/`chd`/`inf`/`ins` lug'ati ([GTS.md](GTS.md) §4). Bron tanasida shunday atalishi — **taxmin**, tasdiqlanmagan |
+
+Server **faqat `request_id` va `offer_id`** borligini tekshiradi; qolgan
+hamma narsa, jumladan yo'lovchilar, **tekshirilmasdan** GTS'ga o'tadi —
+qaysi maydonlar majburiyligini GTS bron kontrakti hal qiladi. Yo'lovchilar
+soni qidiruvdagi `adt`/`chd`/`inf`/`ins` bilan mos kelishi kerak, buni ham
+GTS tekshiradi.
+
+⚠ **Bu misol kontrakt emas.** Yo'lovchi blokining va javobning maydon
+nomlari **jonli GTS'da hali tasdiqlanmagan** ([STATUS.md](STATUS.md) §8) —
+u hujjatlardan yig'ilgan, o'ylab topilgan maydonsiz, lekin jonli bron
+ko'rilgandan keyin o'zgarishi mumkin. Aloqa ma'lumoti (telefon, email)
+misolda **yo'q**, chunki GTS uni qaysi nom bilan kutishi hech qayerda
+yozilmagan. GTS `DOCS`/`DOCO`/`DOCA` oilasidan qo'shimcha maydon (masalan
+jins) talab qilsa — avval [PROJECT.md](PROJECT.md) §13, keyin kod.
 
 ```json
 POST /public/flight/cancel/
-{ "order_id": "1250", … GTS'ning qolgan maydonlari aynan … }
+{ "order_id": "1250" }
 
 → { "status": "success",
-    "data": { … GTS'ning javobi aynan … } }
+    "data": { "order_id": "1250", "status": "CB" } }
 ```
+
+`order_id` — `booking/` javobidan kelgan **GTS raqami** (bizning
+`GET /public/orders/` dagi `gts_order_id`, `id` emas). U **yagona majburiy
+maydon** va u ham faqat egalikni tekshirish uchun o'qiladi; tana esa
+qo'shimcha maydonlari bilan birga GTS'ga **qayta qurilmasdan** uzatiladi.
+Bizga ma'lum bo'lgan boshqa maydon yo'q — GTS bronni yana nima bilan
+nomlashi hujjatlashtirilmagan, shuning uchun misol shu bittasi bilan
+cheklangan.
 
 `booking/` — `verify/` tozalagan **aynan o'sha `offer_id`** bron qilinadi.
 Server faqat `request_id` va `offer_id` borligini tekshiradi; yo'lovchilar va

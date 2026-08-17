@@ -476,6 +476,14 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     bron qilinib javob shakli ko'rilishi shart.** Yozuvning o'zi yo'qolmaydi:
     maydon o'qilmasa qator baribir yoziladi va
     `order_recorded_without_gts_id` ogohlantirishi log'ga tushadi.
+    ⚠ **2026-08-17 da qo'shimcha:** Swagger'dagi bron misoli to'ldirildi
+    (API.md §20). Yo'lovchi maydonlari §19 dan, katalog obyektlari §26 dan
+    olingan — o'ylab topilgani yo'q, lekin bittasi **taxmin**: yo'lovchi
+    ichidagi `type` (`ADT`/`CHD`/`INF`/`INS`) qidiruvning `adt`/`chd`
+    lug'atidan ko'chirilgan, bron tanasida shunday atalishi tasdiqlanmagan.
+    Aloqa ma'lumoti (telefon/email) misolda **ataylab yo'q** — GTS uni
+    qaysi nom bilan kutishi hujjatlashtirilmagan. Jonli bronda uchalasi
+    ham ko'rilsin.
 
 16. 🟠 **Bron yozilmay qolsa buyurtma yo'qoladi.** `booking/` da GTS javob
     bergandan keyingi `INSERT` xato bersa, so'rov baribir `200` qaytaradi
