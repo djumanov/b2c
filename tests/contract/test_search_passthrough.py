@@ -10,18 +10,26 @@ A cache of ours would have to leave a trace here; this sweep is how it would
 be caught.
 
 Booking and cancel are in the round trip on purpose. They are the two steps
-that could plausibly want to remember something, and today they must not:
-no order row, no ``Idempotency-Key`` record, nothing (API.md §20, decision of
-2026-08-14). ``ALLOWED_KEY`` below is the whole of what may survive them —
-when the saga lands and an idempotency record becomes legitimate, this regex
-is where that is declared.
+that could plausibly want to remember something, and what they may remember is
+**the order, and only the order** (API.md §21): the customer's own purchase,
+never the search that led to it. ``ALLOWED_KEY`` below is the whole of what may
+survive them in Redis — when the saga lands and an idempotency record becomes
+legitimate, this regex is where that is declared.
+
+D2 is about *offers*, not about orders: a completed purchase is a record we owe
+the customer, an offer is a cache we refuse to keep (ARCHITECTURE.md §10). So
+this sweep still insists on two things — nothing of the search reaches Redis,
+and the booking response gains no field of ours.
 
 No Postgres: the credential lookup is patched at its documented seam
-(``integrations.service.active_credential``), and so is the fun-fact read
+(``integrations.service.active_credential``), so is the fun-fact read
 (``cms.service.random_fun_fact`` — the search response's one addition,
-API.md §20). Booking and cancel demand a customer, and loading one is the
-other Postgres query on this path, so the principal is overridden at the
-dependency rather than faked into a database; everything else is real.
+API.md §20), and so is the order write and its ownership lookup
+(``orders.service``, the door ``products`` uses). Booking and cancel demand a
+customer, and loading one is the other Postgres query on this path, so the
+principal is overridden at the dependency rather than faked into a database;
+everything else is real. What the order row actually contains is
+``tests/integration/test_orders.py``'s subject, against a real database.
 """
 
 import datetime as dt
@@ -100,6 +108,33 @@ async def gts_installation(
         return None
 
     monkeypatch.setattr(products_service.cms_service, "random_fun_fact", no_fun_fact)
+
+    # Booking writes an order and cancel reads one back (API.md §21). Both go
+    # through ``orders.service`` — the documented door, patched here for the
+    # same reason as the two above: this suite is about what reaches Redis,
+    # and it refuses to need a database to find out.
+    async def no_record(
+        session: object,
+        *,
+        customer_id: uuid.UUID,
+        product: str,
+        payload: dict[str, Any],
+        response: dict[str, Any],
+    ) -> None:
+        return None
+
+    async def any_order(
+        session: object, *, customer_id: uuid.UUID, gts_order_id: str
+    ) -> None:
+        return None
+
+    async def no_op(session: object, order: object, response: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(products_service.orders_service, "record_booking", no_record)
+    monkeypatch.setattr(products_service.orders_service, "owned_by_gts_id", any_order)
+    monkeypatch.setattr(products_service.orders_service, "apply_cancel", no_op)
+
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
     return credential
 
@@ -234,7 +269,9 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     assert verify.status_code == 200
     assert verify.json()["data"]["verified"] is True
     # Booking adds nothing of ours: no ``search_status``, no ``payment_id``,
-    # no order id we minted — GTS's ``data`` and only that.
+    # no order id we minted — GTS's ``data`` and only that. The order row it
+    # writes is read back through ``/public/orders/``, never bolted onto this
+    # response (API.md §21).
     assert booking.status_code == 200
     assert booking.json()["data"] == {
         "order_id": ORDER_ID,

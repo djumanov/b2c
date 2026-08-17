@@ -141,7 +141,7 @@ yupqa yig'uvchi.
 | `staff` | Xodimlar va ularning roli — `owner` yoki `admin`, kodda qat'iy belgilangan | `aud: admin` tokenlari |
 | `products` | Qidiruv oqimi routerlari (`search`/`offers`/`verify`/`upsell`) va `ProductAdapter` registry | **Holatsiz** (D2): hech narsa saqlamaydi, GTS'ga uzatadi va javobni normallashtiradi |
 | `booking` | `verify` dan keyingi bron va buyurtmani chiptagacha yoki qaytarishgacha olib boruvchi **saga** | D3 bo'yicha — **eng yuqori xavfli modul** |
-| `orders` | Lokal buyurtma yozuvlari, GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba |
+| `orders` | Lokal buyurtma yozuvlari; keyinroq — GTS↔kanonik status xaritasi, `sync`, `available_actions` | Lokal yozuv **egalik** uchun, GTS **status va chipta** uchun manba. Bugun yozuv bor, xarita yo'q: GTS statusi kelganicha saqlanadi, o'girish saga bilan (§7) |
 | `payments` | To'lovlar, tranzaksiyalar, qaytarishlar, **saqlangan kartalar (shifrlangan raqam bilan)**, provayder webhook'lari | D7 bo'yicha. Karta `/public/profile/cards/` yo'lida turadi, chunki kontrakt shunday deydi ([API.md](API.md) §19) — lekin qator **shifrlangan to'lov credential'i**, shuning uchun unga shifrlashga va to'lovga egalik qilgan modul egalik qiladi. `customers` da tursa, u to'lov paytida raqamni o'qish uchun `payments` modellarini import qilishga majbur bo'lardi — §4 taqiqlagan sikl. Tashqariga uchta eshik: `service.create_payment()`, `service.forget_cards()` va (2-fazada to'lov uchun) `service.reveal_card()` |
 | `promo` | Kodlar, qoidalar, to'lovga qo'llash, statistika | Chegirma **client marjasidan** ketadi, GTS to'liq tarifni oladi (§14 A4) |
 | `leads` | Lead'lar (murojaatlar), mavzular lug'ati, obunalar | Manbalar sxemasi kontraktdan chiqarildi — §14 G1; mavzular oddiy tarjimali lug'at, G1 dagi sxema emas |
@@ -184,7 +184,7 @@ GTS kontrakti bizning kontraktimizdan ataylab farq qiladi va **ichkariga o'tmasl
 |---|---|---|
 | `{status, message, id, time, total, data}` | `{status, data, errors, meta}` | javob xaritasi |
 | **Xatoda ham HTTP 200**, manfiy kodlar bilan | To'g'ri HTTP status + xato katalogi | xato xaritasi: default `502 upstream_error`; alohida kodlar `offer_expired`, `payment_failed` ga; **asl matn `message` da, asl kod `meta.upstream` da** ([API.md](API.md) §3 talabi) |
-| `BO/PW/TI/TE/CB/VO/RF/PRF` | `booked/pending/ticketed/failed/cancelled/voided/refunded/partially_refunded` | status xaritasi, har vertikal uchun alohida |
+| `BO/PW/TI/TE/CB/VO/RF/PRF` | `booked/pending/ticketed/failed/cancelled/voided/refunded/partially_refunded` | status xaritasi, har vertikal uchun alohida — **hali qurilmagan**: buyurtma qatorida bugun GTS kodi kelganicha turadi ([API.md](API.md) §21), o'girish saga bilan keladi, chunki uning birinchi haqiqiy iste'molchisi — bekor qilish/qaytarish qoidalari |
 | Sessiya muddati tugaydi | — | sessiya menejeri: credential DB'dan deshifrlanadi, sessiya Redis'da, **qulf ostida — faqat bitta worker qayta kiradi**, 401 da bitta avtomatik takror |
 | Taklif va narx tuzilmasi | Bizning `offer` sxemamiz | maydon xaritasi + pul formati (`{amount, currency}`, string) |
 
@@ -320,7 +320,20 @@ ko'tarilganda ishga tushadi.
   kerak. U ham `Entity` emas — soft delete qilingan singleton yagona o'rinni abadiy band
   qiladi (§8.3 dagi ziddiyat). Qator birinchi o'qishda yaratiladi, migratsiyada emas.
 - **Buyurtma va to'lov keshlanmaydi** ([API.md](API.md) §12). **Takliflar esa umuman hech qayerda
-  saqlanmaydi** — na Postgres'da, na Redis'da (D2, §9).
+  saqlanmaydi** — na Postgres'da, na Redis'da (D2, §9). Ikkisini adashtirmaslik kerak:
+  `orders` qatori taklif keshi emas, u **tugallangan xaridning yozuvi** va D2 unga
+  taalluqli emas.
+- **Buyurtma qatorida GTS javobi `JSONB` blob sifatida turadi** — kelganicha, ichi
+  o'girilmasdan. Undan tashqariga faqat to'rtta maydon ajratiladi: `order_id` va
+  `status` (javobdan), `request_id` va `offer_id` (so'rovdan). Ular egalik tekshiruvi,
+  filtr va saralash uchun — ya'ni indeks kerak bo'lgan joyda. **Bron so'rovidagi
+  `passengers` bloki saqlanmaydi**: unda pasport raqami bor, §13 esa akkaunt
+  o'chirilganda buyurtmani anonimlashtirishni talab qiladi, ichini bilmaydigan
+  blobni esa anonimlashtirib bo'lmaydi. Yo'lovchi `save_passenger` orqali
+  `passengers` jadvaliga baribir tushadi ([API.md](API.md) §19).
+- **`status` ustunida CHECK yo'q.** Bu GTS ning lug'ati, biznikimas: GTS yangi kod
+  qo'shsa CHECK haqiqiy bronni yozdirmay qo'yardi. Cheklov bizning enum'imiz
+  qurilganda, o'sha ustunga qo'yiladi.
 - Audit jurnali — faqat qo'shiladigan, `(actor, resource, created_at)` bo'yicha indeksli.
   Partitsiyalash hozircha yo'q: hajm talab qilganda qo'shiladi, oldindan emas.
 - **Migratsiyalar oldinga mos** (D10): client bir necha versiya oshirib sakrashi mumkin, shuning
@@ -441,7 +454,7 @@ Bular ishni to'xtatmaydi, lekin tasdiqlanishi kerak.
 
 | | Taxmin | Qanday bekor qilinadi |
 |---|---|---|
-| A1 | Lokal buyurtma yozuvi **mijoz↔buyurtma egaligi** uchun manba; GTS — **status va chipta** uchun. `sync/` ularni moslashtiradi | GTS mijoz bo'yicha buyurtma so'rovini qo'llab-quvvatlasa |
+| A1 | Lokal buyurtma yozuvi **mijoz↔buyurtma egaligi** uchun manba; GTS — **status va chipta** uchun. `sync/` ularni moslashtiradi | GTS mijoz bo'yicha buyurtma so'rovini qo'llab-quvvatlasa. **Egalik qismi 2026-08-17 da qurildi** ([API.md](API.md) §21); `sync/` hamon yo'q |
 | A2 | Kanonik status enum va vertikal xaritasi **biz belgilaymiz** (hujjatlarda ziddiyat: `BO/TI/…` va `"ticketed"`) | GTS'ning B2C uchun mo'ljallangan lug'ati berilsa |
 | A3 | Valyuta konvertatsiyasi **GTS tomonda**: `currency` parametr sifatida uzatiladi va narx o'sha valyutada qaytadi | GTS buni qo'llamasa — u holda D2 passthrough'i ham qayta ko'riladi |
 | A4 | Promokod chegirmasi **client marjasidan** ketadi, GTS to'liq tarifni oladi | Tijorat tomoni tasdiqlasa |

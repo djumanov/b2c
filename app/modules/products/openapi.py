@@ -488,8 +488,10 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
         "additionalProperties": True,
         "description": (
             "GTS's booking answer, verbatim. **No field of ours is added** — "
-            "no `payment_id` and no order of ours, because nothing is stored "
-            "yet; that arrives with the saga." + _UNCONFIRMED
+            "not even the id of the order this writes. The booking is filed "
+            "under the signed-in customer and read back through "
+            "`GET /public/orders/` (§21); `payment_id` arrives with the saga."
+            + _UNCONFIRMED
         ),
         "properties": {
             "order_id": {
@@ -520,8 +522,8 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
         "total": {"amount": "221.86", "currency": "USD"},
     },
     response_description=(
-        "The seat is held by GTS. Requires a signed-in customer — there is no "
-        "guest purchase."
+        "The seat is held by GTS and the order is recorded under the caller. "
+        "Requires a signed-in customer — there is no guest purchase."
     ),
 )
 
@@ -529,16 +531,23 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
     request_schema={
         "type": "object",
         "additionalProperties": True,
+        "required": ["order_id"],
         "description": (
-            "Forwarded to GTS **without any check** — the one step with no "
-            "shape validation. Which field names the booking is not fixed "
-            "anywhere we control, and refusing a valid cancellation before GTS "
-            "sees it would cost a real seat." + _UNCONFIRMED
+            "`order_id` is required and is the **only** thing checked: it "
+            "names the order to verify ownership against. Everything else is "
+            "forwarded to GTS untouched and the body is never rebuilt — which "
+            "further fields name a booking upstream is not fixed anywhere we "
+            "control, and refusing a valid cancellation before GTS sees it "
+            "would cost a real seat." + _UNCONFIRMED
         ),
         "properties": {
             "order_id": {
                 "type": "string",
-                "description": "The `order_id` that `booking/` returned.",
+                "description": (
+                    "The `order_id` that `booking/` returned. Must belong to "
+                    "the signed-in customer, otherwise `404` and GTS is not "
+                    "called at all (§21)."
+                ),
             }
         },
     },
@@ -558,8 +567,9 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
     },
     response_example={"order_id": "1250", "status": "CB"},
     response_description=(
-        "The booking is released. Only bookings GTS still holds — a ticketed "
-        "order needs `void`/`refund`, which are not built yet."
+        "The booking is released and the stored order takes GTS's new status. "
+        "Only bookings GTS still holds — a ticketed order needs "
+        "`void`/`refund`, which are not built yet."
     ),
 )
 

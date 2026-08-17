@@ -70,6 +70,12 @@ CORE_PREFIXES: tuple[str, ...] = (
     # ``product_settings`` through the products router's own dependency, which
     # this sweep cannot see; the flag machinery it looks for does not apply.
     f"{API_PREFIX}/public/{{product}}/",
+    # Seeing what you bought is not a section either. The switch that decides
+    # whether an installation sells at all is ``product_settings`` one line
+    # above; a second flag over the order history would only be able to hide
+    # purchases a customer already made, which is never a thing to offer
+    # (API.md §21).
+    f"{API_PREFIX}/public/orders/",
     # Fun facts ride inside the flight search response; the off-switch is
     # publishing nothing — an empty table already removes the feature, so a
     # flag would be a second switch for the same wire (API.md §20, §30).

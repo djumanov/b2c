@@ -3,8 +3,15 @@
 The one thing this layer owns is the seam between the request's DB session and
 the stateless adapter: the active GTS credential is decrypted by
 ``integrations.service.active_credential()`` (the documented door out of that
-module), wrapped into a ready ``GtsClient``, and handed to the adapter. No
-state, no cache — the regression tests hold this module to D2.
+module), wrapped into a ready ``GtsClient``, and handed to the adapter.
+
+**The search steps stay stateless** — no offer, no search state, nowhere; the
+regression tests hold them to D2. ``book`` and ``cancel`` are the exception,
+and only in one direction: a completed purchase is written to ``orders``
+through that module's service (never its models — ARCHITECTURE.md §4). An
+order row is not an offer cache, so D2 is untouched (ARCHITECTURE.md §10);
+what it buys is that a customer can find their booking again, and that
+cancelling is limited to bookings they actually made.
 
 The flight search response gets one addition on its way out: ``fun_fact``, a
 random published fact from the cms module (through its service, never its
@@ -20,16 +27,21 @@ our misconfiguration, not GTS's, and the error text must not describe the
 key ring.
 """
 
+import uuid
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import UpstreamError
+from app.api.errors import UpstreamError, ValidationFailed
+from app.core.logging import get_logger
 from app.modules.cms import service as cms_service
 from app.modules.integrations import service as integrations_service
+from app.modules.orders import service as orders_service
 from app.providers.gts.base import GtsClient
 from app.providers.gts.client import client_for
 from app.providers.products.base import ProductAdapter, ProductCode
+
+logger = get_logger(__name__)
 
 
 async def _client(session: AsyncSession) -> GtsClient:
@@ -78,18 +90,75 @@ async def verify(
 
 
 async def book(
-    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+    session: AsyncSession,
+    adapter: ProductAdapter,
+    payload: dict[str, Any],
+    *,
+    customer_id: uuid.UUID,
 ) -> dict[str, Any]:
-    # As thin as the steps above, and for now that is the whole story: no
-    # order row, no payment, no saga (API.md §20, decision of 2026-08-14).
-    # When they arrive they wrap this call; they do not replace it.
-    return await adapter.book(await _client(session), payload)
+    """Book, then file the answer under the customer (API.md §20, §21).
+
+    The passthrough is unchanged and still comes first — the response is GTS's
+    ``data`` and gains nothing. What follows it is the order row, which exists
+    so the customer can find this booking again and so ``cancel`` below has an
+    owner to check.
+
+    **A failed write does not fail the booking.** GTS is already holding the
+    seat. Answering ``500`` would send the client into a retry and open a
+    *second* booking — a real seat, and later real money. The response carries
+    ``order_id`` and ``pnr``, so the customer still leaves with a handle even
+    when our row is missing; the loss is that they cannot cancel through us.
+    The real fix is an outbox row written in the same transaction as the
+    state change (ARCHITECTURE.md §8), and it belongs to the saga. Until then
+    this is a logged, known gap (STATUS.md §8).
+    """
+    data = await adapter.book(await _client(session), payload)
+    try:
+        await orders_service.record_booking(
+            session,
+            customer_id=customer_id,
+            product=adapter.code,
+            payload=payload,
+            response=data,
+        )
+    except Exception:
+        logger.exception(
+            "order_not_recorded",
+            product=adapter.code,
+            customer_id=str(customer_id),
+        )
+    return data
 
 
 async def cancel(
-    session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
+    session: AsyncSession,
+    adapter: ProductAdapter,
+    payload: dict[str, Any],
+    *,
+    customer_id: uuid.UUID,
 ) -> dict[str, Any]:
-    return await adapter.cancel(await _client(session), payload)
+    """Release a booking — but only one this customer made (API.md §20).
+
+    ``order_id`` is the one field this step reads, and it is read rather than
+    rewritten: the body still reaches GTS exactly as it arrived, because which
+    fields name a booking upstream is not ours to decide and a wrong guess
+    costs a real seat (``providers/products/flight.py``).
+
+    The lookup runs **before** the GTS call, so a booking that is not this
+    customer's is refused without touching the seat.
+    """
+    order_id = payload.get("order_id") if isinstance(payload, dict) else None
+    if not isinstance(order_id, str | int) or isinstance(order_id, bool):
+        raise ValidationFailed(
+            "Cancelling needs the order_id that booking returned",
+            field="order_id",
+        )
+    order = await orders_service.owned_by_gts_id(
+        session, customer_id=customer_id, gts_order_id=str(order_id).strip()
+    )
+    data = await adapter.cancel(await _client(session), payload)
+    await orders_service.apply_cancel(session, order, data)
+    return data
 
 
 __all__ = ["book", "cancel", "offers", "search", "upsell", "verify"]

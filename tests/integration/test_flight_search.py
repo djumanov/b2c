@@ -10,6 +10,7 @@ envelope. And the promise underneath it all, D2: **a search writes nothing**
 speaks ASGI, which respx leaves alone.
 """
 
+import json as jsonlib
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ from app.db.base import Base
 from app.modules.cms.models import ContentStatus, FunFact
 from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
+from app.modules.orders.models import Order
 from app.modules.settings import cache as settings_cache
 from tests.integration.conftest import customer_headers_for
 
@@ -134,8 +136,6 @@ async def test_a_search_passes_through_and_returns_gts_request_id(
     }
     assert signin.call_count == 1
     # The body reached GTS verbatim.
-    import json as jsonlib
-
     assert jsonlib.loads(search.calls.last.request.content) == SEARCH_BODY
     cookie = search.calls.last.request.headers["cookie"]
     assert cookie == "esession=session-abc; token=tok-abc"
@@ -343,8 +343,6 @@ async def test_booking_passes_through_untouched(
     assert response.json()["data"] == gts_booking
     assert route.call_count == 1
     # Passengers and all, byte for byte.
-    import json as jsonlib
-
     assert jsonlib.loads(route.calls.last.request.content) == BOOKING_BODY
 
 
@@ -352,21 +350,33 @@ async def test_booking_passes_through_untouched(
 async def test_cancel_passes_through_untouched(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
+    """The body still reaches GTS verbatim — the ownership check reads
+    ``order_id``, it does not rewrite the request (API.md §20)."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
+    session.add(
+        Order(
+            customer_id=customer.id,
+            product="flight",
+            gts_order_id="1250",
+            status="BO",
+            gts_response={"order_id": "1250", "status": "BO"},
+        )
+    )
+    await session.commit()
     gts_cancel = {"order_id": "1250", "status": "CB"}
     route = respx.post(f"{GTS}/v1/content/cancel/").mock(
         return_value=httpx.Response(200, json=_envelope(gts_cancel))
     )
 
-    response = await api.post(
-        CANCEL, json={"order_id": "1250"}, headers=customer_headers_for(customer)
-    )
+    body = {"order_id": "1250", "reason": "changed my mind"}
+    response = await api.post(CANCEL, json=body, headers=customer_headers_for(customer))
 
     assert response.status_code == 200
     assert response.json()["data"] == gts_cancel
     assert route.call_count == 1
+    assert jsonlib.loads(route.calls.last.request.content) == body
 
 
 @respx.mock
@@ -466,12 +476,14 @@ async def test_a_booking_timeout_is_a_504(
 
 
 @respx.mock
-async def test_a_booking_leaves_every_table_exactly_as_it_found_it(
+async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
-    """Booking is the step that *would* write, if anything did. It does not:
-    no order, no passenger row, not even the ``save_passenger`` the body asks
-    for — that lands with the module that owns passengers."""
+    """Booking writes exactly one thing: the order (API.md §21).
+
+    Not a passenger row — not even the ``save_passenger`` the body asks for,
+    which lands with the module that owns passengers — and nothing that
+    resembles a cache of the search (D2). One table moves, by one row."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
@@ -493,7 +505,7 @@ async def test_a_booking_leaves_every_table_exactly_as_it_found_it(
     after = await counts()
 
     assert response.status_code == 200
-    assert after == before
+    assert after == {**before, "orders": before["orders"] + 1}
 
 
 # --- the fun fact (API.md §20) --------------------------------------------------------

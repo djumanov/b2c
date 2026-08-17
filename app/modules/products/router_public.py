@@ -170,9 +170,11 @@ async def booking(
     payload: dict[str, Any],
     session: SessionDep,
     adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
-    _customer: CurrentCustomer,
+    customer: CurrentCustomer,
 ) -> dict[str, Any]:
-    return await service.book(session, adapter, payload)
+    # The response is still GTS's, byte for byte — the order row this writes is
+    # read back through ``/public/orders/``, not returned here (API.md §21).
+    return await service.book(session, adapter, payload, customer_id=customer.id)
 
 
 @router.post(
@@ -184,13 +186,12 @@ async def cancel(
     payload: dict[str, Any],
     session: SessionDep,
     adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.CANCEL))],
-    _customer: CurrentCustomer,
+    customer: CurrentCustomer,
 ) -> dict[str, Any]:
-    # The customer is required but unused: with nothing stored there is no
-    # record to check ownership against, so any signed-in customer who knows a
-    # GTS identifier can cancel that booking. This closes with the ``orders``
-    # module (ARCHITECTURE.md §14 A1); STATUS.md §8 carries it meanwhile.
-    return await service.cancel(session, adapter, payload)
+    # The customer is the ownership check now: the order row booking wrote is
+    # what says this booking is theirs, and a booking that is not answers 404
+    # without GTS being called at all (ARCHITECTURE.md §14 A1).
+    return await service.cancel(session, adapter, payload, customer_id=customer.id)
 
 
 __all__ = ["RequireProductStep", "router"]
