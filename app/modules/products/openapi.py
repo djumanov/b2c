@@ -436,6 +436,90 @@ _UNCONFIRMED: Final = (
     "indicative and read whatever arrives."
 )
 
+#: A country picked from §26 `countries/`, stored and forwarded whole. Shown in
+#: full once so the example is copy-pasteable; the second passenger below
+#: carries a trimmed one, which is equally valid — only `code` is ever read.
+_COUNTRY_UZ: Final[dict[str, Any]] = {
+    "code": "UZ",
+    "country_eng": "Uzbekistan",
+    "country_rus": "Узбекистан",
+    "phone_code": 998,
+    "phone_mask": "(##) ###-##-##",
+    "emoji": "🇺🇿",
+    "translations": {"uz": "Oʻzbekiston"},
+}
+
+#: A document type picked from §26 `document-types/`, same rule — only `type`
+#: is read.
+_DOCUMENT_PSP: Final[dict[str, Any]] = {
+    "type": "PSP",
+    "title": "Заграничный паспорт",
+    "translations": {"uz": "Xorijga chiqish pasporti"},
+    "rule": "",
+    "iso_code": "",
+    "country": [],
+}
+
+#: One traveller, described field by field. Every name comes from API.md §19 —
+#: the saved-passenger record a client copies from — except `type`, which is
+#: flagged below as the one inference in this file.
+_PASSENGER: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": True,
+    "description": (
+        "One traveller. The field names are API.md §19's saved passenger, "
+        "which is what a client has to hand — copy the record across. "
+        "**Nothing here is validated**: GTS's booking contract decides what "
+        "it needs, and it answers if something is missing." + _UNCONFIRMED
+    ),
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": ["ADT", "CHD", "INF", "INS"],
+            "description": (
+                "Traveller category, matching the `adt`/`chd`/`inf`/`ins` "
+                "counts the search was started with (GTS.md §4). ⚠ That this "
+                "is the name and place GTS wants it in the *booking* body is "
+                "an inference from the search vocabulary, not a documented "
+                "field."
+            ),
+        },
+        "first_name": {"type": "string", "description": "As in the document."},
+        "last_name": {"type": "string", "description": "As in the document."},
+        "middle_name": {
+            "type": "string",
+            "description": "Optional — a foreign passport often has none (§19).",
+        },
+        "birth_date": {
+            "type": "string",
+            "format": "date",
+            "description": "`YYYY-MM-DD`. Required on a saved passenger (§19).",
+        },
+        "citizenship": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                "The **whole object** picked from `/public/catalog/countries/` "
+                "(§26), forwarded as it came. Only `code` is ever read."
+            ),
+        },
+        "document_type": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                "The **whole object** picked from "
+                "`/public/catalog/document-types/` (§26). Only `type` is read."
+            ),
+        },
+        "document_number": {"type": "string"},
+        "document_expiry_date": {
+            "type": "string",
+            "format": "date",
+            "description": "Optional — not every kind of document carries one.",
+        },
+    },
+}
+
 FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     request_schema={
         "type": "object",
@@ -451,14 +535,11 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             **_OFFER_REF_PROPERTIES,
             "passengers": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "description": "Passenger fields as in §19.",
-                },
+                "items": _PASSENGER,
                 "description": (
-                    "One entry per traveller. Not validated here — GTS "
-                    "answers if something is missing."
+                    "One entry per traveller. The count and mix must match the "
+                    "`adt`/`chd`/`inf`/`ins` the search was started with — GTS "
+                    "checks that, we do not."
                 ),
             },
             "save_passenger": {
@@ -470,16 +551,39 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             },
         },
     },
+    # A full round trip for two: an adult with a passport and a child with a
+    # birth certificate. Every field is traceable — §19 for the passenger, §26
+    # for the two catalogue objects — so this is copy-pasteable rather than
+    # suggestive. Contact details are absent on purpose: which name GTS expects
+    # them under is written down nowhere, and guessing here would publish a
+    # field that does not exist (API.md §20).
     request_example={
         "request_id": _REQUEST_ID,
         "offer_id": _OFFER_ID,
         "passengers": [
             {
-                "first_name": "ALI",
-                "last_name": "VALIYEV",
-                "birth_date": "1990-04-02",
+                "type": "ADT",
+                "first_name": "AZIZ",
+                "last_name": "KARIMOV",
+                "middle_name": "BAXTIYAROVICH",
+                "birth_date": "1995-04-17",
+                "citizenship": _COUNTRY_UZ,
+                "document_type": _DOCUMENT_PSP,
                 "document_number": "AA1234567",
-            }
+                "document_expiry_date": "2030-01-01",
+            },
+            {
+                "type": "CHD",
+                "first_name": "MADINA",
+                "last_name": "KARIMOVA",
+                "birth_date": "2018-09-30",
+                "citizenship": {"code": "UZ", "country_eng": "Uzbekistan"},
+                "document_type": {
+                    "type": "BC",
+                    "title": "Свидетельство о рождении",
+                },
+                "document_number": "II1234567",
+            },
         ],
         "save_passenger": True,
     },
@@ -544,13 +648,21 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
             "order_id": {
                 "type": "string",
                 "description": (
-                    "The `order_id` that `booking/` returned. Must belong to "
-                    "the signed-in customer, otherwise `404` and GTS is not "
-                    "called at all (§21)."
+                    "**GTS's** order number, as `booking/` returned it — the "
+                    "same value `GET /public/orders/` reports as "
+                    "`gts_order_id`. Not our `id`, which is a UUID and means "
+                    "nothing upstream.\n\n"
+                    "Missing or blank → `422` naming this field. Belonging to "
+                    "another customer, or to no order we recorded → `404`, "
+                    "and GTS is not called at all (§21)."
                 ),
             }
         },
     },
+    # One field, and that is the whole honest example. Everything else a
+    # cancellation might carry is undocumented upstream, and inventing a name
+    # here would publish a field that does not exist — the same reason the
+    # adapter refuses to rebuild this body (providers/products/flight.py).
     request_example={"order_id": "1250"},
     response_schema={
         "type": "object",
