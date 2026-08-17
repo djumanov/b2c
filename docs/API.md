@@ -907,11 +907,12 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi |
 | `POST` | `/public/{product}/cancel/` | ✓ | Chipta chiqarilmagan bronni bekor qiladi |
 
-> **Zanjirning `payment` va `order` qismi hali qurilmagan.** `booking/` bugun
-> **buyurtma ham, `payment_id` ham qaytarmaydi** — u qolgan qadamlar kabi sof
-> passthrough (2026-08-14 qarori, quyida). Lokal buyurtma yozuvi, to'lov va
-> saga keyinroq shu endpoint **ustiga** quriladi: bron so'rovining shakli
-> o'shanda ham o'zgarmaydi, javobiga bizning maydonlarimiz qo'shiladi.
+> **Zanjirning `payment` qismi hali qurilmagan.** `booking/` bugun
+> **`payment_id` qaytarmaydi** va to'lov saga'si yo'q. Lokal buyurtma yozuvi
+> esa **bor** (2026-08-17 qarori, §21): bron muvaffaqiyatli o'tsa GTS javobi
+> mijozning nomiga saqlanadi. Javobga baribir **bitta ham maydon
+> qo'shilmaydi** — passthrough shakli o'zgarmaydi, yozuv `GET /public/orders/`
+> orqali ko'rinadi. To'lov va saga keyinroq shu endpoint **ustiga** quriladi.
 
 **Vertikalga xos qo'shimcha qadamlar:**
 
@@ -993,7 +994,7 @@ POST /public/flight/booking/
 
 ```json
 POST /public/flight/cancel/
-{ … GTS'ning bekor qilish so'rovi aynan … }
+{ "order_id": "1250", … GTS'ning qolgan maydonlari aynan … }
 
 → { "status": "success",
     "data": { … GTS'ning javobi aynan … } }
@@ -1006,18 +1007,33 @@ maydonlar kerakligini GTS bron kontrakti hal qiladi (yo'lovchi maydonlari —
 §19). Javobga **bitta ham maydon qo'shilmaydi**: `search_status` bu yerda yo'q,
 chunki bron oqimida "In process" holati yo'q.
 
+GTS javob bergandan **keyin** bron mijozning nomiga saqlanadi — javob
+kelganicha, JSON sifatida (§21). Yozuv javobni o'zgartirmaydi va uni
+kechiktirmaydi. **Yozuv xatosi bronni yiqitmaydi:** GTS o'rinni allaqachon
+ushlab turibdi, `500` qaytarilsa mijoz qayta urinib ikkinchi bron ochardi —
+u haqiqiy o'rin. Bunday holda xato log'ga yoziladi va GTS javobi (`order_id`,
+`pnr` bilan) baribir qaytadi, ya'ni handle mijoz qo'lida qoladi. To'g'ri
+yechimi — holat o'zgarishi bilan bitta tranzaksiyadagi outbox
+([ARCHITECTURE.md](ARCHITECTURE.md) §8), u saga bilan keladi.
+
 `cancel/` — GTS hali ushlab turgan bronni bo'shatadi (chipta chiqarilgandan
-keyingi `void`/`refund` hali qurilmagan). So'rov tanasi **umuman
-tekshirilmaydi**: GTS bronni qaysi maydon bilan nomlashi bu yerda qat'iy
+keyingi `void`/`refund` hali qurilmagan). So'rov tanasida **`order_id`
+majburiy** — u bo'lmasa `422`, maydon nomi bilan. Bu yagona tekshiruv:
+qolgan maydonlar tegilmasdan GTS'ga o'tadi va tana **qayta qurilmaydi**,
+chunki GTS bronni yana qaysi maydonlar bilan nomlashi bizda qat'iy
 belgilanmagan, noto'g'ri taxmin esa haqiqiy bekor qilishni GTS ko'rmasdan rad
 etardi.
 
-> ⚠ **Bekor qilishda egalik tekshiruvi yo'q.** Hech narsa saqlanmagani uchun
-> server bronni kim qilganini bilmaydi: token talab qilinadi, lekin GTS
-> identifikatorini bilgan **har qanday** tizimga kirgan mijoz o'sha bronni
-> bekor qila oladi. Bu `orders` moduli kelguncha shunday qoladi — o'sha yerda
-> lokal buyurtma yozuvi egalikning manbai bo'ladi
-> ([ARCHITECTURE.md](ARCHITECTURE.md) §14 A1).
+> **Bekor qilish faqat o'z buyurtmasi ustida.** `order_id` bo'yicha shu
+> mijozning buyurtma yozuvi qidiriladi; topilmasa **`404`** qaytadi va
+> **GTS'ga umuman borilmaydi**. "Bunday buyurtma yo'q" va "bu sizniki emas"
+> — tashqaridan bir xil javob (§18). Bu 2026-08-14 dagi ochiq egalik
+> tuynugini yopadi ([ARCHITECTURE.md](ARCHITECTURE.md) §14 A1).
+>
+> ⚠ `order_id` maydon nomi **jonli GTS'da hali tasdiqlanmagan**. Bekor qilish
+> qattiq bo'lgani uchun, agar jonli javobda bron boshqacha atalgan bo'lsa
+> bekor qilish umuman ishlamaydi — ishlab chiqarishga chiqishdan oldin bitta
+> jonli bron qilinib javob shakli ko'rilishi shart ([STATUS.md](STATUS.md) §8).
 
 Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
 qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
@@ -1073,20 +1089,52 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 |---|---|---|---|
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
 | `GET` | `/public/orders/{id}/` | ✓ | Tafsilot |
-| `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) |
-| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish (qoidalar ruxsat bersa) |
+| `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) — **hali qurilmagan** |
+| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish — **hali qurilmagan**, §20 dagi `cancel/` orqali |
 
-Buyurtma statuslari (kanonik): `booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
-`voided` · `refunded` · `partially_refunded` · `needs_attention`.
-GTS kodlaridan o'girish — [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+**Buyurtma yozuvi — egalikning manbai.** `booking/` muvaffaqiyatli o'tganda
+GTS javobi mijozning nomiga saqlanadi (§20). Biz javobning **ichini
+o'girmaymiz**: u `data` maydonida GTS qanday bergan bo'lsa shundayligicha
+qaytadi. Yozuvning o'zi bilan birga GTS javobidan `order_id` va `status`,
+so'rovdan esa `request_id` va `offer_id` alohida maydonga ajratiladi — ular
+egalik tekshiruvi, filtr va saralash uchun kerak, boshqa hech narsa uchun
+emas.
 
-> **Bu bo'lim hali qurilmagan.** Lokal buyurtma yozuvi yo'q, shuning uchun
-> yuqoridagi to'rtta yo'l bugun mavjud emas. Aviachipta bronini bekor qilish
-> hozircha §20 dagi `POST /public/flight/cancel/` orqali — u GTS'ga to'g'ridan
-> to'g'ri o'tadi va lokal holatni o'zgartirmaydi, chunki o'zgartiradigan holat
-> yo'q. `orders` moduli kelganda `orders/{id}/cancel/` shu passthrough ustiga
-> quriladi: egalik tekshiruvi, kanonik status va `available_actions` o'shanda
-> paydo bo'ladi.
+```json
+GET /public/orders/?product=flight&status=BO&page=1&page_size=20
+
+→ { "status": "success",
+    "data": [ { "id": "3f1c…",                     ← bizning UUID
+                "product": "flight",
+                "gts_order_id": "1250",            ← GTS'niki
+                "status": "BO",
+                "created_at": "2026-08-17T09:14:22Z",
+                "data": { … GTS'ning bron javobi aynan … } } ],
+    "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
+```
+
+`GET /public/orders/{id}/` — bitta yozuv, aynan shu shaklda. `{id}` —
+**bizning** UUID; GTS'ning `order_id` si esa `gts_order_id` maydonida.
+Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
+
+> **Status bugun GTS'niki, kanonik emas.** Qiymat GTS kodi kelganicha:
+> `BO` · `PW` · `TI` · `TE` · `CB` · `VO` · `RF` · `PRF`
+> ([GTS.md](GTS.md) §4). `?status=` filtri ham shu kodlar bilan ishlaydi.
+>
+> Kanonik enum (`booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
+> `voided` · `refunded` · `partially_refunded` · `needs_attention`) bekor
+> qilinmadi — u `available_actions` bilan birga **saga**ga suriladi
+> ([PHASES.md](PHASES.md) 2-faza, 9-bo'lak). Sabab: xarita har vertikal uchun
+> alohida yoziladi va uning birinchi haqiqiy iste'molchisi — bekor
+> qilish/qaytarish qoidalari, ular esa saga bilan keladi. Bugun xarita
+> qurilsa u iste'molchisiz taxmin bo'lardi. O'girish nuqtasi belgilangan:
+> [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+
+> **Hali qurilmagani.** `receipt/` — kvitansiya buyurtma ichidagi narx va
+> yo'lovchini bilishni talab qiladi, biz esa blobni ochmaymiz. `{id}/cancel/`
+> — bekor qilish hozircha §20 dagi `POST /public/{product}/cancel/` orqali,
+> u endi egalikni tekshiradi. Ikkalasi ham saga bilan keladi. `payment_id`,
+> `available_actions` va admin yuzasi (§31) ham hali yo'q.
 
 ---
 
@@ -1728,6 +1776,13 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 > `needs_attention` holatidagi buyurtmalar alohida ajratiladi: bu — to'lov o'tib, chipta
 > chiqmagan va avtomatik qaytarish ham bajarilmagan holat ([ARCHITECTURE.md](ARCHITECTURE.md) §8).
 > Ular qo'lda hal qilinishi kerak.
+
+> **Bu bo'lim hali qurilmagan.** `orders` jadvali mavjud (§21) va admin
+> ro'yxati uning ustiga quriladi, lekin bugun bironta admin yo'li yo'q.
+> `?search=` (PNR, yo'lovchi ismi), `?payment_status=`, `available_actions`
+> va `sync/` — hammasi buyurtma ichini o'qishni yoki to'lovni talab qiladi,
+> ya'ni ular status xaritasi va saga bilan birga keladi
+> ([PHASES.md](PHASES.md) 2-faza, 9-bo'lak).
 
 ---
 

@@ -344,6 +344,16 @@ saqlanadi** — ular hisobot va qaytarish uchun kerak. Saqlangan kartalarning **
 raqami qatordan o'chiriladi** va qator soft-delete qilinadi; tranzaksiyadagi maskalangan
 nusxa esa qoladi, chunki kvitansiya karta unutilgandan keyin ham o'qilishi kerak.
 
+> ⚠ **Buyurtmani anonimlashtirish hali bajarilmaydi.** Buyurtma qatorida GTS javobi
+> ochilmaydigan `JSONB` blob bo'lib turadi ([API.md](API.md) §21) — ichida nima
+> borligini bilmasak, undan shaxsiy ma'lumotni ajratib tashlab ham bo'lmaydi. Shu
+> sababli bron **so'rovidagi** yo'lovchi bloki ataylab saqlanmaydi
+> ([ARCHITECTURE.md](ARCHITECTURE.md) §10). GTS'ning bron **javobi** ham yo'lovchi
+> ma'lumotini qaytarsa — jonli bronda tekshiriladi — **avval shu bo'lim** tahrirlanadi,
+> keyin kod: yo blobdan aniq maydonlar chiqarib tashlanadi, yo saqlash siyosati
+> qayta yoziladi. Bugungi holat [STATUS.md](STATUS.md) §8 da ochiq kamchilik
+> sifatida turibdi.
+
 Tozalashdan oldin esa qatorning **to'liq shaxsiy nusxasi** — email, ism, telefon, tug'ilgan
 sana, ro'yxatdan o'tgan sana — mijoz yuborgan o'chirish sabablari bilan birga
 `deleted_customers` arxiviga yoziladi ([API.md](API.md) §19). Bu ongli savdo: "o'chirish"

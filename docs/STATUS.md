@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-14 · `feat/flight-booking-cancel`
+**Oxirgi yangilanish:** 2026-08-17 · `feat/orders-local-record`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -17,11 +17,11 @@ takrorlamaydi.
 
 | | |
 |---|---|
-| Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti va aviachipta qidiruvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5 — qisman) |
-| Endpointlar | 90 ta yo'l / 127 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 27 ta + `alembic_version` |
-| Migratsiyalar | 26 ta, bitta head (`49b3b6e5cc3a`) |
-| Testlar | 791 ta — unit 24 fayl · contract 8 · integration 30 |
+| Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti, aviachipta qidiruvi va buyurtma yozuvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5, 6 — qisman) |
+| Endpointlar | 92 ta yo'l / 129 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 28 ta + `alembic_version` |
+| Migratsiyalar | 27 ta, bitta head (`b17076f7d6da`) |
+| Testlar | 831 ta — unit 24 fayl · contract 9 · integration 31 |
 | Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — `main` da ham qizil, bron/bekor qilish ishiga aloqasiz |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -74,7 +74,8 @@ kontrakt testlari.
 | `providers/gts/static.py` | GTS `/static/*` uchun adapter: sessiyasiz, xato xaritasi bilan, envelope shu yerda to'xtaydi | — |
 | `providers/gts/client.py` | Autentifikatsiyalangan GTS klienti: sessiya Redis'da (`gts:session:{id}:{updated_at}`), qayta kirish **qulf ostida**, 401/403 da bitta avtomatik takror, xato xaritasi (HTTP 200 ichidagi xato ham). Sessiya `sessionid` cookie sifatida yuboriladi — **taxmin**, jonli GTS'da tekshirilsin | — |
 | `providers/products/flight.py` | `flight` adapteri: **butun oqim** — `search`, `offers`, `upsell`, `verify`, `booking`, `cancel`; sof passthrough — tana yengil tekshiruvdan so'ng GTS'ga aynan, javob `data` si kelganicha (API.md §20, 2026-08-12 va 2026-08-14 qarorlari). `booking`/`cancel` timeout'i 15 s (§12), javobga hech narsa qo'shilmaydi; `cancel` da shakl tekshiruvi umuman yo'q | — |
-| `products` (public) | `POST /public/{product}/` oqimining oltita qadami — generik router, adapter registry orqali; gate `product_settings` (bayroq emas), 30/daq `search` limiti, qidiruv qadamlarida auth ixtiyoriy, **`booking/` va `cancel/` da majburiy** (D4); credential yo'q → `502`. Hech narsa saqlamaydi (D2), `test_search_passthrough.py` qo'riqlaydi | 6 |
+| `products` (public) | `POST /public/{product}/` oqimining oltita qadami — generik router, adapter registry orqali; gate `product_settings` (bayroq emas), 30/daq `search` limiti, qidiruv qadamlarida auth ixtiyoriy, **`booking/` va `cancel/` da majburiy** (D4); credential yo'q → `502`. Qidiruv qadamlari hech narsa saqlamaydi (D2), `test_search_passthrough.py` qo'riqlaydi; `booking/` esa buyurtma qatorini yozadi va `cancel/` uni egalik uchun o'qiydi (quyidagi qator) | 6 |
+| `orders` (public) | `GET /public/orders/` va `/{id}/` — mijozning o'z buyurtmalari, `?product=`/`?status=` filtri bilan. Qator `booking/` javobidan tug'iladi: GTS javobi `JSONB` bo'lib kelganicha saqlanadi, undan faqat `order_id` va `status`, so'rovdan `request_id` va `offer_id` ustunga ajratiladi. **Yo'lovchilar bloki saqlanmaydi** (PROJECT.md §13). Status — GTS kodi, kanonik enum emas (API.md §21) | 2 |
 | `api/multipart` | Yuklanadigan tanani chegara bilan o'qish — hozir yagona yuza, `/admin/uploads/`, uchun | — |
 | `api/deps` | `RequireFeature` — o'chirilgan bo'lim ikkala yuzada `404`; o'n bitta bayroq. `current_customer` endi **qatorni yuklaydi** | — |
 | `cms` (FAQ) | Savol/javob obyektlari, erkin kategoriya kodi, publish/unpublish, `reorder/`; public ro'yxat bitta tilda, `faq` bayrog'i ostida | 6 |
@@ -96,7 +97,8 @@ kontrakt testlari.
 `gts_credentials`, `smtp_settings`, `customers`, `customer_refresh_tokens`,
 `email_otps`, `passengers`, `payment_providers`, `social_credentials`,
 `customer_cards`, `deleted_customers`, `deletion_reasons`, `faqs`,
-`fun_facts`, `pages`, `leads`, `leads_support_contact`, `support_topics`.
+`fun_facts`, `pages`, `leads`, `leads_support_contact`, `support_topics`,
+`orders`.
 
 **Beat jadvali:** `heartbeat` (5 daq) · `sweep_unlinked_uploads` (soatlik).
 
@@ -116,6 +118,12 @@ To'liq reja — [PHASES.md](PHASES.md).
 (`providers/gts/client.py`), `flight` adapteri va `products` moduli —
 `search/`, `offers/`, `upsell/` va `verify/` jonli passthrough sifatida ishlaydi. **Jonli GTS'da
 tekshirildi (2026-08-12)**:
+
+> **2026-08-17 da qo'shilgani:** `orders` moduli — `booking/` javobi mijoz
+> nomiga `JSONB` bo'lib saqlanadi, `GET /public/orders/` va `/{id}/` uni
+> qaytaradi, `cancel/` esa egalikni shu yozuvdan tekshiradi. **Jonli GTS'da
+> tekshirilmagan**: `order_id` va `status` maydon nomlari hujjatdan olingan
+> taxmin, va bekor qilish qattiq bo'lgani uchun bu §8.15 dagi 🔴 xavf.
 
 - sessiya **ikkita cookie** bilan yuriladi: `esession={session_key}` va
   `token={token}` — ikkalasi ham signin javobining `data` sida keladi,
@@ -269,6 +277,10 @@ tug'ilmasligi uchun.
 | 77 | **`booking/` sagasiz, sof passthrough** (2026-08-14): buyurtma qatori yo'q, `payment_id` yo'q, outbox yo'q — API.md §20 dagi "bron → buyurtma va `payment_id`" tavsifi shunga ko'ra tahrirlandi. PHASES.md 9-bo'lagi (saga) o'z o'rnida qoladi va shu endpoint **ustiga** quriladi | Klientga bugun kerak bo'lgan narsa — GTS oqimini uchidan-uchiga aylanib chiqish; `orders`+`payments`+saga esa uchta modul va eng yuqori xavfli bo'lak. Ularni kutish butun vertikalni to'sib turardi. So'rov shakli saga kelganda ham o'zgarmaydi — faqat javobga bizning maydonlarimiz qo'shiladi, ya'ni bu tashlab yuboriladigan ish emas |
 | 78 | **`cancel/` — oqim qadami** (`POST /public/flight/cancel/`), API.md §21 dagi `orders/{id}/cancel/` emas; so'rov tanasi **umuman tekshirilmaydi** | Lokal buyurtma yozuvi yo'q ekan, `orders/{id}/` yo'lining `{id}` si bizda mavjud emas — bekor qilishni buyurtma resursiga osib bo'lmaydi. Tana tekshirilmasligi ataylab: GTS bronni qaysi maydon bilan nomlashi hujjatlarda yozilmagan, noto'g'ri taxmin esa haqiqiy bekor qilishni GTS ko'rmasdan rad etardi — narxi haqiqiy o'rin |
 | 79 | `booking/` va `cancel/` da **`Idempotency-Key` talab qilinmaydi**, qo'shimcha rate limit ham yo'q — `api/idempotency.py` hamon iste'molchisiz | Bu qadamlar hozir hech qanday holatni o'zgartirmaydi: takroriy so'rov GTS'da ikkinchi bron ochadi, lekin bizda tuzatiladigan yozuv yo'q, ya'ni kalit himoya qiladigan narsaning o'zi yo'q. API.md §10 talabi **pul yo'li** uchun — u saga bilan keladi va o'shanda kalit shu endpointga qo'yiladi. §14 bo'yicha bron "boshqa public" (120/daq), ya'ni public yuzasining limiti yetadi |
+| 80 | **Buyurtma qatori sagadan oldin** (2026-08-17): `booking/` javobi `orders` ga `JSONB` bo'lib yoziladi, `cancel/` esa `order_id` bo'yicha egalikni tekshiradi — `payment_id` ham, outbox ham, holat mashinasi ham yo'q. №77 ni bekor qilmaydi: u saga haqida edi, bu yozuv haqida | Ikkita muammoni bitta jadval yopadi — mijoz o'z buyurtmalarini topa olmasligi va №78 qoldirgan egalik tuynugi (§8.14, 🔴). Ikkalasi ham sagani kutishi shart emas edi: egalik uchun **yozuvning o'zi** yetarli, holat mashinasi esa pul yo'li uchun kerak. Javob shakli o'zgarmadi, ya'ni saga kelganda bu ish tashlanmaydi — ustiga qo'yiladi |
+| 81 | **Status GTS kodi bo'lib saqlanadi** (`BO`/`TI`/`CB`/…), kanonik enum emas; xarita 6-bo'lakdan **9-bo'lakka ko'chdi** | Kanonik enum'ning birinchi haqiqiy iste'molchisi — bekor qilish/qaytarish qoidalari va `available_actions`, ular esa saga bilan keladi. Bugun xarita qurilsa u iste'molchisiz taxmin bo'lardi, ustiga har vertikal uchun alohida yoziladi va faqat bittasi mavjud. GTS kodini kelganicha saqlash esa hech narsani yo'qotmaydi — o'girish keyin, saqlangan qiymat ustida bajariladi |
+| 82 | **Buyurtma ichi ochilmaydi**: `gts_response` blob, undan faqat `order_id`, `status`, `request_id`, `offer_id` ustunga ajratiladi; bron **so'rovidagi `passengers` bloki saqlanmaydi** | Ustunga chiqarilganlar — indeks kerak bo'lganlar (egalik, filtr, saralash), boshqasi emas. Yo'lovchilar esa pasport raqami: PROJECT.md §13 buyurtmani anonimlashtirishni va'da qiladi, ichini bilmaydigan blobni esa anonimlashtirib bo'lmaydi — ya'ni to'liq so'rovni saqlash bajarib bo'lmaydigan va'da yaratardi. `save_passenger` orqali yo'lovchi `passengers` jadvaliga baribir tushadi |
+| 83 | `booking/` da **yozuv xatosi so'rovni yiqitmaydi** — log'ga yoziladi va GTS javobi qaytadi | GTS o'rinni allaqachon ushlab turibdi. `500` mijozni qayta urinishga, u esa **ikkinchi bronga** olib borardi — haqiqiy o'rin va keyinroq haqiqiy pul. Javobdagi `order_id`/`pnr` mijoz qo'lida qoladi. To'g'ri yechimi outbox (ARCHITECTURE.md §8), u 9-bo'lakda; §8.16 shu oraliqni ochiq kamchilik sifatida yuritadi |
 
 ---
 
@@ -397,6 +409,7 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 | Menyu modeli (sahifa yarmi yechildi — markdown, [PHASES.md](PHASES.md) §2.14) | 5-bosqich |
 | Saqlash muddatlari | 7-bosqich |
 | Kutilayotgan yuk | server o'lchami; D2 sababli har `offers/` GTS'ga boradi |
+| **Buyurtmani anonimlashtirish** (yangi, PROJECT.md §13) | Jonli bron ko'rilganda. GTS javobi yo'lovchi qaytarsa blob ichida pasport raqami qoladi va akkaunt o'chirilganda uni tozalab bo'lmaydi — o'shanda avval §13, keyin kod (§8.17) |
 | **GTS 2FA (D1)** | 2-bosqich. Kolleksiyadan aniqlandi: bu **akkaunt bayrog'i** (`two_factory`), ya'ni GTS tomonda o'chiriladi — kod masalasi emas ([GTS.md](GTS.md) §3). Yoniga ikkita band qo'shildi: `white_list` (client IP'si) va `is_single` |
 
 ---
@@ -452,18 +465,46 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     ichiga yashiriladigan narsa emas.
     ⚠ Narxi vaqt o'tgani sari oshadi: hozircha qatorlar faqat dev bazasida.
 
+### 2026-08-17 — buyurtma qatori qo'shilganda
+
+15. 🔴 **`order_id` maydon nomi jonli GTS'da tasdiqlanmagan.** Bekor qilish
+    endi **qattiq**: yozuv topilmasa `404`. Agar jonli bron javobida bron
+    boshqacha atalgan bo'lsa, har bir buyurtmaning `gts_order_id` si `NULL`
+    bo'lib qoladi va **bekor qilish umuman ishlamaydi**. Manba —
+    `products/openapi.py` dagi `_UNCONFIRMED` sxemasi, ya'ni hujjatdan
+    ko'chirilgan taxmin. **Ishlab chiqarishga chiqishdan oldin bitta jonli
+    bron qilinib javob shakli ko'rilishi shart.** Yozuvning o'zi yo'qolmaydi:
+    maydon o'qilmasa qator baribir yoziladi va
+    `order_recorded_without_gts_id` ogohlantirishi log'ga tushadi.
+
+16. 🟠 **Bron yozilmay qolsa buyurtma yo'qoladi.** `booking/` da GTS javob
+    bergandan keyingi `INSERT` xato bersa, so'rov baribir `200` qaytaradi
+    (izohi API.md §20 da: `500` qaytarish mijozni qayta urinishga va
+    **ikkinchi bronga** olib borardi — haqiqiy o'rin). Oqibati: o'sha bron
+    bizda ko'rinmaydi va u orqali bekor qilib bo'lmaydi; mijoz qo'lida faqat
+    javobdagi `order_id`/`pnr` qoladi. To'g'ri yechimi — holat o'zgarishi
+    bilan bitta tranzaksiyadagi outbox (ARCHITECTURE.md §8), u **9-bo'lakda**.
+    Hozircha `order_not_recorded` log'i.
+
+17. 🟠 **Buyurtma anonimlashtirilmaydi.** `gts_response` ochilmaydigan blob,
+    demak akkaunt o'chirilganda PROJECT.md §13 va'da qilgan anonimlashtirish
+    bajarilmaydi. So'rovdagi yo'lovchi bloki shu sababdan saqlanmaydi, lekin
+    GTS **javobi** ham yo'lovchi qaytarishi mumkin — jonli bronda ko'rilsin.
+    Ko'rilsa: avval PROJECT.md §13, keyin kod.
+
+18. 🟡 **`orders` da soft delete ishlatilmaydi.** Jadval `Entity` dan meros
+    olgani uchun `deleted_at` bor va barcha o'qishlar `live()` orqali ketadi,
+    lekin uni yozadigan yo'l yo'q. Buyurtma moliyaviy hujjat (PROJECT.md
+    §13), ya'ni o'chirilmaydi — ustun kelajakdagi arxivlash uchun turibdi va
+    unikal indeks uni allaqachon hisobga oladi.
+
 ### 2026-08-14 — bron va bekor qilish passthrough sifatida qo'shilganda
 
-14. 🔴 **`POST /public/flight/cancel/` da egalik tekshiruvi yo'q.** Hech narsa
-    saqlanmagani uchun server bronni kim qilganini bilmaydi: token majburiy,
-    lekin GTS identifikatorini bilgan **har qanday** tizimga kirgan mijoz
-    o'sha bronni bekor qila oladi. Bu tanlangan yondashuvning bevosita
-    oqibati (№78), xato emas — lekin **ishlab chiqarishga shu holda
-    chiqmasligi kerak**. Yopiladigan joyi aniq: `orders` moduli (PHASES.md
-    2-faza, 6-bo'lak), u yerda lokal buyurtma yozuvi mijoz↔buyurtma
-    egaligining manbai bo'ladi (ARCHITECTURE.md §14 A1).
-    ⚠ Xavf faqat GTS buyurtma identifikatori taxmin qilinadigan bo'lsa
-    oshadi — jonli tekshiruvda uning shakli ko'rilsin.
+14. ✅ **`POST /public/flight/cancel/` da egalik tekshiruvi yo'q edi** —
+    **2026-08-17 da yopildi** (№80). Buyurtma qatori paydo bo'ldi va u
+    egalikning manbai: `order_id` bo'yicha shu mijozning yozuvi topilmasa
+    `404`, GTS'ga umuman borilmaydi
+    (`tests/integration/test_orders.py`).
 
 ### 2026-08-06 — GTS credential'lari yozilayotganda topilgani
 
