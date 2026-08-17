@@ -42,21 +42,40 @@ BOOKING_BODY: dict[str, Any] = {
     "offer_id": "o-1",
     "passengers": [
         {
-            "first_name": "ALI",
-            "last_name": "VALIYEV",
-            "birth_date": "1990-04-02",
-            "document_number": "AA1234567",
+            "type": "ADT",
+            "gender": "M",
+            "first_name": "Azimjon",
+            "last_name": "Yusufov",
+            "birth_date": "2002-12-20",
+            "citizenship": "UZ",
+            "document": {
+                "type": "PSP",
+                "number": "FA2145157",
+                "issue_date": "2019-05-30",
+                "expire_date": "2029-05-29",
+            },
+            "email": "yusufovazimjon@gmail.com",
+            "phone": {"phone_code": "998", "phone_number": "998328192"},
         }
     ],
     "save_passenger": True,
 }
 
-#: What GTS's booking answer is documented to look like (openapi.py, GTS.md §4).
+#: GTS's booking answer, in the shape the EASY_GATEWAY collection recorded:
+#: our client strips GTS's envelope, so what lands here is the wrapper, and the
+#: order's own fields sit one level down under a second ``data``.
 GTS_BOOKING: dict[str, Any] = {
-    "order_id": "1250",
-    "pnr": "ABCDEF",
-    "status": "BO",
-    "total": {"amount": "221.86", "currency": "USD"},
+    "message": "booked",
+    "request_id": "r-1",
+    "data": {
+        "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+        "order_number": 61453,
+        "status": "BO",
+        "gds_pnr": "UBPLKW",
+        "supplier_pnr": ["UBPLKW"],
+        "trip_type": "OW",
+        "price_info": {"price": 46.89, "currency": "EUR"},
+    },
 }
 
 
@@ -105,7 +124,7 @@ def _mock_booking(answer: dict[str, Any] = GTS_BOOKING) -> respx.Route:
 def _mock_cancel(answer: dict[str, Any] | None = None) -> respx.Route:
     return respx.post(f"{GTS}/v1/content/cancel/").mock(
         return_value=httpx.Response(
-            200, json=_envelope(answer or {"order_id": "1250", "status": "CB"})
+            200, json=_envelope(answer or {"data": {"status": "CB"}})
         )
     )
 
@@ -115,7 +134,8 @@ async def _order(session: AsyncSession, customer: Customer, **overrides: Any) ->
     fields: dict[str, Any] = {
         "customer_id": customer.id,
         "product": "flight",
-        "gts_order_id": "1250",
+        "gts_order_number": "61453",
+        "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
         "status": "BO",
         "request_id": "r-1",
         "offer_id": "o-1",
@@ -159,15 +179,18 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     assert listed.status_code == 200
     (order,) = listed.json()["data"]
     assert order["product"] == "flight"
-    assert order["gts_order_id"] == "1250"
+    # Read out of the *inner* data, not the wrapper — the bug this shape
+    # caught: reading the top level leaves every identifier NULL.
+    assert order["gts_order_number"] == "61453"
+    assert order["gts_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
     assert order["status"] == "BO"
     assert order["cancelled_at"] is None
     # GTS's answer, verbatim and whole — including the fields we never read.
     assert order["data"] == GTS_BOOKING
-    # ``id`` is ours and ``gts_order_id`` is theirs — the two never merge
+    # ``id`` is ours and ``gts_order_number`` is theirs — never merged
     # (API.md §21), so a client that confuses them fails loudly here.
     assert uuid.UUID(order["id"]) is not None
-    assert order["id"] != order["gts_order_id"]
+    assert order["id"] != order["gts_order_number"]
 
 
 @respx.mock
@@ -195,7 +218,7 @@ async def test_the_passengers_of_the_request_are_not_stored(
 
 
 @respx.mock
-async def test_an_answer_without_an_order_id_is_still_recorded(
+async def test_an_answer_without_an_order_number_is_still_recorded(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
@@ -206,15 +229,15 @@ async def test_an_answer_without_an_order_id_is_still_recorded(
     the shape of it — losing it to a rename would be worse."""
     await _installation(session)
     _mock_signin()
-    _mock_booking({"reference": "1250", "state": "held"})
+    _mock_booking({"data": {"reference": "1250", "state": "held"}})
 
     response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
 
     assert response.status_code == 200
     (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
-    assert order["gts_order_id"] is None
+    assert order["gts_order_number"] is None
     assert order["status"] is None
-    assert order["data"] == {"reference": "1250", "state": "held"}
+    assert order["data"] == {"data": {"reference": "1250", "state": "held"}}
 
 
 @respx.mock
@@ -254,7 +277,7 @@ async def test_the_list_shows_only_my_orders(
 ) -> None:
     stranger = await make_customer(session, email="someone.else@example.uz")
     mine = await _order(session, customer)
-    await _order(session, stranger, gts_order_id="9999")
+    await _order(session, stranger, gts_order_number="9999")
 
     response = await api.get(ORDERS, headers=headers)
 
@@ -270,9 +293,9 @@ async def test_the_list_filters_and_pages(
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
-    await _order(session, customer, gts_order_id="1", status="BO")
-    await _order(session, customer, gts_order_id="2", status="TI")
-    await _order(session, customer, gts_order_id="3", status="TI")
+    await _order(session, customer, gts_order_number="1", status="BO")
+    await _order(session, customer, gts_order_number="2", status="TI")
+    await _order(session, customer, gts_order_number="3", status="TI")
 
     booked = await api.get(ORDERS, params={"status": "BO"}, headers=headers)
     ticketed = await api.get(ORDERS, params={"status": "TI"}, headers=headers)
@@ -305,7 +328,7 @@ async def test_one_order_is_readable_and_someone_elses_is_not(
 ) -> None:
     stranger = await make_customer(session, email="someone.else@example.uz")
     mine = await _order(session, customer)
-    theirs = await _order(session, stranger, gts_order_id="9999")
+    theirs = await _order(session, stranger, gts_order_number="9999")
 
     ok = await api.get(f"{ORDERS}{mine.id}/", headers=headers)
     forbidden = await api.get(f"{ORDERS}{theirs.id}/", headers=headers)
@@ -340,7 +363,7 @@ async def test_cancelling_someone_elses_booking_never_reaches_gts(
     stranger = await make_customer(session, email="someone.else@example.uz")
     await _order(session, stranger)
 
-    response = await api.post(CANCEL, json={"order_id": "1250"}, headers=headers)
+    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
 
     assert response.status_code == 404
     assert cancel.call_count == 0
@@ -359,7 +382,7 @@ async def test_cancelling_my_own_booking_updates_the_row(
     cancel = _mock_cancel()
     order = await _order(session, customer)
 
-    response = await api.post(CANCEL, json={"order_id": "1250"}, headers=headers)
+    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
 
     assert response.status_code == 200
     assert cancel.call_count == 1
@@ -370,7 +393,7 @@ async def test_cancelling_my_own_booking_updates_the_row(
 
 
 @respx.mock
-async def test_cancelling_without_an_order_id_is_a_422(
+async def test_cancelling_without_an_order_number_is_a_422(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
@@ -383,6 +406,6 @@ async def test_cancelling_without_an_order_id_is_a_422(
     response = await api.post(CANCEL, json={"pnr": "ABCDEF"}, headers=headers)
 
     assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "order_id"
+    assert response.json()["errors"][0]["field"] == "order_number"
     assert cancel.call_count == 0
     assert signin.call_count == 0

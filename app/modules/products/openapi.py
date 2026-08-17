@@ -436,52 +436,72 @@ _UNCONFIRMED: Final = (
     "indicative and read whatever arrives."
 )
 
-#: A country picked from §26 `countries/`, stored and forwarded whole. Shown in
-#: full once so the example is copy-pasteable; the second passenger below
-#: carries a trimmed one, which is equally valid — only `code` is ever read.
-_COUNTRY_UZ: Final[dict[str, Any]] = {
-    "code": "UZ",
-    "country_eng": "Uzbekistan",
-    "country_rus": "Узбекистан",
-    "phone_code": 998,
-    "phone_mask": "(##) ###-##-##",
-    "emoji": "🇺🇿",
-    "translations": {"uz": "Oʻzbekiston"},
+#: The document block GTS's booking body nests the passport into. Its names
+#: are not §19's — the client transforms rather than copies (API.md §20).
+_DOCUMENT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": True,
+    "description": (
+        "The traveller's document, **nested** — not the flat "
+        "`document_type`/`document_number` of the saved passenger (§19)."
+    ),
+    "properties": {
+        "type": {
+            "type": "string",
+            "description": (
+                "Document type **code** only, e.g. `PSP`, `NP`, `FA` — the "
+                "`type` key of the §26 `document-types/` object, not the "
+                "whole object."
+            ),
+        },
+        "number": {"type": "string", "description": "§19's `document_number`."},
+        "issue_date": {
+            "type": "string",
+            "format": "date",
+            "description": (
+                "`YYYY-MM-DD`. **Not stored by us** — §19 has no issue date, "
+                "so the booking form asks for it (PROJECT.md §13)."
+            ),
+        },
+        "expire_date": {
+            "type": "string",
+            "format": "date",
+            "description": "§19's `document_expiry_date`, renamed.",
+        },
+    },
 }
 
-#: A document type picked from §26 `document-types/`, same rule — only `type`
-#: is read.
-_DOCUMENT_PSP: Final[dict[str, Any]] = {
-    "type": "PSP",
-    "title": "Заграничный паспорт",
-    "translations": {"uz": "Xorijga chiqish pasporti"},
-    "rule": "",
-    "iso_code": "",
-    "country": [],
-}
-
-#: One traveller, described field by field. Every name comes from API.md §19 —
-#: the saved-passenger record a client copies from — except `type`, which is
-#: flagged below as the one inference in this file.
+#: One traveller, in **GTS's** booking shape — recorded from the EASY_GATEWAY
+#: collection's ``/content/Booking``, not inferred. It is deliberately *not*
+#: §19's saved passenger: the client transforms one into the other, and the
+#: differences are called out field by field below because they are the part
+#: that goes wrong silently.
 _PASSENGER: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": True,
     "description": (
-        "One traveller. The field names are API.md §19's saved passenger, "
-        "which is what a client has to hand — copy the record across. "
-        "**Nothing here is validated**: GTS's booking contract decides what "
-        "it needs, and it answers if something is missing." + _UNCONFIRMED
+        "One traveller, in GTS's own shape. **Not the same shape as the saved "
+        "passenger of §19** — `citizenship` is a bare code here, the document "
+        "fields are nested, and `gender`, `document.issue_date`, `email` and "
+        "`phone` have no saved counterpart at all, so the booking form asks "
+        "for them (API.md §20). **Nothing here is validated by us**: GTS's "
+        "booking contract decides what it needs." + _UNCONFIRMED
     ),
     "properties": {
         "type": {
             "type": "string",
             "enum": ["ADT", "CHD", "INF", "INS"],
             "description": (
-                "Traveller category, matching the `adt`/`chd`/`inf`/`ins` "
-                "counts the search was started with (GTS.md §4). ⚠ That this "
-                "is the name and place GTS wants it in the *booking* body is "
-                "an inference from the search vocabulary, not a documented "
-                "field."
+                "Traveller category. The mix must match the "
+                "`adt`/`chd`/`inf`/`ins` the search was started with."
+            ),
+        },
+        "gender": {
+            "type": "string",
+            "enum": ["M", "F"],
+            "description": (
+                "**Not stored by us** — gender is absent from PROJECT.md §13's "
+                "inventory, so the booking form asks for it."
             ),
         },
         "first_name": {"type": "string", "description": "As in the document."},
@@ -493,29 +513,30 @@ _PASSENGER: Final[dict[str, Any]] = {
         "birth_date": {
             "type": "string",
             "format": "date",
-            "description": "`YYYY-MM-DD`. Required on a saved passenger (§19).",
+            "description": "`YYYY-MM-DD`.",
         },
         "citizenship": {
-            "type": "object",
-            "additionalProperties": True,
-            "description": (
-                "The **whole object** picked from `/public/catalog/countries/` "
-                "(§26), forwarded as it came. Only `code` is ever read."
-            ),
-        },
-        "document_type": {
-            "type": "object",
-            "additionalProperties": True,
-            "description": (
-                "The **whole object** picked from "
-                "`/public/catalog/document-types/` (§26). Only `type` is read."
-            ),
-        },
-        "document_number": {"type": "string"},
-        "document_expiry_date": {
             "type": "string",
-            "format": "date",
-            "description": "Optional — not every kind of document carries one.",
+            "description": (
+                "ISO 3166-1 alpha-2 **code only**, e.g. `UZ` — the `code` key "
+                "of the §26 `countries/` object, not the whole object §19 "
+                "stores."
+            ),
+        },
+        "document": _DOCUMENT,
+        "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Per traveller, not per order. Not stored by us.",
+        },
+        "phone": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "Per traveller. Not stored by us.",
+            "properties": {
+                "phone_code": {"type": "string", "description": "e.g. `998`."},
+                "phone_number": {"type": "string"},
+            },
         },
     },
 }
@@ -551,39 +572,31 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             },
         },
     },
-    # A full round trip for two: an adult with a passport and a child with a
-    # birth certificate. Every field is traceable — §19 for the passenger, §26
-    # for the two catalogue objects — so this is copy-pasteable rather than
-    # suggestive. Contact details are absent on purpose: which name GTS expects
-    # them under is written down nowhere, and guessing here would publish a
-    # field that does not exist (API.md §20).
+    # Recorded from the EASY_GATEWAY collection's ``/content/Booking`` — a
+    # real call, not a composition. One adult, because that is the request
+    # that was actually made; the passenger shape is the part worth copying.
+    # ``save_passenger`` is ours (§19) and rides along; GTS ignores it.
     request_example={
         "request_id": _REQUEST_ID,
         "offer_id": _OFFER_ID,
         "passengers": [
             {
                 "type": "ADT",
-                "first_name": "AZIZ",
-                "last_name": "KARIMOV",
-                "middle_name": "BAXTIYAROVICH",
-                "birth_date": "1995-04-17",
-                "citizenship": _COUNTRY_UZ,
-                "document_type": _DOCUMENT_PSP,
-                "document_number": "AA1234567",
-                "document_expiry_date": "2030-01-01",
-            },
-            {
-                "type": "CHD",
-                "first_name": "MADINA",
-                "last_name": "KARIMOVA",
-                "birth_date": "2018-09-30",
-                "citizenship": {"code": "UZ", "country_eng": "Uzbekistan"},
-                "document_type": {
-                    "type": "BC",
-                    "title": "Свидетельство о рождении",
+                "gender": "M",
+                "first_name": "Azimjon",
+                "last_name": "Yusufov",
+                "middle_name": "Kamoliddin",
+                "birth_date": "2002-12-20",
+                "citizenship": "UZ",
+                "document": {
+                    "type": "PSP",
+                    "number": "FA2145157",
+                    "issue_date": "2019-05-30",
+                    "expire_date": "2029-05-29",
                 },
-                "document_number": "II1234567",
-            },
+                "email": "yusufovazimjon@gmail.com",
+                "phone": {"phone_code": "998", "phone_number": "998328192"},
+            }
         ],
         "save_passenger": True,
     },
@@ -595,35 +608,96 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "not even the id of the order this writes. The booking is filed "
             "under the signed-in customer and read back through "
             "`GET /public/orders/` (§21); `payment_id` arrives with the saga."
-            + _UNCONFIRMED
+            "\n\n**Mind the second `data`.** The order's own fields are one "
+            "level down, under `data` — what you see here is GTS's wrapper "
+            "around it." + _UNCONFIRMED
         ),
         "properties": {
-            "order_id": {
+            "message": {
                 "type": "string",
-                "description": "**GTS's** order number — the handle for `cancel/`.",
+                "description": "GTS's word for the outcome, e.g. `booked`.",
             },
-            "pnr": {"type": "string", "description": "Booking reference."},
-            "status": {
+            "request_id": {
                 "type": "string",
-                "enum": ["BO", "PW", "TI", "TE", "CB", "VO", "RF", "PRF"],
-                "description": (
-                    "GTS's order status (GTS.md §4). A fresh booking is `BO` — "
-                    "held, not ticketed."
-                ),
+                "description": "The search this order came from, echoed back.",
             },
-            "total": {
+            "data": {
                 "type": "object",
                 "additionalProperties": True,
-                "description": "Price actually booked, e.g. "
-                '`{"amount": "221.86", "currency": "USD"}`.',
+                "description": "**The order itself.**",
+                "properties": {
+                    "order_number": {
+                        "type": "integer",
+                        "description": (
+                            "GTS's order number — **the handle `cancel/` "
+                            "takes**. An integer here; `/public/orders/` "
+                            "reports it as the string `gts_order_number` "
+                            "(API.md §1)."
+                        ),
+                    },
+                    "order_uid": {
+                        "type": "string",
+                        "description": "GTS's internal key for the same order.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["BO", "PW", "TI", "TE", "CB", "VO", "RF", "PRF"],
+                        "description": (
+                            "GTS's order status (GTS.md §4). A fresh booking "
+                            "is `BO` — held, not ticketed."
+                        ),
+                    },
+                    "gds_pnr": {"type": "string", "description": "Booking reference."},
+                    "supplier_pnr": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "An array, not a string.",
+                    },
+                    "ticket_time_limit": {
+                        "type": "integer",
+                        "description": "Seconds until the hold lapses.",
+                    },
+                    "refundable": {"type": "boolean"},
+                    "trip_type": _TRIP_TYPE,
+                    "routes": {
+                        "type": "array",
+                        "items": {"type": "object", "additionalProperties": True},
+                        "description": "Segments as booked.",
+                    },
+                    "price_info": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "description": "What was actually charged.",
+                    },
+                    "passengers": {
+                        "type": "array",
+                        "items": {"type": "object", "additionalProperties": True},
+                        "description": (
+                            "The travellers as GTS recorded them — note the "
+                            "names differ again (`firstname`, `lastname`, "
+                            "`document.passport_number`)."
+                        ),
+                    },
+                },
             },
         },
     },
+    # Trimmed to the fields worth naming; the recorded answer also carries
+    # routes, fares, baggage and supplier keys, all of which pass through.
     response_example={
-        "order_id": "1250",
-        "pnr": "ABCDEF",
-        "status": "BO",
-        "total": {"amount": "221.86", "currency": "USD"},
+        "message": "booked",
+        "request_id": _REQUEST_ID,
+        "data": {
+            "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+            "order_number": 61453,
+            "status": "BO",
+            "gds_pnr": "UBPLKW",
+            "supplier_pnr": ["UBPLKW"],
+            "trip_type": "OW",
+            "refundable": False,
+            "ticket_time_limit": 288000,
+            "price_info": {"price": 46.89, "currency": "EUR", "fee_amount": 5.5},
+        },
     },
     response_description=(
         "The seat is held by GTS and the order is recorded under the caller. "
@@ -635,9 +709,9 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
     request_schema={
         "type": "object",
         "additionalProperties": True,
-        "required": ["order_id"],
+        "required": ["order_number"],
         "description": (
-            "`order_id` is required and is the **only** thing checked: it "
+            "`order_number` is required and is the **only** thing we read: it "
             "names the order to verify ownership against. Everything else is "
             "forwarded to GTS untouched and the body is never rebuilt — which "
             "further fields name a booking upstream is not fixed anywhere we "
@@ -645,31 +719,36 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
             "would cost a real seat." + _UNCONFIRMED
         ),
         "properties": {
-            "order_id": {
-                "type": "string",
+            "order_number": {
+                "type": "integer",
                 "description": (
-                    "**GTS's** order number, as `booking/` returned it — the "
-                    "same value `GET /public/orders/` reports as "
-                    "`gts_order_id`. Not our `id`, which is a UUID and means "
-                    "nothing upstream.\n\n"
-                    "Missing or blank → `422` naming this field. Belonging to "
-                    "another customer, or to no order we recorded → `404`, "
-                    "and GTS is not called at all (§21)."
+                    "**GTS's** order number, from `booking/`'s `data.data."
+                    "order_number` — the value `GET /public/orders/` reports "
+                    "as `gts_order_number`. Not our `id`, which is a UUID and "
+                    "means nothing upstream.\n\n"
+                    "Missing → `422` naming this field. Belonging to another "
+                    "customer, or to no order we recorded → `404`, and GTS is "
+                    "not called at all (§21)."
                 ),
             }
         },
     },
-    # One field, and that is the whole honest example. Everything else a
-    # cancellation might carry is undocumented upstream, and inventing a name
-    # here would publish a field that does not exist — the same reason the
-    # adapter refuses to rebuild this body (providers/products/flight.py).
-    request_example={"order_id": "1250"},
+    # The whole of GTS's recorded cancel body (EASY_GATEWAY collection,
+    # ``/content/Cancel``) — one field. Inventing a second would publish one
+    # that does not exist, which is the same reason the adapter refuses to
+    # rebuild this body (providers/products/flight.py).
+    request_example={"order_number": 61453},
     response_schema={
         "type": "object",
         "additionalProperties": True,
-        "description": "GTS's answer, verbatim." + _UNCONFIRMED,
+        "description": (
+            "GTS's answer, verbatim. ⚠ The only recorded cancel response is an "
+            "older one shaped `{status, code, order}` — it has no `data` key, "
+            "which our GTS client requires, so this step's answer is the least "
+            "certain thing on the flow and is the first to check against live "
+            "GTS (STATUS.md §8)." + _UNCONFIRMED
+        ),
         "properties": {
-            "order_id": {"type": "string"},
             "status": {
                 "type": "string",
                 "enum": ["BO", "PW", "TI", "TE", "CB", "VO", "RF", "PRF"],
@@ -677,7 +756,7 @@ FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
             },
         },
     },
-    response_example={"order_id": "1250", "status": "CB"},
+    response_example={"order_number": 61453, "status": "CB"},
     response_description=(
         "The booking is released and the stored order takes GTS's new status. "
         "Only bookings GTS still holds — a ticketed order needs "

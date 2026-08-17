@@ -2,10 +2,15 @@
 
 The row exists for **ownership**, not for understanding. GTS's booking answer
 is kept verbatim in ``gts_response`` and is never interpreted — the client
-gets the same bytes back that the passthrough returned. Only four values are
+gets the same bytes back that the passthrough returned. Only five values are
 lifted out into columns, and only because an index is needed there:
-``gts_order_id`` and ``status`` from the answer, ``request_id`` and
-``offer_id`` from the request that produced it.
+``gts_order_number``, ``gts_order_uid`` and ``status`` from the answer,
+``request_id`` and ``offer_id`` from the request that produced it.
+
+**The answer is two layers deep.** GTS replies
+``{"message": "booked", "request_id": …, "data": {…the order…}}`` *inside* the
+envelope our client already strips, so the order's own fields live under a
+second ``data``. ``service._order_body`` is the one place that knows this.
 
 **The booking request's ``passengers`` block is not stored.** It carries
 passport numbers, and PROJECT.md §13 promises an order is anonymised when the
@@ -49,10 +54,12 @@ class Order(Entity):
         # identifier out of (NULL) do not collide with each other — and so a
         # soft-deleted row does not block re-recording the same booking.
         Index(
-            "uq_orders_gts_order_id_live",
-            "gts_order_id",
+            "uq_orders_gts_order_number_live",
+            "gts_order_number",
             unique=True,
-            postgresql_where=text("gts_order_id IS NOT NULL AND deleted_at IS NULL"),
+            postgresql_where=text(
+                "gts_order_number IS NOT NULL AND deleted_at IS NULL"
+            ),
         ),
     )
 
@@ -68,11 +75,17 @@ class Order(Entity):
     #: today, the other four in phase 3.
     product: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
 
-    #: GTS's own order number, e.g. ``"1250"`` — the handle ``cancel/`` takes.
-    #: Nullable because the field name is not yet confirmed against live GTS
-    #: (STATUS.md §8): a booking whose answer we could not read is still
-    #: recorded, rather than lost.
-    gts_order_id: Mapped[str | None] = mapped_column(String(64))
+    #: GTS's own order number, e.g. ``61453`` — **the handle ``cancel/``
+    #: takes** (its body is ``{"order_number": 61453}``). An integer upstream,
+    #: kept as text here: API.md §1 makes identifiers strings on the wire, and
+    #: an id is never arithmetic. Nullable because a booking whose answer we
+    #: could not read is still recorded rather than lost.
+    gts_order_number: Mapped[str | None] = mapped_column(String(64))
+
+    #: GTS's internal key for the same order (``order_uid``). Nothing we call
+    #: takes it — ``cancel`` and ``retrieve`` both key on the number — but it
+    #: is what GTS support asks for, so it is worth an indexless column.
+    gts_order_uid: Mapped[str | None] = mapped_column(String(64))
 
     #: GTS's status code, verbatim. **No CHECK constraint on purpose** — this
     #: is GTS's vocabulary, not ours, and a new code on their side must not

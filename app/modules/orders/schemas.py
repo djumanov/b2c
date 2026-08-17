@@ -14,13 +14,18 @@ from pydantic import BaseModel, Field
 
 
 class OrderOut(BaseModel):
-    """One order. ``id`` is ours, ``gts_order_id`` is GTS's — see API.md §21."""
+    """One order. ``id`` is ours, the ``gts_*`` pair is GTS's — API.md §21."""
 
     model_config = {"from_attributes": True}
 
     id: uuid.UUID
     product: str
-    gts_order_id: str | None
+    #: GTS's order number — what ``cancel/`` takes (§20). An integer upstream,
+    #: a string here: API.md §1 keeps identifiers textual.
+    gts_order_number: str | None
+    #: GTS's internal key for the same order. Nothing we call takes it; it is
+    #: what GTS support asks for.
+    gts_order_uid: str | None
     #: GTS's own code (``BO``, ``TI``, ``CB``, …), not the canonical enum —
     #: that arrives with the saga (ARCHITECTURE.md §7).
     status: str | None

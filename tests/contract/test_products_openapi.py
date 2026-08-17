@@ -31,9 +31,17 @@ STEPS: dict[str, tuple[str, ...]] = {
     "offers": ("search_status", "next_token", "count", "trip_type", "offers"),
     "upsell": ("search_status", "offers"),
     "verify": ("search_status", "verified"),
-    "booking": ("order_id", "pnr", "status"),
-    "cancel": ("order_id", "status"),
+    # Booking's answer is two layers deep — GTS's own wrapper, then the
+    # order. The wrapper is what ``data`` describes; the order beneath it is
+    # checked separately below.
+    "booking": ("message", "request_id", "data"),
+    "cancel": ("status",),
 }
+
+#: What the order itself must name, one level under booking's ``data``. These
+#: are the fields the ``orders`` module reads, so a schema that stops
+#: describing them is a schema that has drifted from the code.
+BOOKING_ORDER_FIELDS = ("order_number", "order_uid", "status")
 
 ENVELOPE_KEYS = ["status", "data", "errors", "meta"]
 
@@ -95,6 +103,17 @@ def test_the_response_data_is_described(
     data = success["properties"]["data"]
     for field in fields:
         assert field in data["properties"], f"{step}: `{field}` undocumented"
+
+
+def test_the_booking_order_itself_is_described(schema: dict[str, Any]) -> None:
+    """One level under booking's ``data`` is the order, and the three fields
+    the ``orders`` module reads out of it must stay documented — that pair
+    drifting apart is what made every ``gts_order_number`` NULL once."""
+    success = _json(_operation(schema, "booking"), "response")["schema"]
+    order = success["properties"]["data"]["properties"]["data"]
+
+    for field in BOOKING_ORDER_FIELDS:
+        assert field in order["properties"], f"booking: `{field}` undocumented"
 
 
 @pytest.mark.parametrize("step", STEPS)

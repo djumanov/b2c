@@ -161,6 +161,41 @@ klass `E` (ekonom) / `B` (biznes) / `F` (birinchi).
 
 Javobda `request_id` qaytadi; keyingi barcha qadamlar shu `request_id` + `offer_id` bilan ishlaydi.
 
+**Bron tanasi** (`POST /v1/content/booking/`) — `EASY_GATEWAY` kolleksiyasidan:
+
+```json
+{
+  "request_id": "…", "offer_id": "…",
+  "passengers": [{
+    "type": "ADT", "gender": "M",
+    "last_name": "Yusufov", "first_name": "Azimjon", "middle_name": "Kamoliddin",
+    "birth_date": "2002-12-20",
+    "citizenship": "UZ",
+    "document": { "type": "PSP", "number": "FA2145157",
+                  "issue_date": "2019-05-30", "expire_date": "2029-05-29" },
+    "email": "…", "phone": { "phone_code": "998", "phone_number": "998328192" }
+  }]
+}
+```
+
+Javob **ikki qavatli**: envelope'ning `data` si ichida yana `data` bor va
+buyurtmaning o'zi o'sha yerda — `order_number` (butun son), `order_uid`,
+`status` (`BO`), `gds_pnr`, `routes`, `price_info`, `passengers`.
+
+**Bekor qilish** (`POST /v1/content/cancel/`) buyurtmani **`order_number`**
+bilan nomlaydi, `order_id` bilan emas: tanasi `{"order_number": 61453}`.
+`retrieve` ham shu raqamni oladi.
+
+> ⚠ Kolleksiyada saqlangan `cancel` **javobi** eski shaklda — `{status, code,
+> order}`, ya'ni `data` kalitisiz. Bizning klient envelope'siz rejimda `data`
+> ni talab qiladi ([ARCHITECTURE.md](ARCHITECTURE.md) §7), demak jonli javob
+> ham shunday bo'lsa bekor qilish `502` beradi. Jonli tekshiruvda birinchi
+> ko'riladigan narsa — [STATUS.md](STATUS.md) §8.
+
+**Manba:** `EASY_GATEWAY` Postman kolleksiyasi, `/content/` bo'limi. Bu
+bo'lakdagi shakllar hujjatdan emas, **yozib olingan haqiqiy chaqiruvdan**
+olingan — ziddiyat bo'lsa kolleksiya ustun turadi.
+
 ---
 
 ## 5. Boshqa mahsulot vertikallari
