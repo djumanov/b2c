@@ -1168,6 +1168,12 @@ qaytadi. Yozuvning o'zi bilan birga javobning ichki `data` sidan
 `offer_id` alohida maydonga ajratiladi — ular egalik tekshiruvi, filtr va
 saralash uchun kerak, boshqa hech narsa uchun emas.
 
+**Ro'yxat ham, tafsilot ham buyurtmaning butun yozuvini qaytaradi** — ikkalasi
+bir xil shaklda, qisqartirilgan ro'yxat varianti yo'q. Sabab: `data` baribir
+eng katta maydon va u ikkalasida ham to'liq, ya'ni qolgan ustunlarni ro'yxatdan
+olib tashlash hech narsani tejamaydi, faqat klientni har bir element uchun
+`{id}/` ga borishga majbur qilardi.
+
 ```json
 GET /public/orders/?product=flight&status=BO&page=1&page_size=20
 
@@ -1177,17 +1183,33 @@ GET /public/orders/?product=flight&status=BO&page=1&page_size=20
                 "gts_order_number": "61453",       ← GTS'niki, bekor qilish uchun
                 "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
                 "status": "BO",
+                "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+                "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
                 "created_at": "2026-08-17T09:14:22Z",
+                "updated_at": "2026-08-17T09:14:22Z",
                 "cancelled_at": null,
                 "data": { … GTS'ning bron javobi aynan … } } ],
     "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
 ```
 
-`GET /public/orders/{id}/` — bitta yozuv, aynan shu shaklda. `{id}` —
-**bizning** UUID. GTS'ning ikkita identifikatori bor va ikkalasi ham
-qaytadi: `gts_order_number` — `cancel/` oladigani (§20), `gts_order_uid` —
-GTS ichidagi barqaror kalit. `gts_order_number` GTS'da butun son, bizda
-satr sifatida qaytadi (§1: identifikatorlar satr).
+`GET /public/orders/{id}/` — bitta yozuv, **aynan shu shaklda**. `{id}` —
+bizning UUID.
+
+| Maydon | Nima |
+|---|---|
+| `id` | Bizning UUID — `/public/orders/{id}/` shuni oladi |
+| `product` | Vertikal kodi |
+| `gts_order_number` | GTS raqami — **`cancel/` shuni oladi** (§20). GTS'da butun son, bizda satr (§1) |
+| `gts_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
+| `status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `request_id`, `offer_id` | Buyurtmani kelib chiqqan qidiruv va taklifga bog'laydi |
+| `created_at`, `updated_at` | Bizning yozuv vaqtlari |
+| `cancelled_at` | Biz `cancel/` ni muvaffaqiyatli chaqirgan payt. `status` GTS nima deganini, bu esa **qachon so'raganimizni** aytadi |
+| `data` | **GTS'ning bron javobi to'liq**, ichi o'girilmasdan (§20) |
+
+`gts_order_number` yoki `status` `null` bo'lishi mumkin — GTS javobidan
+o'qib bo'lmagan holat ([STATUS.md](STATUS.md) §8); yozuvning o'zi baribir
+saqlanadi va butun javob `data` da qoladi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
 > **Status bugun GTS'niki, kanonik emas.** Qiymat GTS kodi kelganicha:
