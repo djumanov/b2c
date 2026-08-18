@@ -1212,9 +1212,9 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 ## 21. Buyurtmalar
 
 > **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
-> bo'ysunadi.** U yerda kanonik status enumi, `available_actions`,
-> `history/`, `cancel/`, `refund/` va `receipt/` belgilangan. Quyidagi tavsif
-> passthrough davridagi holatni aks ettiradi.
+> bo'ysunadi.** Kanonik status enumi va o'tishlar jadvali u yerda; `history/`,
+> `cancel/`, `refund/`, `receipt/` va `available_actions` esa hali qurilmagan
+> va bo'laklar bo'yicha keladi.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
@@ -1223,13 +1223,19 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 | `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) — **hali qurilmagan** |
 | `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish — **hali qurilmagan**, §20 dagi `cancel/` orqali |
 
-**Buyurtma yozuvi — egalikning manbai.** `booking/` muvaffaqiyatli o'tganda
-GTS javobi mijozning nomiga saqlanadi (§20). Biz javobning **ichini
-o'girmaymiz**: u `data` maydonida GTS qanday bergan bo'lsa shundayligicha
-qaytadi. Yozuvning o'zi bilan birga javobning ichki `data` sidan
-`order_number`, `order_uid` va `status`, so'rovdan esa `request_id` va
-`offer_id` alohida maydonga ajratiladi — ular egalik tekshiruvi, filtr va
-saralash uchun kerak, boshqa hech narsa uchun emas.
+**Buyurtma yozuvi — egalikning manbai va holat mashinasining o'zi.**
+`booking/` muvaffaqiyatli o'tganda buyurtma mijozning nomiga yoziladi (§20).
+Provayder javobining o'zi `data` maydonida **o'girilmasdan** qaytadi, lekin
+buyurtmaning holati, puli va identifikatorlari alohida ustunlarda turadi va
+ular **bizniki**.
+
+**`status` — kanonik**, GTS kodi emas:
+`created` · `booked` · `paid` · `ticketing` · `ticketed` · `refunding` ·
+`refunded` · `partially_refunded` · `cancelled` · `voided` · `failed` ·
+`needs_attention`. `?status=` filtri ham shu qiymatlarni oladi. GTS'ning o'z
+kodi (`BO`, `TI`, `CB`, …) yonida **`provider_status`** da qoladi — u
+diagnostika uchun, filtr uchun emas. O'tishlar jadvali va har bir statusning
+ma'nosi: [`order-system/03-design.md`](order-system/03-design.md) §3.3.
 
 **Ro'yxat ham, tafsilot ham buyurtmaning butun yozuvini qaytaradi** — ikkalasi
 bir xil shaklda, qisqartirilgan ro'yxat varianti yo'q. Sabab: `data` baribir
@@ -1238,18 +1244,30 @@ olib tashlash hech narsani tejamaydi, faqat klientni har bir element uchun
 `{id}/` ga borishga majbur qilardi.
 
 ```json
-GET /public/orders/?product=flight&status=BO&page=1&page_size=20
+GET /public/orders/?product=flight&status=booked&page=1&page_size=20
 
 → { "status": "success",
     "data": [ { "id": "3f1c…",                     ← bizning UUID
+                "order_no": "B2C-2608-000123",     ← inson o'qiydigan raqamimiz
                 "product": "flight",
-                "gts_order_number": "61453",       ← GTS'niki, bekor qilish uchun
-                "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "status": "BO",
+                "status": "booked",                ← kanonik, bizniki
+                "provider_status": "BO",           ← GTS'niki, kelganicha
+                "provider_order_number": "61453",  ← bekor qilish shuni oladi
+                "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+                "provider_pnr": "UBPLKW",
                 "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
                 "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+                "amount": { "amount": "52.39", "currency": "EUR" },
+                "travelers": [ … ],
+                "travel_start_at": null,
+                "route_summary": null,
+                "ticket_time_limit_at": null,
+                "cancellation_reason": null,
                 "created_at": "2026-08-17T09:14:22Z",
                 "updated_at": "2026-08-17T09:14:22Z",
+                "booked_at": "2026-08-17T09:14:22Z",
+                "paid_at": null,
+                "ticketed_at": null,
                 "cancelled_at": null,
                 "data": { … GTS'ning bron javobi aynan … } } ],
     "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
@@ -1261,38 +1279,35 @@ bizning UUID.
 | Maydon | Nima |
 |---|---|
 | `id` | Bizning UUID — `/public/orders/{id}/` shuni oladi |
+| `order_no` | Inson o'qiydigan raqamimiz. **Har bir buyurtmada bor**, hatto GTS javob bermaganida ham — support uchun yagona tutqich |
 | `product` | Vertikal kodi |
-| `gts_order_number` | GTS raqami — **`cancel/` shuni oladi** (§20). GTS'da butun son, bizda satr (§1) |
-| `gts_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
-| `status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `status` | **Kanonik** status (yuqoridagi ro'yxat) |
+| `provider_status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `provider_order_number` | GTS raqami — **bekor qilish shuni oladi**. GTS'da butun son, bizda satr (§1) |
+| `provider_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
+| `provider_pnr` | Aviakompaniya lokatori (`gds_pnr`) |
 | `request_id`, `offer_id` | Buyurtmani kelib chiqqan qidiruv va taklifga bog'laydi |
+| `amount` | Mijoz to'laydigan summa — `{amount, currency}`, summa **satr** (§1). Provayder narxlamaguncha `null` |
+| `travelers` | Yo'lovchilar **bizning shaklimizda**, chipta chiqqach har birida `ticket_number` bilan |
+| `travel_start_at`, `route_summary` | Sayohat sanasi va qisqa marshrut — ro'yxatni `data` ni ochmasdan ko'rsatish uchun |
+| `ticket_time_limit_at` | Provayder o'rinni ushlab turadigan muddat |
+| `cancellation_reason` | `customer` · `admin` · `timelimit` · `payment_failed` |
 | `created_at`, `updated_at` | Bizning yozuv vaqtlari |
-| `cancelled_at` | Biz `cancel/` ni muvaffaqiyatli chaqirgan payt. `status` GTS nima deganini, bu esa **qachon so'raganimizni** aytadi |
-| `data` | **GTS'ning bron javobi to'liq**, ichi o'girilmasdan (§20) |
+| `booked_at`, `paid_at`, `ticketed_at`, `cancelled_at` | Har bir muhim o'tish qachon sodir bo'lgani |
+| `data` | **Provayderning oxirgi javobi to'liq**, ichi o'girilmasdan (§20) |
 
-`gts_order_number` yoki `status` `null` bo'lishi mumkin — GTS javobidan
-o'qib bo'lmagan holat ([STATUS.md](STATUS.md) §8); yozuvning o'zi baribir
-saqlanadi va butun javob `data` da qoladi.
+Provayder javobini o'qib bo'lmasa buyurtma **`needs_attention`** holatida
+yoziladi: `provider_order_number` va `amount` `null` bo'ladi, javobning o'zi
+esa buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin
+"bron qilindi" deb ham ko'rsatilmaydi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
-> **Status bugun GTS'niki, kanonik emas.** Qiymat GTS kodi kelganicha:
-> `BO` · `PW` · `TI` · `TE` · `CB` · `VO` · `RF` · `PRF`
-> ([GTS.md](GTS.md) §4). `?status=` filtri ham shu kodlar bilan ishlaydi.
->
-> Kanonik enum (`booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
-> `voided` · `refunded` · `partially_refunded` · `needs_attention`) bekor
-> qilinmadi — u `available_actions` bilan birga **saga**ga suriladi
-> ([PHASES.md](PHASES.md) 2-faza, 9-bo'lak). Sabab: xarita har vertikal uchun
-> alohida yoziladi va uning birinchi haqiqiy iste'molchisi — bekor
-> qilish/qaytarish qoidalari, ular esa saga bilan keladi. Bugun xarita
-> qurilsa u iste'molchisiz taxmin bo'lardi. O'girish nuqtasi belgilangan:
-> [ARCHITECTURE.md](ARCHITECTURE.md) §7.
-
-> **Hali qurilmagani.** `receipt/` — kvitansiya buyurtma ichidagi narx va
-> yo'lovchini bilishni talab qiladi, biz esa blobni ochmaymiz. `{id}/cancel/`
-> — bekor qilish hozircha §20 dagi `POST /public/{product}/cancel/` orqali,
-> u endi egalikni tekshiradi. Ikkalasi ham saga bilan keladi. `payment_id`,
-> `available_actions` va admin yuzasi (§31) ham hali yo'q.
+> **Hali qurilmagani.** `receipt/`, `{id}/cancel/`, `{id}/history/`,
+> `{id}/refund/`, `payment_id` va `available_actions` — bo'laklar bo'yicha
+> keladi ([`order-system/04-plan.md`](order-system/04-plan.md)). Bugun bekor
+> qilish §20 dagi `POST /public/{product}/cancel/` orqali va u endi holatni
+> ham tekshiradi: chiptalangan buyurtmani bekor qilishga urinish GTS'ga
+> **umuman bormaydi**, `409 conflict` qaytadi.
 
 ---
 

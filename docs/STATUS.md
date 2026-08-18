@@ -107,7 +107,13 @@ kontrakt testlari.
 ## 3. Keyingi ish
 
 > **Keyingi ish — buyurtma tizimi.** Reja va bo'laklar:
-> [`order-system/04-plan.md`](order-system/04-plan.md) (S1…S11).
+> [`order-system/04-plan.md`](order-system/04-plan.md) (S1…S7).
+> **S1 (holat mashinasi) bajarildi 2026-08-18:** `orders` jadvali qayta
+> yozildi, `order_events` qo'shildi, kanonik status enumi va 18 ta o'tishdan
+> iborat jadval `modules/orders/states.py` da, `service.transition()` —
+> `FOR UPDATE` ostida statusni o'zgartiradigan yagona yo'l. `modules/booking/`
+> o'chirildi (`O1`), `providers/gts/base.OrderStatus` olib tashlandi.
+> Keyingisi — S2, `OrderOperations` porti.
 
 To'liq reja — [PHASES.md](PHASES.md).
 

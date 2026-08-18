@@ -6,13 +6,14 @@ on the **router** rather than on each handler — the arrangement
 here that could correctly be left off it.
 
 Read-only. Booking writes these rows from the product flow (§20) and there is
-no ``POST`` on this surface: ``orders/{id}/cancel/`` and ``receipt/`` arrive
-with the saga, and until then cancelling goes through
-``POST /public/{product}/cancel/``, which now checks ownership against exactly
-these rows.
+no ``POST`` on this surface yet: ``orders/{id}/cancel/``, ``refund/``,
+``history/`` and ``receipt/`` arrive with the later slices, and until then
+cancelling goes through ``POST /public/{product}/cancel/``, which checks
+ownership against exactly these rows.
 
-``?status=`` takes **GTS's** code (``BO``, ``TI``, ``CB``, …), not the
-canonical enum — see API.md §21 on why the map is deferred.
+``?status=`` takes **our** status now — ``booked``, ``ticketed``, ``cancelled``,
+… — because the vocabulary is ours (order-system/03-design.md §3.3). GTS's own
+code still travels beside it in ``provider_status``.
 """
 
 import uuid
@@ -41,9 +42,10 @@ StatusParam = Annotated[
     str | None,
     Query(
         description=(
-            "GTS's own order status — `BO`, `PW`, `TI`, `TE`, `CB`, `VO`, "
-            "`RF`, `PRF` (GTS.md §4). Not the canonical enum: that arrives "
-            "with the saga (API.md §21)."
+            "Canonical order status — `created`, `booked`, `paid`, `ticketing`, "
+            "`ticketed`, `refunding`, `refunded`, `partially_refunded`, "
+            "`cancelled`, `voided`, `failed`, `needs_attention`. GTS's own code "
+            "is published beside it as `provider_status`."
         )
     ),
 ]

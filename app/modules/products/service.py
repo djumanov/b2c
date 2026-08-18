@@ -147,7 +147,8 @@ async def cancel(
     seat (``providers/products/flight.py``).
 
     The lookup runs **before** the GTS call, so a booking that is not this
-    customer's is refused without touching the seat.
+    customer's is refused without touching the seat — and so is one whose state
+    does not allow cancelling at all.
     """
     number = payload.get("order_number") if isinstance(payload, dict) else None
     if not isinstance(number, str | int) or isinstance(number, bool):
@@ -155,9 +156,13 @@ async def cancel(
             "Cancelling needs the order_number that booking returned",
             field="order_number",
         )
-    order = await orders_service.owned_by_gts_number(
-        session, customer_id=customer_id, gts_order_number=str(number).strip()
+    order = await orders_service.owned_by_provider_number(
+        session, customer_id=customer_id, provider_order_number=str(number).strip()
     )
+    # Refuse here what the state machine would refuse anyway. Checking after the
+    # call would release a real seat and then answer 409 — the one ordering of
+    # these two steps that costs money.
+    orders_service.ensure_cancellable(order)
     data = await adapter.cancel(await _client(session), payload)
     await orders_service.apply_cancel(session, order, data)
     return data

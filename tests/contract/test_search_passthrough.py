@@ -124,8 +124,11 @@ async def gts_installation(
         return None
 
     async def any_order(
-        session: object, *, customer_id: uuid.UUID, gts_order_number: str
+        session: object, *, customer_id: uuid.UUID, provider_order_number: str
     ) -> None:
+        return None
+
+    def cancellable(order: object) -> None:
         return None
 
     async def no_op(session: object, order: object, response: dict[str, Any]) -> None:
@@ -133,7 +136,10 @@ async def gts_installation(
 
     monkeypatch.setattr(products_service.orders_service, "record_booking", no_record)
     monkeypatch.setattr(
-        products_service.orders_service, "owned_by_gts_number", any_order
+        products_service.orders_service, "owned_by_provider_number", any_order
+    )
+    monkeypatch.setattr(
+        products_service.orders_service, "ensure_cancellable", cancellable
     )
     monkeypatch.setattr(products_service.orders_service, "apply_cancel", no_op)
 

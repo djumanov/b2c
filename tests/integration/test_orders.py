@@ -2,16 +2,19 @@
 
 Two claims, and they are the whole module:
 
-* **A booking leaves a record**, filed under the customer who made it, holding
-  GTS's answer verbatim — and holding *no* passenger from the request, which
-  is a promise about passport numbers (PROJECT.md §13), so it is checked
-  against the raw row rather than the API's view of it.
+* **A booking leaves a record**, filed under the customer who made it, in a
+  status that is *ours* — and holding *no* passenger from the request, which is
+  a promise about passport numbers (PROJECT.md §13), so it is checked against
+  the raw row rather than the API's view of it.
 * **The record is what ownership means.** Someone else's order is a 404 on
-  every path, and ``cancel/`` refuses one without ever calling GTS.
+  every path, and cancelling refuses one without ever calling GTS.
 
 ``tests/contract/test_search_passthrough.py`` is the other half of this: it
 holds the same two steps to writing nothing *else* — no offer, no search state
 (D2). Here the database is real and the question is what the row says.
+
+The state machine itself is ``test_order_transitions.py``'s subject; what is
+checked here is that the two write paths go through it.
 """
 
 import json as jsonlib
@@ -29,6 +32,7 @@ from app.core.crypto import encrypt
 from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
 from app.modules.orders.models import Order
+from app.modules.orders.states import OrderStatus
 from app.modules.settings import cache as settings_cache
 from tests.integration.conftest import customer_headers_for, make_customer
 
@@ -74,8 +78,38 @@ GTS_BOOKING: dict[str, Any] = {
         "gds_pnr": "UBPLKW",
         "supplier_pnr": ["UBPLKW"],
         "trip_type": "OW",
-        "price_info": {"price": 46.89, "currency": "EUR"},
+        "price_info": {"price": 46.89, "currency": "EUR", "fee_amount": 5.5},
     },
+}
+
+#: What the customer owes: ``price`` is fare plus taxes and excludes the agency
+#: fee beside it, and their sum is exactly the recorded ``payable_amount``.
+EXPECTED_TOTAL = "52.39"
+
+ORDER_FIELDS = {
+    "id",
+    "order_no",
+    "product",
+    "status",
+    "provider_status",
+    "provider_order_number",
+    "provider_order_uid",
+    "provider_pnr",
+    "request_id",
+    "offer_id",
+    "amount",
+    "travelers",
+    "travel_start_at",
+    "route_summary",
+    "ticket_time_limit_at",
+    "cancellation_reason",
+    "created_at",
+    "updated_at",
+    "booked_at",
+    "paid_at",
+    "ticketed_at",
+    "cancelled_at",
+    "data",
 }
 
 
@@ -129,17 +163,27 @@ def _mock_cancel(answer: dict[str, Any] | None = None) -> respx.Route:
     )
 
 
+_counter = 0
+
+
 async def _order(session: AsyncSession, customer: Customer, **overrides: Any) -> Order:
-    """A recorded booking, without going through GTS to get one."""
+    """A booked order, without going through GTS to get one."""
+    global _counter
+    _counter += 1
     fields: dict[str, Any] = {
+        "order_no": f"B2C-2608-{_counter:06d}",
         "customer_id": customer.id,
         "product": "flight",
-        "gts_order_number": "61453",
-        "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-        "status": "BO",
+        "status": OrderStatus.BOOKED.value,
+        "provider_order_number": "61453",
+        "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+        "provider_pnr": "UBPLKW",
+        "provider_status": "BO",
+        "provider_response": GTS_BOOKING,
         "request_id": "r-1",
         "offer_id": "o-1",
-        "gts_response": GTS_BOOKING,
+        "amount_total": "52.39",
+        "currency": "EUR",
         **overrides,
     }
     order = Order(**fields)
@@ -171,8 +215,8 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
 
     assert response.status_code == 200
-    # The response is still GTS's, byte for byte — the row is a side record,
-    # not an addition to the passthrough (API.md §20).
+    # The response is still GTS's, byte for byte. Slice S3 adds our own keys
+    # beside it; the state machine landing does not change the wire (API.md §20).
     assert response.json()["data"] == GTS_BOOKING
 
     listed = await api.get(ORDERS, headers=headers)
@@ -181,10 +225,20 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     assert order["product"] == "flight"
     # Read out of the *inner* data, not the wrapper — the bug this shape
     # caught: reading the top level leaves every identifier NULL.
-    assert order["gts_order_number"] == "61453"
-    assert order["gts_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
-    assert order["status"] == "BO"
+    assert order["provider_order_number"] == "61453"
+    assert order["provider_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
+    assert order["provider_pnr"] == "UBPLKW"
+    # Ours and theirs, side by side and never merged.
+    assert order["status"] == "booked"
+    assert order["provider_status"] == "BO"
+    assert order["booked_at"] is not None
     assert order["cancelled_at"] is None
+    # Money is a string with a currency beside it (API.md §1), and it is the
+    # fare plus the fee — what the customer will actually be charged.
+    assert order["amount"] == {"amount": EXPECTED_TOTAL, "currency": "EUR"}
+    # An order number of our own exists from the first row, before GTS has
+    # named anything: support needs one handle that always works.
+    assert order["order_no"].startswith("B2C-")
     # The search this came from, carried on the row.
     assert order["request_id"] == "r-1"
     assert order["offer_id"] == "o-1"
@@ -195,23 +249,51 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     # render a list (API.md §21).
     detail = await api.get(f"{ORDERS}{order['id']}/", headers=headers)
     assert detail.json()["data"] == order
-    assert set(order) == {
-        "id",
-        "product",
-        "gts_order_number",
-        "gts_order_uid",
-        "status",
-        "request_id",
-        "offer_id",
-        "created_at",
-        "updated_at",
-        "cancelled_at",
-        "data",
-    }
-    # ``id`` is ours and ``gts_order_number`` is theirs — never merged
+    assert set(order) == ORDER_FIELDS
+    # ``id`` is ours and ``provider_order_number`` is theirs — never merged
     # (API.md §21), so a client that confuses them fails loudly here.
     assert uuid.UUID(order["id"]) is not None
-    assert order["id"] != order["gts_order_number"]
+    assert order["id"] != order["provider_order_number"]
+
+
+@respx.mock
+async def test_a_booking_leaves_its_first_history_line(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The row is born ``created`` and is moved to ``booked`` by the machine,
+    so the confirmation is a transition with an event and not an assignment.
+    Slice S3 moves the insert to before the GTS call; this history does not
+    change when it does."""
+    await _installation(session)
+    _mock_signin()
+    _mock_booking()
+
+    await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+
+    rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT from_status, to_status, action, actor_type, actor_label"
+                    " FROM order_events ORDER BY created_at"
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    assert [dict(row) for row in rows] == [
+        {
+            "from_status": "created",
+            "to_status": "booked",
+            "action": "booking.confirmed",
+            "actor_type": "system",
+            "actor_label": "orders.booking",
+        }
+    ]
 
 
 @respx.mock
@@ -233,13 +315,13 @@ async def test_the_passengers_of_the_request_are_not_stored(
     rows = (await session.execute(text("SELECT * FROM orders"))).mappings().all()
     assert len(rows) == 1
     stored = jsonlib.dumps(dict(rows[0]), default=str)
-    assert "AA1234567" not in stored
-    assert "VALIYEV" not in stored
-    assert "1990-04-02" not in stored
+    assert "FA2145157" not in stored
+    assert "Yusufov" not in stored
+    assert "2002-12-20" not in stored
 
 
 @respx.mock
-async def test_an_answer_without_an_order_number_is_still_recorded(
+async def test_an_unreadable_answer_lands_in_needs_attention(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
@@ -247,7 +329,9 @@ async def test_an_answer_without_an_order_number_is_still_recorded(
 ) -> None:
     """The field names are not yet confirmed against live GTS (STATUS.md §8).
     A booking that really happened must leave a trace even when we cannot read
-    the shape of it — losing it to a rename would be worse."""
+    the shape of it — but a half-written row that claims to be ``booked`` and
+    cannot name a price is worse than one that says so. It goes to the queue a
+    person watches, with the whole answer attached."""
     await _installation(session)
     _mock_signin()
     _mock_booking({"data": {"reference": "1250", "state": "held"}})
@@ -256,9 +340,15 @@ async def test_an_answer_without_an_order_number_is_still_recorded(
 
     assert response.status_code == 200
     (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
-    assert order["gts_order_number"] is None
-    assert order["status"] is None
+    assert order["status"] == "needs_attention"
+    assert order["provider_order_number"] is None
+    assert order["amount"] is None
     assert order["data"] == {"data": {"reference": "1250", "state": "held"}}
+    # The evidence is on the event, which is what a person will read.
+    meta = await session.scalar(
+        text("SELECT meta::text FROM order_events WHERE to_status = 'needs_attention'")
+    )
+    assert "1250" in str(meta)
 
 
 @respx.mock
@@ -270,7 +360,8 @@ async def test_a_failed_write_does_not_fail_the_booking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """GTS is already holding the seat. A 500 would send the client into a
-    retry and open a second booking — a real seat (API.md §20)."""
+    retry and open a second booking — a real seat (API.md §20). Slice S3
+    removes the need for this by writing the row first."""
     from app.modules.products import service as products_service
 
     async def boom(*args: object, **kwargs: object) -> None:
@@ -298,7 +389,7 @@ async def test_the_list_shows_only_my_orders(
 ) -> None:
     stranger = await make_customer(session, email="someone.else@example.uz")
     mine = await _order(session, customer)
-    await _order(session, stranger, gts_order_number="9999")
+    await _order(session, stranger, provider_order_number="9999")
 
     response = await api.get(ORDERS, headers=headers)
 
@@ -314,17 +405,25 @@ async def test_the_list_filters_and_pages(
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
-    await _order(session, customer, gts_order_number="1", status="BO")
-    await _order(session, customer, gts_order_number="2", status="TI")
-    await _order(session, customer, gts_order_number="3", status="TI")
+    """``?status=`` takes our vocabulary now, not GTS's."""
+    await _order(session, customer, provider_order_number="1")
+    await _order(
+        session, customer, provider_order_number="2", status=OrderStatus.TICKETED.value
+    )
+    await _order(
+        session, customer, provider_order_number="3", status=OrderStatus.TICKETED.value
+    )
 
-    booked = await api.get(ORDERS, params={"status": "BO"}, headers=headers)
-    ticketed = await api.get(ORDERS, params={"status": "TI"}, headers=headers)
+    booked = await api.get(ORDERS, params={"status": "booked"}, headers=headers)
+    ticketed = await api.get(ORDERS, params={"status": "ticketed"}, headers=headers)
+    upstream = await api.get(ORDERS, params={"status": "BO"}, headers=headers)
     railway = await api.get(ORDERS, params={"product": "railway"}, headers=headers)
     paged = await api.get(ORDERS, params={"page_size": 2}, headers=headers)
 
     assert booked.json()["meta"]["total"] == 1
     assert ticketed.json()["meta"]["total"] == 2
+    # GTS's code is not our filter: it matches nothing rather than everything.
+    assert upstream.json()["meta"]["total"] == 0
     assert railway.json()["meta"]["total"] == 0
     assert len(paged.json()["data"]) == 2
     assert paged.json()["meta"]["total_pages"] == 2
@@ -333,8 +432,8 @@ async def test_the_list_filters_and_pages(
 async def test_ordering_is_a_whitelist(
     api: AsyncClient, customer: Customer, headers: dict[str, str]
 ) -> None:
-    """``status`` is GTS's vocabulary; ordering by it would publish it as ours
-    (``api/listing.py``)."""
+    """Only ``created_at``. Ordering by a status would publish the order of the
+    enum as part of the contract (``api/listing.py``)."""
     response = await api.get(ORDERS, params={"ordering": "status"}, headers=headers)
 
     assert response.status_code == 422
@@ -349,7 +448,7 @@ async def test_one_order_is_readable_and_someone_elses_is_not(
 ) -> None:
     stranger = await make_customer(session, email="someone.else@example.uz")
     mine = await _order(session, customer)
-    theirs = await _order(session, stranger, gts_order_number="9999")
+    theirs = await _order(session, stranger, provider_order_number="9999")
 
     ok = await api.get(f"{ORDERS}{mine.id}/", headers=headers)
     forbidden = await api.get(f"{ORDERS}{theirs.id}/", headers=headers)
@@ -366,7 +465,7 @@ async def test_the_history_needs_a_customer_token(api: AsyncClient) -> None:
     assert (await api.get(ORDERS)).status_code == 401
 
 
-# --- ownership on cancel (API.md §20, STATUS.md §8.14) --------------------------------
+# --- ownership and state on cancel (API.md §20) ---------------------------------------
 
 
 @respx.mock
@@ -392,7 +491,7 @@ async def test_cancelling_someone_elses_booking_never_reaches_gts(
 
 
 @respx.mock
-async def test_cancelling_my_own_booking_updates_the_row(
+async def test_cancelling_my_own_booking_moves_the_order(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
@@ -407,10 +506,35 @@ async def test_cancelling_my_own_booking_updates_the_row(
 
     assert response.status_code == 200
     assert cancel.call_count == 1
-    # GTS's code, copied not translated (API.md §21).
     detail = (await api.get(f"{ORDERS}{order.id}/", headers=headers)).json()["data"]
-    assert detail["status"] == "CB"
+    # Ours says what happened, theirs says what they called it.
+    assert detail["status"] == "cancelled"
+    assert detail["provider_status"] == "CB"
+    assert detail["cancellation_reason"] == "customer"
     assert detail["cancelled_at"] is not None
+
+
+@respx.mock
+async def test_a_ticketed_order_is_refused_before_gts_is_called(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """``ticketed → cancelled`` is not in the table, and the refusal has to
+    happen on the near side of the call: checking afterwards would release a
+    real seat and then answer 409."""
+    await _installation(session)
+    signin = _mock_signin()
+    cancel = _mock_cancel()
+    await _order(session, customer, status=OrderStatus.TICKETED.value)
+
+    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "conflict"
+    assert cancel.call_count == 0
+    assert signin.call_count == 0
 
 
 @respx.mock

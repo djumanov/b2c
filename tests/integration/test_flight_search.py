@@ -357,11 +357,15 @@ async def test_cancel_passes_through_untouched(
     _mock_signin()
     session.add(
         Order(
+            order_no="B2C-2608-800001",
             customer_id=customer.id,
             product="flight",
-            gts_order_number="61453",
-            status="BO",
-            gts_response={"data": {"order_number": 61453, "status": "BO"}},
+            status="booked",
+            provider_order_number="61453",
+            provider_status="BO",
+            amount_total="52.39",
+            currency="EUR",
+            provider_response={"data": {"order_number": 61453, "status": "BO"}},
         )
     )
     await session.commit()
@@ -479,11 +483,12 @@ async def test_a_booking_timeout_is_a_504(
 async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
-    """Booking writes exactly one thing: the order (API.md §21).
+    """Booking writes exactly one order, and its history line (API.md §21).
 
     Not a passenger row — not even the ``save_passenger`` the body asks for,
     which lands with the module that owns passengers — and nothing that
-    resembles a cache of the search (D2). One table moves, by one row."""
+    resembles a cache of the search (D2). Two tables move, and they are the
+    order and the record of how it got where it is."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
@@ -505,7 +510,11 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
     after = await counts()
 
     assert response.status_code == 200
-    assert after == {**before, "orders": before["orders"] + 1}
+    assert after == {
+        **before,
+        "orders": before["orders"] + 1,
+        "order_events": before["order_events"] + 1,
+    }
 
 
 # --- the fun fact (API.md §20) --------------------------------------------------------
