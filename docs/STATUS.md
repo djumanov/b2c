@@ -20,8 +20,8 @@ takrorlamaydi.
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti, aviachipta qidiruvi va buyurtma yozuvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5, 6 — qisman) |
 | Endpointlar | 92 ta yo'l / 129 operatsiya (API.md dagi ~150 dan) |
 | Jadvallar | 28 ta + `alembic_version` |
-| Migratsiyalar | 28 ta, bitta head (`97fbdc8dac3f`) |
-| Testlar | 832 ta — unit 24 fayl · contract 9 · integration 31 |
+| Migratsiyalar | 29 ta, bitta head (`3c1f9a4d7e02`) |
+| Testlar | 842 ta — unit 24 fayl · contract 9 · integration 31 |
 | Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — `main` da ham qizil, bron/bekor qilish ishiga aloqasiz |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -285,6 +285,7 @@ tug'ilmasligi uchun.
 | 82 | **Buyurtma ichi ochilmaydi**: `gts_response` blob, undan faqat `order_id`, `status`, `request_id`, `offer_id` ustunga ajratiladi; bron **so'rovidagi `passengers` bloki saqlanmaydi** | Ustunga chiqarilganlar — indeks kerak bo'lganlar (egalik, filtr, saralash), boshqasi emas. Yo'lovchilar esa pasport raqami: PROJECT.md §13 buyurtmani anonimlashtirishni va'da qiladi, ichini bilmaydigan blobni esa anonimlashtirib bo'lmaydi — ya'ni to'liq so'rovni saqlash bajarib bo'lmaydigan va'da yaratardi. `save_passenger` orqali yo'lovchi `passengers` jadvaliga baribir tushadi |
 | 84 | **GTS bron/bekor qilish shakli kolleksiyadan olindi** (2026-08-17): `EASY_GATEWAY` kolleksiyasining `/content/Booking` va `/content/Cancel` yozuvlari topilib, kod ularga moslandi. Uchta o'zgarish: (a) javob **ikki qavatli** — buyurtma maydonlari ichki `data` da, biz esa yuqori qavatdan o'qiyotgan edik; (b) bekor qilish handle'i `order_id` emas, **`order_number`** (butun son), shunga ko'ra ustun `gts_order_number` ga qayta nomlandi va `gts_order_uid` qo'shildi; (c) yo'lovchi shakli §19 dan farq qiladi — `citizenship` bare kod, hujjat maydonlari `document` ichida, ustiga `gender`/`issue_date`/`email`/`phone` bizda umuman saqlanmaydi | Avvalgi shakl `products/openapi.py` dagi hujjat taxminidan olingan edi va **noto'g'ri chiqdi**: u bilan har bir `gts_order_id` `NULL` bo'lardi, bekor qilish esa qattiq bo'lgani uchun **har doim `404`** berardi — ya'ni bron ishlab, bekor qilish umuman ishlamasdi. Kolleksiya — yozib olingan haqiqiy chaqiruv, hujjatdan ustun manba |
 | 83 | `booking/` da **yozuv xatosi so'rovni yiqitmaydi** — log'ga yoziladi va GTS javobi qaytadi | GTS o'rinni allaqachon ushlab turibdi. `500` mijozni qayta urinishga, u esa **ikkinchi bronga** olib borardi — haqiqiy o'rin va keyinroq haqiqiy pul. Javobdagi `order_id`/`pnr` mijoz qo'lida qoladi. To'g'ri yechimi outbox (ARCHITECTURE.md §8), u 9-bo'lakda; §8.16 shu oraliqni ochiq kamchilik sifatida yuritadi |
+| 85 | **Profil telefoni obyektga aylandi** (2026-08-18): yassi `phone VARCHAR(32)` o'rniga `phone_code` + `phone_number` + `phone_mask` uchta ustun; `deleted_customers` arxivi ham shunday. `is_profile_complete` uchun `phone_code` va `phone_number` ikkalasi ham kerak, `phone_mask` sanalmaydi | GTS bron tanasi telefonni `{phone_code, phone_number}` shaklida kutadi (№84), ya'ni yassi satr saqlangani bilan bron uni **ishlata olmasdi** — shakl mijozdan telefonni qayta so'rashga majbur edi. `phone_mask` yoniga qo'shildi, chunki §26 katalogidan olingan maska bo'lmasa klient saqlangan raqamni ko'rsatish uchun katalogga ikkinchi marta boradi; u `avatar_id` kabi server uchun shaffof matn. Eski qiymatlar migratsiyada `+998XXXXXXXXX` namunasi bo'yicha ajratildi, mos kelmaganlari `phone_number` da kodsiz qoldi |
 
 ---
 

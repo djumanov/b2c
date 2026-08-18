@@ -6,6 +6,7 @@ deleting an account empties the row rather than only hiding it, and
 ``avatar_id`` is a code this side never interprets.
 """
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,10 +78,22 @@ async def test_the_profile_says_when_it_is_not_finished_yet(
     finished = await api.patch(
         PROFILE,
         headers=headers,
-        json={"phone": "+998901234567", "birth_date": "1995-04-17"},
+        json={
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_mask": "(##) ###-##-##",
+            },
+            "birth_date": "1995-04-17",
+        },
     )
     assert finished.status_code == 200, finished.text
     assert finished.json()["data"]["middle_name"] == "Baxtiyorovich"
+    assert finished.json()["data"]["phone"] == {
+        "phone_code": "998",
+        "phone_number": "901234567",
+        "phone_mask": "(##) ###-##-##",
+    }
     assert finished.json()["data"]["is_profile_complete"] is True
 
 
@@ -97,7 +110,11 @@ async def test_clearing_a_field_makes_the_profile_incomplete_again(
         json={
             "last_name": "Karimov",
             "middle_name": "Baxtiyorovich",
-            "phone": "+998901234567",
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_mask": "(##) ###-##-##",
+            },
             "birth_date": "1995-04-17",
         },
     )
@@ -107,6 +124,75 @@ async def test_clearing_a_field_makes_the_profile_incomplete_again(
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["data"]["phone"] is None
     assert cleared.json()["data"]["is_profile_complete"] is False
+
+
+async def test_the_mask_alone_is_enough_to_omit(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """``phone_mask`` is what a number looks like, not whether there is one, so
+    a client that never picked one still saves a usable phone."""
+    response = await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={"phone": {"phone_code": "998", "phone_number": "901234567"}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["phone"] == {
+        "phone_code": "998",
+        "phone_number": "901234567",
+        "phone_mask": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("phone", "field"),
+    [
+        ({"phone_code": "998"}, "phone.phone_number"),
+        ({"phone_number": "901234567"}, "phone.phone_code"),
+        ({"phone_code": "", "phone_number": "901234567"}, "phone.phone_code"),
+        ({"phone_code": "998", "phone_number": ""}, "phone.phone_number"),
+    ],
+    ids=["no-number", "no-code", "blank-code", "blank-number"],
+)
+async def test_half_a_phone_is_refused(
+    api: AsyncClient, customer: Customer, phone: dict[str, str], field: str
+) -> None:
+    """A number without its country code cannot be handed to GTS's booking body
+    (API.md §19), so storing one would leave a profile that looks filled in and
+    books nothing.
+
+    The ``field`` is the dotted path the one validation handler builds for any
+    nested key — the same shape as ``reasons.N`` (API.md §19) — so the client
+    is told which half is missing rather than only that the phone is wrong.
+    """
+    response = await api.patch(
+        PROFILE, headers=customer_headers_for(customer), json={"phone": phone}
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["errors"][0]["field"] == field
+
+
+async def test_an_unknown_key_inside_the_phone_is_refused(
+    api: AsyncClient, customer: Customer
+) -> None:
+    """``phone_musk`` is a typo GTS's own collection contains. Dropping it
+    quietly would show the customer a mask the server never saved."""
+    response = await api.patch(
+        PROFILE,
+        headers=customer_headers_for(customer),
+        json={
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_musk": "(##) ###-##-##",
+            }
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["errors"][0]["field"] == "phone.phone_musk"
 
 
 async def test_the_completeness_flag_cannot_be_sent(
@@ -281,7 +367,11 @@ async def test_deleting_the_account_empties_the_row(
         headers=customer_headers_for(customer),
         json={
             "middle_name": "Baxtiyorovich",
-            "phone": "+998901234567",
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_mask": "(##) ###-##-##",
+            },
             "avatar_id": "avatar-07",
         },
     )
@@ -298,7 +388,9 @@ async def test_deleting_the_account_empties_the_row(
     assert customer.is_deleted
     assert customer.email != "buyer@example.uz"
     assert customer.middle_name is None
-    assert customer.phone is None
+    assert customer.phone_code is None
+    assert customer.phone_number is None
+    assert customer.phone_mask is None
     assert customer.birth_date is None
     assert customer.avatar_id is None
     # No hash any password can verify against.
@@ -394,7 +486,11 @@ async def test_deletion_archives_the_pii(
         json={
             "last_name": "Karimov",
             "middle_name": "Baxtiyorovich",
-            "phone": "+998901234567",
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_mask": "(##) ###-##-##",
+            },
             "birth_date": "1995-04-17",
         },
     )
@@ -417,7 +513,9 @@ async def test_deletion_archives_the_pii(
     assert archived.first_name == first_name
     assert archived.last_name == "Karimov"
     assert archived.middle_name == "Baxtiyorovich"
-    assert archived.phone == "+998901234567"
+    assert archived.phone_code == "998"
+    assert archived.phone_number == "901234567"
+    assert archived.phone_mask == "(##) ###-##-##"
     assert str(archived.birth_date) == "1995-04-17"
     assert archived.registered_at == registered_at
     assert archived.reasons == reasons
@@ -426,4 +524,6 @@ async def test_deletion_archives_the_pii(
     # ...while the live row holds none of it any more.
     await session.refresh(customer)
     assert customer.email != address
-    assert customer.phone is None
+    assert customer.phone_code is None
+    assert customer.phone_number is None
+    assert customer.phone_mask is None

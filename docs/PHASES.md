@@ -211,7 +211,7 @@ Manzil — kirish identifikatori: OTP aynan shuni tasdiqlagan va parol tiklash
 shunga ishonadi. Uni almashtirish yangi manzilga kod yuborib tasdiqlaydigan
 oqimni talab qiladi, bunday oqim esa kontraktda **yo'q**.
 
-Shuning uchun `PATCH` to'rtta maydonni oladi va `email` yuborilsa `422`
+Shuning uchun `PATCH` oltita maydonni oladi va `email` yuborilsa `422`
 qaytaradi ([API.md](API.md) §19). Kerak bo'lsa avval §19 ga oqim yoziladi,
 keyin kod — [PROJECT.md](PROJECT.md) §17 dagi "spekulyativ" xavfning aynan
 o'zi shu tartibni talab qiladi.

@@ -320,8 +320,15 @@ IP manzil, qurilma push tokeni, saqlangan to'lov kartasining **maskalangan raqam
 raqami, BIN'i, brendi va amal muddati** hamda karta raqamining o'zi — **faqat AES-GCM
 shifrlangan holda** (D7).
 
+**Telefon uchta bo'lakda saqlanadi** — `phone_code`, `phone_number` va `phone_mask`
+([API.md](API.md) §19). Bu yangi toifa emas, yuqoridagi "telefon" ning saqlanish shakli:
+GTS bron tanasi telefonni shu ko'rinishda kutadi, `phone_mask` esa klient uni
+ko'rsatishda ishlatadigan kiritish maskasi. Arxiv (`deleted_customers`) ham
+shu uchta bo'lakni oladi.
+
 Ota ismi **ustun sifatida ixtiyoriy** (`NULL` qabul qiladi), lekin profil "to'liq" hisoblanishi
-uchun kerak — [API.md](API.md) §19 dagi `is_profile_complete` beshta maydonni sanaydi. Hujjat
+uchun kerak — [API.md](API.md) §19 dagi `is_profile_complete` beshta maydonni sanaydi
+(telefon — bitta maydon: `phone_code` va `phone_number` ikkalasi ham to'ldirilgan bo'lsa). Hujjat
 amal muddati ham ixtiyoriy: u hujjatning har bir turida bo'lavermaydi. Ro'yxat — **shift**,
 majburiyat emas: bu yerda turgan maydon har bir jadvalda paydo bo'lishi shart degani emas.
 

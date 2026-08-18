@@ -174,7 +174,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"phone\": \"+998901234567\"\n}",
+                  "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"phone\": { \"phone_code\": \"998\", \"phone_number\": \"901234567\" }\n}",
                   "options": {
                     "raw": {
                       "language": "json"
@@ -577,7 +577,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["public", "profile", ""]
                 },
-                "description": "Returns `id, email, first_name, last_name, middle_name, phone, birth_date, avatar_id, avatar_url, created_at, is_profile_complete`.\n\nNo `is_blocked`: a blocked account cannot reach this endpoint at all, so the field could only ever read `false`.\n\n`is_profile_complete` is derived and read-only: `true` only when all five of `first_name`, `last_name`, `middle_name`, `phone` and `birth_date` are filled. Whitespace does not count as filled. Sending it to `PATCH` is a 422."
+                "description": "Returns `id, email, first_name, last_name, middle_name, phone, birth_date, avatar_id, created_at, is_profile_complete`. `phone` is an **object** — `{phone_code, phone_number, phone_mask}` — or `null`.\n\nNo `is_blocked`: a blocked account cannot reach this endpoint at all, so the field could only ever read `false`.\n\n`is_profile_complete` is derived and read-only: `true` only when all five of `first_name`, `last_name`, `middle_name`, `phone` and `birth_date` are filled — `phone` counts as filled when both `phone_code` and `phone_number` are non-blank. Whitespace does not count as filled. Sending it to `PATCH` is a 422."
               },
               "response": []
             },
@@ -593,7 +593,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"middle_name\": \"Baxtiyorovich\",\n  \"phone\": \"+998901234567\",\n  \"birth_date\": \"1995-03-14\"\n}",
+                  "raw": "{\n  \"first_name\": \"Aziz\",\n  \"last_name\": \"Karimov\",\n  \"middle_name\": \"Baxtiyorovich\",\n  \"phone\": { \"phone_code\": \"998\", \"phone_number\": \"901234567\", \"phone_mask\": \"(##) ###-##-##\" },\n  \"birth_date\": \"1995-03-14\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"
