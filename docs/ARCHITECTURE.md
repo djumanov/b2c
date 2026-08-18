@@ -217,6 +217,12 @@ bilan raqobatlashmaydi.
 
 ## 8. Bron → to'lov → chipta sagasi
 
+> **Ustun hujjat — [`order-system/03-design.md`](order-system/03-design.md).**
+> Ikkita farq: (1) saga `booking` moduliga emas, **`orders`** moduliga
+> joylashtirildi va `modules/booking/` o'chiriladi (qaror `O1`);
+> (2) ticketing xatolari `retryable`/`terminal`/`deadline` sinflariga
+> ajratiladi — har qanday xato avtomatik qaytarishga olib kelmaydi (`O5`).
+
 ```
 verify → bron (GTS hold, buyurtma=booked) → to'lov yaratiladi → mijoz to'laydi (Payme/Click)
        → provayder webhook → to'lov=paid → chipta vazifasi → buyurtma=ticketed

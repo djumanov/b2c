@@ -211,7 +211,7 @@ Manzil — kirish identifikatori: OTP aynan shuni tasdiqlagan va parol tiklash
 shunga ishonadi. Uni almashtirish yangi manzilga kod yuborib tasdiqlaydigan
 oqimni talab qiladi, bunday oqim esa kontraktda **yo'q**.
 
-Shuning uchun `PATCH` to'rtta maydonni oladi va `email` yuborilsa `422`
+Shuning uchun `PATCH` oltita maydonni oladi va `email` yuborilsa `422`
 qaytaradi ([API.md](API.md) §19). Kerak bo'lsa avval §19 ga oqim yoziladi,
 keyin kod — [PROJECT.md](PROJECT.md) §17 dagi "spekulyativ" xavfning aynan
 o'zi shu tartibni talab qiladi.
@@ -383,6 +383,10 @@ Quyidagi ikki xatboshi o'sha eski dizaynni tasvirlaydi.) `avatar/` uchun mavjud
   4-faza (§2.8).
 
 **Qabul mezoni** ([PROJECT.md](PROJECT.md) §15):
+
+> **9-bo'lak (`booking` sagasi) qayta loyihalandi va 11 ta bo'lakka bo'lindi** —
+> [`order-system/04-plan.md`](order-system/04-plan.md). Modul nomi ham o'zgardi:
+> saga `orders` moduliga joylashadi.
 
 | Mezon | Qayerda tekshiriladi |
 |---|---|

@@ -89,8 +89,8 @@ def _filled(value: str | None) -> bool:
     """Whitespace is not an answer.
 
     ``PersonName`` only asks for one character, so ``" "`` reaches the column,
-    and ``phone`` has no lower bound at all, so ``""`` does too. Neither is
-    somebody having filled the field in.
+    and ``phone_number`` has no lower bound at all, so ``""`` does too. Neither
+    is somebody having filled the field in.
     """
     return bool(value and value.strip())
 
@@ -111,7 +111,18 @@ class Customer(Entity):
     #: Optional in the column and in ``PATCH``, but ``is_profile_complete``
     #: counts it: here a full name has three parts (PROJECT.md §13).
     middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Three parts rather than one string, because GTS's booking body takes
+    #: the phone that way — ``{"phone_code": "998", "phone_number": "…"}``
+    #: (API.md §19, GTS.md). A flat string could not be handed to it, so a
+    #: saved phone was of no use to the booking form.
+    #:
+    #: ``phone_mask`` is the input mask of the country the client picked
+    #: (§26 ``countries/``). Like ``avatar_id`` it is opaque text here — no
+    #: list to validate against — and it is stored so that rendering a saved
+    #: number does not send the client back to the catalogue.
+    phone_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    phone_mask: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     #: Which of the client's own avatar pictures this customer picked — a code,
     #: not a file (API.md §19). Nothing is uploaded and nothing is served: the
@@ -149,6 +160,16 @@ class Customer(Entity):
         return self.is_verified and not self.is_blocked and not self.is_deleted
 
     @property
+    def has_phone(self) -> bool:
+        """Both halves, or it does not count.
+
+        A number without its country code is no use to GTS's booking body,
+        which is the whole reason the column was split. ``phone_mask`` is not
+        asked for: it is how a number is *shown*, not whether there is one.
+        """
+        return _filled(self.phone_code) and _filled(self.phone_number)
+
+    @property
     def is_profile_complete(self) -> bool:
         """Has this customer finished saying who they are? (API.md §19)
 
@@ -167,7 +188,7 @@ class Customer(Entity):
             _filled(self.first_name)
             and _filled(self.last_name)
             and _filled(self.middle_name)
-            and _filled(self.phone)
+            and self.has_phone
             and self.birth_date is not None
         )
 
@@ -262,7 +283,12 @@ class DeletedCustomer(Base, UUIDPrimaryKeyMixin):
     first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     middle_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Split the same way as the live row: the archive is what the row looked
+    #: like, so flattening it back into one string here would mean inventing a
+    #: format nobody ever stored.
+    phone_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    phone_mask: Mapped[str | None] = mapped_column(String(32), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     #: The customer row's ``created_at`` — how long the account lived.
     registered_at: Mapped[datetime] = mapped_column(

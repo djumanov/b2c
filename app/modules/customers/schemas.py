@@ -29,6 +29,40 @@ PersonName = Annotated[str, Field(min_length=1, max_length=120)]
 OtpCode = Annotated[str, Field(min_length=OTP_LENGTH, max_length=OTP_LENGTH)]
 
 
+class PhoneOut(BaseModel):
+    """A stored phone, in the shape GTS's booking body takes (API.md §19).
+
+    ``phone_mask`` is nullable and the other two are not: a row only ever holds
+    a phone through ``PhoneIn``, which requires both halves, so a phone that
+    exists at all has them. The mask is what a client optionally saved
+    alongside.
+    """
+
+    phone_code: str
+    phone_number: str
+    phone_mask: str | None
+
+
+class PhoneIn(BaseModel):
+    """Whole object or ``null`` — there is no half a phone.
+
+    ``phone_code`` without ``phone_number`` (or the reverse) cannot be handed
+    to GTS, and storing one alone would leave a profile that looks filled in
+    and books nothing. ``extra="forbid"`` for the reason ``ProfileUpdateIn``
+    has it: ``phone_musk`` is a typo GTS's own collection contains, and
+    silently dropping it would show the client a mask it never saved.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    phone_code: Annotated[str, Field(min_length=1, max_length=8)]
+    phone_number: Annotated[str, Field(min_length=1, max_length=32)]
+    #: Opaque, like ``avatar_id``: the set of masks lives in §26's country
+    #: catalogue, which is a GTS passthrough, so there is no list here to check
+    #: against.
+    phone_mask: Annotated[str | None, Field(max_length=32)] = None
+
+
 class RegisterIn(BaseModel):
     """Only the address and the password are required — API.md §18.
 
@@ -41,7 +75,7 @@ class RegisterIn(BaseModel):
     password: Password
     first_name: PersonName | None = None
     last_name: PersonName | None = None
-    phone: Annotated[str | None, Field(max_length=32)] = None
+    phone: PhoneIn | None = None
 
 
 class RegisterConfirmIn(BaseModel):
@@ -119,7 +153,9 @@ class ProfileOut(BaseModel):
     first_name: str | None
     last_name: str | None
     middle_name: str | None
-    phone: str | None
+    #: ``null`` when nothing was ever saved — never a half-filled object
+    #: (API.md §19).
+    phone: PhoneOut | None
     birth_date: date | None
     #: The client's own picture code, returned exactly as it was stored — no
     #: URL beside it, because there is no file (API.md §19).
@@ -144,7 +180,8 @@ class ProfileUpdateIn(BaseModel):
     first_name: PersonName | None = None
     last_name: PersonName | None = None
     middle_name: PersonName | None = None
-    phone: Annotated[str | None, Field(max_length=32)] = None
+    #: ``null`` clears all three columns at once (API.md §8).
+    phone: PhoneIn | None = None
     birth_date: date | None = None
     #: Not validated against a list — there is none on this side (API.md §19).
     #: The length is the only bound, and ``None`` is how the choice is cleared.
@@ -347,6 +384,8 @@ __all__ = [
     "PassengerOut",
     "PassengerUpdateIn",
     "PasswordChangeIn",
+    "PhoneIn",
+    "PhoneOut",
     "ProfileOut",
     "ProfileUpdateIn",
     "PasswordResetConfirmIn",

@@ -184,12 +184,59 @@ async def test_address_and_password_are_the_whole_required_body(
     assert created is not None
     assert created.first_name is None
     assert created.last_name is None
-    assert created.phone is None
+    assert created.phone_code is None
+    assert created.phone_number is None
+    assert created.phone_mask is None
 
     confirmed = await api.post(
         CONFIRM, json={"email": NEW_EMAIL, "code": notifier.last_code}
     )
     assert confirmed.status_code == 200, confirmed.text
+
+
+async def test_a_phone_sent_at_registration_is_stored_in_three_parts(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """§18 takes the same object §19 does, and it lands on the same three
+    columns — otherwise a customer who typed their phone at registration would
+    still be asked for it by the booking form."""
+    response = await api.post(
+        REGISTER,
+        json={
+            "email": NEW_EMAIL,
+            "password": PASSWORD,
+            "phone": {
+                "phone_code": "998",
+                "phone_number": "901234567",
+                "phone_mask": "(##) ###-##-##",
+            },
+        },
+    )
+    assert response.status_code == 204, response.text
+
+    created = await session.scalar(select(Customer).where(Customer.email == NEW_EMAIL))
+    assert created is not None
+    assert created.phone_code == "998"
+    assert created.phone_number == "901234567"
+    assert created.phone_mask == "(##) ###-##-##"
+
+
+async def test_half_a_phone_is_refused_at_registration(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """The floor is the same on both surfaces: a number with no country code is
+    no use to GTS wherever it was typed."""
+    response = await api.post(
+        REGISTER,
+        json={
+            "email": NEW_EMAIL,
+            "password": PASSWORD,
+            "phone": {"phone_number": "901234567"},
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["errors"][0]["field"] == "phone.phone_code"
 
 
 async def test_an_unconfirmed_account_cannot_sign_in(

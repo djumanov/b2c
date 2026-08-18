@@ -467,13 +467,15 @@ mumkin.
 ```json
 POST /public/auth/register/
 { "email": "user@mail.uz", "password": "…",
-  "first_name": "Aziz", "last_name": "Karimov", "phone": "+998901234567" }
+  "first_name": "Aziz", "last_name": "Karimov",
+  "phone": { "phone_code": "998", "phone_number": "901234567" } }
 
 → 204
 ```
 
 Majburiy maydonlar — faqat `email` va `password`; `first_name`, `last_name` va
-`phone` ixtiyoriy. Akkaunt — bu manzil va uni tasdiqlagan narsa; ism kim
+`phone` ixtiyoriy. `phone` — §19 dagi **o'sha obyekt**: yuborilsa `phone_code` va
+`phone_number` majburiy, `phone_mask` ixtiyoriy. Akkaunt — bu manzil va uni tasdiqlagan narsa; ism kim
 ekanligining tafsiloti va uni profil ekrani so'raydi (§19). Parol uzunligi —
 kamida **8** belgi, aks holda `422 validation`.
 
@@ -659,7 +661,9 @@ GET /public/profile/
     "data": { "id": "9f2c…", "email": "user@mail.uz",
               "first_name": "Aziz", "last_name": "Karimov",
               "middle_name": "Baxtiyorovich",
-              "phone": "+998901234567", "birth_date": "1995-04-17",
+              "phone": { "phone_code": "998", "phone_number": "901234567",
+                         "phone_mask": "(##) ###-##-##" },
+              "birth_date": "1995-04-17",
               "avatar_id": "avatar-07",
               "created_at": "…", "is_profile_complete": true } }
 ```
@@ -667,7 +671,9 @@ GET /public/profile/
 ```json
 PATCH /public/profile/
 { "first_name": "Aziz", "last_name": "Karimov", "middle_name": "Baxtiyorovich",
-  "phone": "+998901234567", "birth_date": "1995-04-17", "avatar_id": "avatar-07" }
+  "phone": { "phone_code": "998", "phone_number": "901234567",
+             "phone_mask": "(##) ###-##-##" },
+  "birth_date": "1995-04-17", "avatar_id": "avatar-07" }
 ```
 
 Ro'yxatdan o'tishda ism so'ralmagani uchun (§18) `first_name` ham `null` bo'lishi
@@ -675,7 +681,9 @@ mumkin — mijoz uni shu yerda to'ldiradi.
 
 `is_profile_complete` — **faqat o'qish uchun**, ustun emas: `first_name`, `last_name`,
 `middle_name`, `phone` va `birth_date` ning **beshalasi ham** to'ldirilgan bo'lsa `true`.
-Faqat bo'sh joydan iborat qiymat to'ldirilgan hisoblanmaydi. Shart serverda turadi,
+Faqat bo'sh joydan iborat qiymat to'ldirilgan hisoblanmaydi. `phone` uchun
+"to'ldirilgan" degani — `phone_code` **va** `phone_number` ikkalasi ham bo'sh
+emas; `phone_mask` sanalmaydi, u faqat ko'rsatish uchun. Shart serverda turadi,
 chunki har bir klient uni o'zicha hisoblasa, "profilni to'ldiring" ekrani ilovada
 saytdagidan boshqacha chiqadi — va bu farqni hech kim xato deb bildirmaydi. `PATCH` da
 yuborilsa u noma'lum maydon, ya'ni `422 validation`.
@@ -688,6 +696,43 @@ ko'rsatardi.
 tasdiqlagan va parol tiklash aynan shunga ishonadi. Manzilni almashtirish yangisini
 tasdiqlaydigan alohida oqimni talab qiladi; u oqim belgilangunga qadar `email` yuborilsa
 `422 validation` qaytadi.
+
+### Telefon
+
+Telefon — **obyekt**, yassi satr emas. Sabab: GTS bron tanasi uni aynan shu
+ko'rinishda kutadi (`{"phone_code": "998", "phone_number": "998328192"}` — §20,
+[GTS.md](GTS.md)), va profil uni o'sha shaklda saqlagandagina bron shakli aloqa
+telefonini profildan oldindan to'ldira oladi.
+
+```json
+PATCH /public/profile/
+{ "phone": { "phone_code": "998", "phone_number": "901234567",
+             "phone_mask": "(##) ###-##-##" } }
+
+PATCH /public/profile/
+{ "phone": null }
+```
+
+`phone_code` va `phone_number` — **majburiy**, `phone_mask` — ixtiyoriy. Obyektni
+yarim yuborib bo'lmaydi: yo obyekt (`phone_mask` siz ham bo'ladi), yo `null`.
+`null` uchala qiymatni ham tozalaydi (§8). Hech qachon to'ldirilmagan bo'lsa
+`phone` — `null`.
+
+`phone_code` bu yerda **satr** (`"998"`), GTS bron shakli bilan bir xil. §26 dagi
+davlatlar katalogida esa u **son** — katalog GTS passthrough'i va o'zgartirilmaydi;
+klient kodni o'sha yerdan oladi va satr sifatida yuboradi.
+
+`phone_mask` — klient tanlagan davlatning kiritish maskasi (§26 `countries/`
+obyektidagi `phone_mask`), server uchun **shaffof matn**: ro'yxat serverda yo'q va
+tekshirilmaydi — `avatar_id` bilan bir xil naql. Nima uchun saqlanadi: klient
+saqlangan telefonni ko'rsatishda katalogga ikkinchi marta murojaat qilmasin.
+
+Ichki kalitdagi xato `field` sifatida **nuqtali yo'l** ni ko'rsatadi —
+`phone.phone_code`, `phone.phone_number`, `phone.phone_musk` — ya'ni `reasons.N`
+bilan bir xil naql. Buni yagona validatsiya handleri quradi (§3), shuning uchun
+mijozga telefonning **qaysi yarmi** yetishmayotgani aytiladi. `citizenship` va
+`document_type` da esa `field` butun obyekt nomi bo'ladi, chunki ularni alohida
+validator tekshiradi, ichma-ich model emas.
 
 ### Avatar
 
@@ -872,6 +917,9 @@ POST /public/profile/cards/
 | `PATCH` da noma'lum maydon (jumladan `email` va `is_profile_complete`) | `validation` | 422 |
 | Yo'lovchida `birth_date` yo'q | `validation` (`field: "birth_date"`) | 422 |
 | Yo'lovchi `PATCH` ida majburiy maydonga `null` (`first_name`, `last_name`, `birth_date`) | `validation` (`field`: o'sha maydon) | 422 |
+| `phone` obyekt emas | `validation` (`field: "phone"`) | 422 |
+| `phone_code`/`phone_number` yo'q yoki bo'sh | `validation` (`field: "phone.phone_code"` / `"phone.phone_number"`) | 422 |
+| `phone` ichida noma'lum kalit (masalan `phone_musk`) | `validation` (`field: "phone.phone_musk"`) | 422 |
 | `citizenship` obyekt emas yoki `"code"` kaliti bo'sh/yo'q | `validation` (`field: "citizenship"`) | 422 |
 | `document_type` obyekt emas yoki `"type"` kaliti bo'sh/yo'q | `validation` (`field: "document_type"`) | 422 |
 | Noto'g'ri joriy parol | `validation` (`field: "current_password"`) | 422 |
@@ -888,6 +936,11 @@ Oxirgi qator ataylab `404`, `403` emas: yozuv faqat o'z egasi orqali ko'rinadi, 
 ---
 
 ## 20. Mahsulotlar
+
+> **Bron va bekor qilish qismi qayta loyihalandi.** `booking/` endi buyurtma
+> va to'lov yaratadi va `Idempotency-Key` talab qiladi; `cancel/` esa bu
+> yerdan olib tashlanib `POST /public/orders/{id}/cancel/` ga ko'chdi.
+> Ustun hujjat — [`order-system/03-design.md`](order-system/03-design.md) §3.6.
 
 Barcha vertikallar **bir xil naqshda** ishlaydi. `{product}` o'rniga: `flight`, `railway`,
 `insurance`, `esim`, `transfer` — **beshtasi ham birinchi relizda**
@@ -1038,6 +1091,11 @@ Oxirgi uchtasi ([PROJECT.md](PROJECT.md) §13 da yo'q maydonlar) bugun
 profilda saqlanmaydi, ya'ni klient ularni bron shaklida so'raydi. Ular
 saqlanadigan bo'lsa — **avval §13** tahrirlanadi, keyin kod.
 
+Bunga bitta istisno bor: **buyurtmachining o'z telefoni** §19 da aynan shu
+`{phone_code, phone_number}` shaklida saqlanadi, shuning uchun bron shaklidagi
+**aloqa** telefonini profildan oldindan to'ldirsa bo'ladi. **Yo'lovchining**
+telefoni esa hamon saqlanmaydi — saqlangan yo'lovchida bunday maydon yo'q.
+
 Server **faqat `request_id` va `offer_id`** borligini tekshiradi; qolgan
 hamma narsa, jumladan yo'lovchilar, **tekshirilmasdan** GTS'ga o'tadi.
 Yo'lovchilar soni va turi qidiruvdagi `adt`/`chd`/`inf`/`ins` bilan mos
@@ -1153,6 +1211,11 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 
 ## 21. Buyurtmalar
 
+> **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
+> bo'ysunadi.** U yerda kanonik status enumi, `available_actions`,
+> `history/`, `cancel/`, `refund/` va `receipt/` belgilangan. Quyidagi tavsif
+> passthrough davridagi holatni aks ettiradi.
+
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
@@ -1234,6 +1297,10 @@ Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 ---
 
 ## 22. To'lov
+
+> **To'lovning buyurtma bilan bog'lanishi va saga oqimi** —
+> [`order-system/03-design.md`](order-system/03-design.md) §3.4, §3.7.
+> Quyidagi endpoint ro'yxati o'z kuchida qoladi.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|

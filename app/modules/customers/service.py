@@ -103,6 +103,8 @@ from app.modules.customers.schemas import (
     PassengerUpdateIn,
     PasswordChangeIn,
     PasswordResetVerifyIn,
+    PhoneIn,
+    PhoneOut,
     ProfileOut,
     ProfileUpdateIn,
     RegisterConfirmIn,
@@ -510,7 +512,7 @@ async def register(session: AsyncSession, data: RegisterIn) -> None:
         existing.password_hash = hash_password(data.password)
         existing.first_name = data.first_name
         existing.last_name = data.last_name
-        existing.phone = data.phone
+        _apply_phone(existing, data.phone)
         customer = existing
     else:
         customer = Customer(
@@ -518,8 +520,8 @@ async def register(session: AsyncSession, data: RegisterIn) -> None:
             password_hash=hash_password(data.password),
             first_name=data.first_name,
             last_name=data.last_name,
-            phone=data.phone,
         )
+        _apply_phone(customer, data.phone)
         session.add(customer)
         await session.flush()
 
@@ -813,6 +815,35 @@ async def confirm_password_reset(
 # --- the profile (API.md §19) --------------------------------------------------------
 
 
+def _apply_phone(customer: Customer, phone: PhoneIn | None) -> None:
+    """Spread the object over its three columns, or clear all three.
+
+    One place, because registration, ``PATCH`` and the deletion scrub all do
+    the same thing and a phone left half-written by one of them would read as
+    filled in to ``Customer.has_phone`` while being unusable to GTS.
+    """
+    customer.phone_code = phone.phone_code if phone else None
+    customer.phone_number = phone.phone_number if phone else None
+    customer.phone_mask = phone.phone_mask if phone else None
+
+
+def _to_phone_out(customer: Customer) -> PhoneOut | None:
+    """``None`` when nothing was saved — API.md §19 returns ``null``, not an
+    object of empty strings.
+
+    Keyed on either half being present rather than both: a row split by the
+    migration can hold a number whose country code could not be worked out,
+    and hiding it here would look to the customer like the server lost it.
+    """
+    if not customer.phone_code and not customer.phone_number:
+        return None
+    return PhoneOut(
+        phone_code=customer.phone_code or "",
+        phone_number=customer.phone_number or "",
+        phone_mask=customer.phone_mask,
+    )
+
+
 def to_profile(customer: Customer) -> ProfileOut:
     """Every field is a column or a property of this row, so nothing here is
     asked of another module — ``avatar_id`` is the client's own picture code
@@ -823,7 +854,7 @@ def to_profile(customer: Customer) -> ProfileOut:
         first_name=customer.first_name,
         last_name=customer.last_name,
         middle_name=customer.middle_name,
-        phone=customer.phone,
+        phone=_to_phone_out(customer),
         birth_date=customer.birth_date,
         avatar_id=customer.avatar_id,
         created_at=customer.created_at,
@@ -835,8 +866,17 @@ async def update_profile(
     session: AsyncSession, customer: Customer, data: ProfileUpdateIn
 ) -> ProfileOut:
     """``avatar_id`` rides along with the rest: it is a column the client sets,
-    and ``None`` clears it like any other field (API.md §19)."""
-    for field, value in data.model_dump(exclude_unset=True).items():
+    and ``None`` clears it like any other field (API.md §19).
+
+    ``phone`` is lifted out of the loop because it is the one field that is not
+    a column: it arrives as an object over three of them, and a blind
+    ``setattr`` would hang a dict off the instance instead.
+    """
+    fields = data.model_dump(exclude_unset=True)
+    if "phone" in fields:
+        _apply_phone(customer, data.phone)
+        del fields["phone"]
+    for field, value in fields.items():
         setattr(customer, field, value)
     await session.commit()
     return to_profile(customer)
@@ -888,7 +928,9 @@ async def delete_account(
             first_name=customer.first_name,
             last_name=customer.last_name,
             middle_name=customer.middle_name,
-            phone=customer.phone,
+            phone_code=customer.phone_code,
+            phone_number=customer.phone_number,
+            phone_mask=customer.phone_mask,
             birth_date=customer.birth_date,
             registered_at=customer.created_at,
             reasons=data.reasons,
@@ -909,7 +951,7 @@ async def delete_account(
     customer.first_name = _REDACTED
     customer.last_name = None
     customer.middle_name = None
-    customer.phone = None
+    _apply_phone(customer, None)
     customer.birth_date = None
     # Not a hash of anything: argon2 will never verify against it, so no
     # password can reopen the account.
