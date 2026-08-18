@@ -18,8 +18,16 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repository import live
-from app.modules.orders.models import Order, OrderEvent, OrderPayment
+from app.modules.orders.models import Order, OrderEvent, OrderPayment, OrderRefund
+from app.modules.orders.states import RefundState
 from app.providers.payments.base import TransactionStatus
+
+#: The states a refund is still running in — the unique index uses the same set.
+_OPEN_REFUNDS = (
+    RefundState.REQUESTED.value,
+    RefundState.APPROVED.value,
+    RefundState.PROCESSING.value,
+)
 
 
 def owned_orders(customer_id: uuid.UUID) -> Select[tuple[Order]]:
@@ -165,6 +173,39 @@ def attempts_of(order_id: uuid.UUID) -> Select[tuple[OrderPayment]]:
     )
 
 
+async def paid_attempt(
+    session: AsyncSession, order_id: uuid.UUID
+) -> OrderPayment | None:
+    """The attempt that actually took the money — the one to send it back to."""
+    row: OrderPayment | None = await session.scalar(
+        select(OrderPayment)
+        .where(
+            OrderPayment.order_id == order_id,
+            OrderPayment.status == TransactionStatus.PAID.value,
+        )
+        .order_by(OrderPayment.paid_at.desc())
+        .limit(1)
+    )
+    return row
+
+
+async def open_refund(session: AsyncSession, order_id: uuid.UUID) -> OrderRefund | None:
+    """The refund still running on this order, locked.
+
+    At most one can exist — the partial unique index says so — which is what
+    lets a retry pick up where it left off rather than opening a second one.
+    """
+    row: OrderRefund | None = await session.scalar(
+        select(OrderRefund)
+        .where(
+            OrderRefund.order_id == order_id,
+            OrderRefund.status.in_(_OPEN_REFUNDS),
+        )
+        .with_for_update()
+    )
+    return row
+
+
 def events_of(order_id: uuid.UUID) -> Select[tuple[OrderEvent]]:
     """One order's history, oldest first — the way a timeline reads."""
     return (
@@ -183,7 +224,9 @@ __all__ = [
     "unreferenced_attempt",
     "lock_order",
     "order_by_idempotency_key",
+    "open_refund",
     "order_by_id",
     "order_by_provider_number",
     "owned_orders",
+    "paid_attempt",
 ]

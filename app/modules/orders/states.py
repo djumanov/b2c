@@ -133,10 +133,39 @@ class EventAction(StrEnum):
     #: put that right.
     TICKETING_PARTIAL = "ticketing.partial"
     REFUND_STARTED = "refund.started"
+    REFUND_RETRY = "refund.retry"
     REFUND_SUCCEEDED = "refund.succeeded"
     REFUND_PARTIAL = "refund.partial"
     REFUND_FAILED = "refund.failed"
     ATTENTION_RESOLVED = "attention.resolved"
+
+
+class RefundKind(StrEnum):
+    """Which door a refund came in through.
+
+    It decides whether anybody has to agree to it: compensation does not need
+    a person's opinion, a customer's request does (``O11``).
+    """
+
+    #: A ticket did not issue and the money has to go back. Approved on
+    #: creation — there is nothing to decide.
+    AUTO = "auto"
+    #: The customer asked. Waits for a person, because the penalty comes from
+    #: the fare rules.
+    CUSTOMER = "customer"
+    #: A member of staff started it.
+    ADMIN = "admin"
+
+
+class RefundState(StrEnum):
+    """Where one refund has got to."""
+
+    REQUESTED = "requested"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class ActorType(StrEnum):
@@ -256,6 +285,12 @@ TRANSITIONS: Final[tuple[Transition, ...]] = (
         "T14", OrderStatus.TICKETED, OrderStatus.VOIDED, EventAction.ORDER_VOIDED
     ),
     Transition(
+        "T15x",
+        OrderStatus.REFUNDING,
+        OrderStatus.REFUNDING,
+        EventAction.REFUND_RETRY,
+    ),
+    Transition(
         "T15", OrderStatus.REFUNDING, OrderStatus.REFUNDED, EventAction.REFUND_SUCCEEDED
     ),
     Transition(
@@ -327,6 +362,8 @@ def is_closed(status: OrderStatus) -> bool:
 
 __all__ = [
     "INITIAL_STATUS",
+    "RefundKind",
+    "RefundState",
     "STAMPED_AT",
     "STATUS_CLASS",
     "TRANSITIONS",

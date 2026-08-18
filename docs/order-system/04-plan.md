@@ -22,7 +22,8 @@ ishlatadi, va pul yo'lida "yarim ulangan" holat eng qimmat xato.
 | S4a | To'lov yadrosi: `order_payments`, urinish endpointlari, webhook routeri | `order_payments` | yo'q (double) | S3 |
 | S4b | Payme va Click adapterlari | yo'q | provayder | S4a |
 | S5 | Ticketing + poller + reprice | yo'q | GTS ticketing | S4 |
-| S6 | Kompensatsiya va qaytarish | `order_refunds` | GTS + provayder | S5 |
+| S6a | Avtomatik kompensatsiya | `order_refunds` | GTS + provayder | S5 |
+| S6b | Mijoz so'rovi bo'yicha qaytarish va admin tasdig'i | yo'q | GTS refund-check/commit | S6a |
 | S7 | Bekor qilish, sinxronizatsiya, admin yuzasi, maxfiylik | yo'q | GTS cancel/retrieve | S6 |
 
 Oldingi qoralamada 11 ta bo'lak bor edi; outbox, snapshot va yo'lovchilar

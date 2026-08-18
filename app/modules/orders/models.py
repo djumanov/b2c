@@ -54,7 +54,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.money import currency_column, money_column
 from app.db.base import Base, Entity
 from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
-from app.modules.orders.states import ActorType, EventAction, OrderStatus
+from app.modules.orders.states import (
+    ActorType,
+    EventAction,
+    OrderStatus,
+    RefundKind,
+    RefundState,
+)
 from app.providers.payments.base import (
     PaymentProviderCode,
     TransactionFlow,
@@ -368,4 +374,77 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     provider_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
-__all__ = ["ORDER_NO_SEQUENCE", "Order", "OrderEvent", "OrderPayment"]
+class OrderRefund(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Money going back, and who decided it should.
+
+    One table for two entrances. Compensation after a ticket failed to issue
+    arrives already ``approved``, because nobody has to agree that a customer
+    who paid for nothing should be repaid. A refund a customer asks for arrives
+    ``requested`` and waits for a person, because the penalty comes from the
+    fare rules and getting it wrong is expensive (``O11``).
+
+    No schedule of its own: the order carries ``next_attempt_at`` and the sweep
+    reads it there. A refund without an order is not a thing, and two columns
+    that could disagree about when to try again would be one too many.
+    """
+
+    __tablename__ = "order_refunds"
+    __table_args__ = (
+        _in_values("kind", RefundKind, name="kind"),
+        _in_values("status", RefundState, name="status"),
+        CheckConstraint("amount >= 0 AND penalty_amount >= 0", name="amounts"),
+        # One refund at a time. A second one opened while the first is still
+        # running would race it to the same money.
+        Index(
+            "uq_order_refunds_open",
+            "order_id",
+            unique=True,
+            postgresql_where=text("status IN ('requested', 'approved', 'processing')"),
+        ),
+        Index("ix_order_refunds_order_created", "order_id", "created_at"),
+    )
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: Which attempt's money is going back. Not a foreign key across modules —
+    #: same module here, so it is one.
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("order_payments.id", ondelete="SET NULL"),
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+
+    #: What the customer gets back, after any penalty.
+    amount: Mapped[Decimal] = money_column(nullable=False)
+    #: What the fare rules kept. Always ``0`` on compensation: a ticket that was
+    #: never issued cannot carry a cancellation fee.
+    penalty_amount: Mapped[Decimal] = money_column(
+        nullable=False, default=Decimal("0"), server_default=text("0")
+    )
+    currency: Mapped[str] = currency_column(nullable=False)
+
+    #: Who asked and who agreed. Values, not references — the history has to
+    #: stay readable after a staff row is gone.
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    reason: Mapped[str | None] = mapped_column(String(255))
+
+    #: The payment provider's reference for the money it sent back.
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(128))
+    #: What the upstream did with the reservation — released it, or refunded a
+    #: ticket it had already issued.
+    provider_order_action: Mapped[str | None] = mapped_column(String(32))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+
+
+__all__ = [
+    "ORDER_NO_SEQUENCE",
+    "Order",
+    "OrderEvent",
+    "OrderPayment",
+    "OrderRefund",
+]

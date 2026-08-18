@@ -25,6 +25,7 @@ lost either way.
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
 
@@ -51,6 +52,7 @@ from app.modules.orders.models import (
     Order,
     OrderEvent,
     OrderPayment,
+    OrderRefund,
 )
 from app.modules.orders.schemas import (
     OrderOut,
@@ -63,6 +65,8 @@ from app.modules.orders.states import (
     Actor,
     EventAction,
     OrderStatus,
+    RefundKind,
+    RefundState,
     can,
 )
 from app.modules.payments import service as payments_service
@@ -807,15 +811,32 @@ async def send_to_refund(
 ) -> Order:
     """T11 — ticketing is not going to happen and the money must go back.
 
-    **No ``next_attempt_at``.** The refund itself is the next slice; until then
-    an order that lands here is money taken and no ticket issued, which is a
-    thing a person has to finish. It is logged at ``ERROR`` for that reason
-    rather than left to be noticed.
+    The refund row is written in the **same transaction** as the status change,
+    already approved: nobody has to agree that a customer who paid for nothing
+    should be repaid, and a compensation waiting for a signature is a
+    compensation that does not happen at three in the morning.
+
+    ``next_attempt_at`` is set to now, so the sweep picks it up on its next
+    pass exactly as it does a ticketing step.
     """
+    attempt = await repository.paid_attempt(session, order.id)
+    session.add(
+        OrderRefund(
+            order_id=order.id,
+            payment_id=None if attempt is None else attempt.id,
+            kind=RefundKind.AUTO.value,
+            status=RefundState.APPROVED.value,
+            amount=order.amount_paid,
+            penalty_amount=Decimal("0"),
+            currency=order.currency or "UZS",
+            reason=reason,
+        )
+    )
     logger.error(
-        "order_awaiting_manual_refund",
+        "order_compensating",
         order_id=str(order.id),
         order_no=order.order_no,
+        amount=str(order.amount_paid),
         reason=reason,
     )
     return await transition(
@@ -826,6 +847,114 @@ async def send_to_refund(
         action=EventAction.TICKETING_FAILED,
         reason=reason,
         fields={"failure_message": failure or reason},
+        next_attempt_at=datetime.now(UTC),
+    )
+
+
+# --- giving the money back (order-system/03-design.md T15, T17) ------------------
+
+
+async def settled_attempt(session: AsyncSession, order: Order) -> OrderPayment | None:
+    """The attempt that actually took the money — a door, not a peek.
+
+    The refund task lives in ``app/tasks`` and a module's repository is nobody
+    else's to reach into (ARCHITECTURE.md §4).
+    """
+    return await repository.paid_attempt(session, order.id)
+
+
+async def claim_refund(session: AsyncSession, order: Order) -> OrderRefund | None:
+    """The refund still running on this order, locked and marked ``processing``.
+
+    ``None`` means there is nothing to do — the order says ``refunding`` and no
+    refund is open, which is a state only a bug or a hand-edit can produce, and
+    one the caller must not paper over by inventing a refund.
+    """
+    refund = await repository.open_refund(session, order.id)
+    if refund is None:
+        return None
+    if refund.status == RefundState.REQUESTED.value:
+        # Still waiting for a person. Nothing automatic may take it further.
+        return None
+    refund.status = RefundState.PROCESSING.value
+    await session.commit()
+    return refund
+
+
+async def settle_refund(
+    session: AsyncSession,
+    order: Order,
+    refund: OrderRefund,
+    *,
+    provider_ref: str | None,
+    order_action: str | None,
+) -> Order:
+    """T15 — the money is back with the customer."""
+    refund.status = RefundState.SUCCEEDED.value
+    refund.provider_refund_ref = provider_ref
+    refund.provider_order_action = order_action
+    await session.commit()
+    logger.info(
+        "order_refunded",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        amount=str(refund.amount),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDED,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_SUCCEEDED,
+        reason=refund.reason,
+        fields={"amount_refunded": refund.amount},
+    )
+
+
+async def retry_refund(
+    session: AsyncSession, order: Order, *, reason: str, when: datetime
+) -> Order:
+    """T15x — try again. The self-transition that keeps the history honest."""
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDING,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_RETRY,
+        reason=reason,
+        next_attempt_at=when,
+    )
+
+
+async def abandon_refund(
+    session: AsyncSession, order: Order, refund: OrderRefund | None, *, reason: str
+) -> Order:
+    """T17 — the last automatic step failed, so a person takes over.
+
+    This is the state PROJECT.md D3 promises exists: money has moved, no ticket
+    came out of it, and the refund did not work either. It is loud on purpose —
+    the alternative is money quietly going nowhere, which is the one outcome
+    this whole design exists to prevent.
+    """
+    if refund is not None:
+        refund.status = RefundState.FAILED.value
+        refund.failure_message = reason
+        await session.commit()
+    logger.error(
+        "order_needs_attention",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        amount_paid=str(order.amount_paid),
+        reason=reason,
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.NEEDS_ATTENTION,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_FAILED,
+        reason=reason,
+        fields={"attention_reason": "refund_failed"},
     )
 
 
@@ -870,11 +999,13 @@ async def get_order(
 
 __all__ = [
     "abandon_attempt",
+    "abandon_refund",
     "apply_cancel",
     "attach_redirect",
     "begin_ticketing",
     "booking_answer",
     "claim_order",
+    "claim_refund",
     "confirm_booking",
     "ensure_cancellable",
     "fail_booking",
@@ -886,9 +1017,12 @@ __all__ = [
     "owned_order",
     "payment_state",
     "record_unreadable_booking",
+    "retry_refund",
     "retry_ticketing",
     "send_to_refund",
     "settle_attempt",
+    "settle_refund",
+    "settled_attempt",
     "start_attempt",
     "start_order",
     "start_transaction",

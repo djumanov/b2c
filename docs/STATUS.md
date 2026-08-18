@@ -147,9 +147,17 @@ kontrakt testlari.
 > yo'qolgani — pul qaytarish. Chipta chiqmasa buyurtma `refunding` da qoladi va
 > **qo'lda** hal qilinadi — avtomatik kompensatsiya S6 da.
 >
+> **S6a (avtomatik kompensatsiya) bajarildi 2026-08-18:** `order_refunds`
+> jadvali va `orders.refund` taski. Chipta chiqmasa buyurtma `refunding` ga
+> o'tadi va **o'sha tranzaksiyada** `auto` qaytarish qatori `approved` holatda
+> yoziladi — kompensatsiya hech kimning imzosini kutmaydi. Task avval bronni
+> bo'shatadi (best effort — muvaffaqiyatsizligi pulni ushlab turmaydi), keyin
+> provayderdan pulni qaytaradi. 8 urinishdan keyin `needs_attention`.
+> **D3 va'dasi shu bilan bajariladi: pul jimgina yo'qolmaydi.**
+>
 > Keyingi ikkitasi: **S4b — Payme va Click adapterlari** (merchant hujjatlari va
 > sandbox kaliti kelganda; hozir portda faqat chegarasi bor) va
-> **S6 — kompensatsiya va qaytarish**.
+> **S6b — mijoz so'rovi bo'yicha qaytarish, admin tasdig'i va `resolve/`**.
 
 To'liq reja — [PHASES.md](PHASES.md).
 

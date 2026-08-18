@@ -33,10 +33,12 @@ from app.api.errors import AppError
 from app.core.logging import get_logger
 from app.db.session import get_sessionmaker
 from app.modules.orders import service as orders_service
-from app.modules.orders.models import Order
+from app.modules.orders.models import Order, OrderRefund
 from app.modules.orders.states import OrderStatus
+from app.modules.payments import service as payments_service
 from app.modules.products import service as products_service
 from app.modules.settings import service as settings_service
+from app.providers.payments.base import PaymentProviderCode, RefundStatus
 from app.providers.products.base import registry
 from app.providers.products.orders import (
     FailureClass,
@@ -61,9 +63,17 @@ _JITTER: Final = 0.2
 #: crash loses little; ``SKIP LOCKED`` means several workers can sweep at once.
 _BATCH: Final = 50
 
-#: The statuses a due order can be in and be understood. Anything else is a
-#: schedule left behind by a step this release does not have yet.
-_DUE_STATUSES: Final = frozenset({OrderStatus.PAID, OrderStatus.TICKETING})
+#: How many times a refund is attempted before a person is asked. Unlike
+#: ticketing there is no external deadline to bound it, so this one is a count
+#: — roughly two hours with the backoff above, which is long enough for a
+#: provider outage and short enough that nobody waits a day for their money.
+_REFUND_ATTEMPTS: Final = 8
+
+#: Which task a due order wants, by the status it is in. Anything not here is a
+#: schedule left behind by a step this release does not have.
+_DUE_STATUSES: Final = frozenset(
+    {OrderStatus.PAID, OrderStatus.TICKETING, OrderStatus.REFUNDING}
+)
 
 
 def _next_attempt(attempts: int) -> datetime:
@@ -240,7 +250,12 @@ async def _run_due() -> None:
 
         sent = 0
         for order in due:
-            if OrderStatus(order.status) in _DUE_STATUSES:
+            status = OrderStatus(order.status)
+            if status is OrderStatus.REFUNDING:
+                refund.delay(str(order.id))
+                sent += 1
+                continue
+            if status in _DUE_STATUSES:
                 ticket.delay(str(order.id))
                 sent += 1
                 continue
@@ -260,6 +275,130 @@ async def _run_due() -> None:
         logger.info("orders_dispatched", count=sent)
 
 
+async def _refund(order_id: uuid.UUID) -> None:
+    """Give the money back. The step that makes D3's promise true.
+
+    Two outside systems, in this order and for this reason: the reservation is
+    released first because it is idempotent and costs nothing to repeat, and
+    the money second because that is the part worth retrying. A provider that
+    will not release the seat does not stop the refund — the hold lapses on its
+    own (GTS.md §11), and a customer waiting for their money must not wait for
+    somebody else's housekeeping.
+    """
+    async with get_sessionmaker()() as session:
+        order = await orders_service.claim_order(session, order_id)
+        if order is None or OrderStatus(order.status) is not OrderStatus.REFUNDING:
+            logger.info(
+                "refund_skipped",
+                order_id=str(order_id),
+                status=None if order is None else order.status,
+            )
+            return
+
+        refund_row = await orders_service.claim_refund(session, order)
+        if refund_row is None:
+            # ``refunding`` with nothing open is a state only a bug or a hand
+            # edit produces. Inventing a refund to cover it would be guessing
+            # about money, so a person is asked instead.
+            await orders_service.abandon_refund(
+                session, order, None, reason="No refund is open on this order"
+            )
+            return
+
+        attempt = await orders_service.settled_attempt(session, order)
+        if attempt is None or attempt.provider_ref is None:
+            await orders_service.abandon_refund(
+                session,
+                order,
+                refund_row,
+                reason="No settled payment to refund against",
+            )
+            return
+
+        await _release_reservation(session, order)
+
+        try:
+            result = await payments_service.refund(
+                session,
+                PaymentProviderCode(attempt.provider),
+                transaction_ref=attempt.provider_ref,
+                amount=refund_row.amount,
+            )
+        except AppError as failure:
+            await _refund_again(session, order, refund_row, str(failure))
+            return
+
+        if result.status is not RefundStatus.SUCCEEDED:
+            await _refund_again(
+                session,
+                order,
+                refund_row,
+                result.failure_message or "the provider refused the refund",
+            )
+            return
+
+        await orders_service.settle_refund(
+            session,
+            order,
+            refund_row,
+            provider_ref=result.provider_ref,
+            order_action="cancel",
+        )
+
+
+async def _release_reservation(session: AsyncSession, order: Order) -> None:
+    """Tell the provider it may have the seat back. Best effort, by design.
+
+    A failure here is logged and nothing else. The reservation was never
+    ticketed, so the hold lapses on its own; letting that block the money would
+    trade the customer's refund for our tidiness.
+    """
+    operations = _operations(order.product)
+    if operations is None or order.provider_order_number is None:
+        return
+    try:
+        client = await products_service.gts_client(session)
+        await operations.cancel(client, {"order_number": order.provider_order_number})
+    except (AppError, UnreadableAnswer) as failure:
+        logger.warning(
+            "reservation_not_released",
+            order_id=str(order.id),
+            order_no=order.order_no,
+            detail=str(failure),
+        )
+
+
+async def _refund_again(
+    session: AsyncSession, order: Order, refund_row: OrderRefund, reason: str
+) -> None:
+    """Retry, or stop and ask a person.
+
+    The bound is a count rather than a deadline: nothing outside expires, and a
+    refund that has failed eight times is not going to work on the ninth
+    without somebody looking at it.
+    """
+    if order.attempts + 1 >= _REFUND_ATTEMPTS:
+        await orders_service.abandon_refund(session, order, refund_row, reason=reason)
+        return
+    when = _next_attempt(order.attempts)
+    retried = await orders_service.retry_refund(
+        session, order, reason=reason, when=when
+    )
+    logger.warning(
+        "refund_retry",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        attempt=retried.attempts,
+        next_attempt_at=when.isoformat(),
+    )
+
+
+@celery_app.task(name="app.tasks.orders.refund")
+def refund(order_id: str) -> None:
+    """Give one order's money back. Safe to send twice."""
+    asyncio.run(_refund(uuid.UUID(order_id)))
+
+
 @celery_app.task(name="app.tasks.orders.ticket")
 def ticket(order_id: str) -> None:
     """Issue the tickets for one order. Safe to send twice."""
@@ -272,4 +411,4 @@ def run_due() -> None:
     asyncio.run(_run_due())
 
 
-__all__ = ["run_due", "ticket"]
+__all__ = ["refund", "run_due", "ticket"]

@@ -47,6 +47,7 @@ from app.providers.payments.base import (
     CallbackResult,
     PaymentProvider,
     PaymentProviderCode,
+    RefundResult,
 )
 
 logger = structlog.get_logger(__name__)
@@ -268,6 +269,23 @@ async def charge(
     )
 
 
+async def refund(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    transaction_ref: str,
+    amount: Decimal | None = None,
+) -> RefundResult:
+    """Send money back through the provider that took it.
+
+    ``transaction_ref`` is the **provider's** id for the charge, not ours: a
+    refund is an operation on their receipt, and ours would mean nothing to
+    them. ``amount`` omitted means the whole charge.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.refund(transaction_ref=transaction_ref, amount=amount)
+
+
 async def callback(
     session: AsyncSession,
     code: PaymentProviderCode,
@@ -298,6 +316,7 @@ __all__ = [
     "add_card",
     "callback",
     "charge",
+    "refund",
     "delete_card",
     "forget_cards",
     "get_card",

@@ -18,13 +18,13 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
 from app.api.errors import UpstreamError, UpstreamTimeout
 from app.core.money import Money
 from app.modules.customers.models import Customer
-from app.modules.orders.models import Order
+from app.modules.orders.models import Order, OrderRefund
 from app.modules.orders.states import OrderStatus
 from app.providers.products.base import ProductCode, registry
 from app.providers.products.flight import FlightAdapter
@@ -49,6 +49,7 @@ class FakeOperations:
     quoted: Decimal = PAID
     reprice_fails: Exception | None = None
     ticket_fails: Exception | None = None
+    cancel_fails: Exception | None = None
     #: One entry per traveller; ``None`` means that one got no ticket.
     issued: tuple[str | None, ...] = ("7653081297644",)
     calls: list[str] = field(default_factory=list)
@@ -60,7 +61,12 @@ class FakeOperations:
         raise AssertionError("ticketing never books")
 
     async def cancel(self, client: Any, payload: dict[str, Any]) -> CancelResult:
-        raise AssertionError("ticketing never cancels")
+        # Compensation releases the reservation through this
+        # (``test_saga_refund``); ticketing itself never calls it.
+        self.calls.append("cancel")
+        if self.cancel_fails is not None:
+            raise self.cancel_fails
+        return CancelResult(provider_status="CB", raw={"order": {"status": "CB"}})
 
     async def reprice(self, client: Any, order_number: str) -> RepriceResult:
         self.calls.append("reprice")
@@ -315,7 +321,17 @@ async def test_a_terminal_failure_sends_the_money_back(
 
     await session.refresh(order)
     assert order.status == "refunding"
-    assert order.next_attempt_at is None
+    # The compensation is written in the same transaction and scheduled at
+    # once: a customer who paid for nothing is not made to wait for anybody's
+    # signature (order-system/03-design.md T11).
+    assert order.next_attempt_at is not None
+    refund = await session.scalar(
+        select(OrderRefund).where(OrderRefund.order_id == order.id)
+    )
+    assert refund is not None
+    assert (refund.kind, refund.status) == ("auto", "approved")
+    assert refund.amount == PAID
+    assert refund.penalty_amount == Decimal(0)
     assert await _events(session, order) == ["ticketing.started", "ticketing.failed"]
 
 
@@ -408,15 +424,16 @@ async def test_the_sweep_clears_a_schedule_it_cannot_act_on(
     operations: FakeOperations,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A refund is scheduled by a step this release does not have. Leaving the
-    schedule would make the sweep spin on it every thirty seconds; the status
-    itself is what a person will act on."""
+    """A schedule left on a status nothing automatic acts on. Leaving it would
+    make the sweep spin every thirty seconds; the status itself is what a
+    person will act on."""
     sent: list[str] = []
     monkeypatch.setattr(tasks.ticket, "delay", lambda order_id: sent.append(order_id))
+    monkeypatch.setattr(tasks.refund, "delay", lambda order_id: sent.append(order_id))
     stuck = await _paid(
         session,
         customer,
-        status=OrderStatus.REFUNDING.value,
+        status=OrderStatus.NEEDS_ATTENTION.value,
         next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
     )
 

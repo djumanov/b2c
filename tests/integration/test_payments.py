@@ -53,7 +53,11 @@ class RecordingProvider:
     settles: bool = True
     provider_ref: str = "receipt-1"
     refuses: Exception | None = None
+    #: What ``refund`` answers. ``None`` means it succeeded.
+    refund_refuses: Exception | None = None
+    refund_status: RefundStatus = RefundStatus.SUCCEEDED
     charged: list[dict[str, Any]] = field(default_factory=list)
+    refunded: list[dict[str, Any]] = field(default_factory=list)
     reference: str | None = None
 
     async def create_payment(
@@ -94,7 +98,18 @@ class RecordingProvider:
     async def refund(
         self, *, transaction_ref: str, amount: Decimal | None = None
     ) -> RefundResult:
-        return RefundResult(status=RefundStatus.SUCCEEDED)
+        self.refunded.append({"transaction_ref": transaction_ref, "amount": amount})
+        if self.refund_refuses is not None:
+            raise self.refund_refuses
+        return RefundResult(
+            status=self.refund_status,
+            provider_ref=f"refund-{transaction_ref}",
+            failure_message=(
+                None
+                if self.refund_status is RefundStatus.SUCCEEDED
+                else "the provider refused the refund"
+            ),
+        )
 
     async def status(self, *, transaction_ref: str) -> ChargeResult:
         return ChargeResult(status=TransactionStatus.PAID)

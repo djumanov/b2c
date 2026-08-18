@@ -47,6 +47,7 @@ EXPECTED_MOVES: set[tuple[OrderStatus, OrderStatus]] = {
     (OrderStatus.TICKETING, OrderStatus.NEEDS_ATTENTION),
     (OrderStatus.TICKETED, OrderStatus.REFUNDING),
     (OrderStatus.TICKETED, OrderStatus.VOIDED),
+    (OrderStatus.REFUNDING, OrderStatus.REFUNDING),
     (OrderStatus.REFUNDING, OrderStatus.REFUNDED),
     (OrderStatus.REFUNDING, OrderStatus.PARTIALLY_REFUNDED),
     (OrderStatus.REFUNDING, OrderStatus.NEEDS_ATTENTION),
@@ -66,7 +67,7 @@ def test_the_table_is_the_table_in_the_document() -> None:
 def test_every_pair_is_allowed_only_if_the_table_says_so(
     source: OrderStatus, target: OrderStatus
 ) -> None:
-    """The sweep. 144 pairs, and 20 of them are legal."""
+    """The sweep. 144 pairs, and 21 of them are legal."""
     assert can(source, target) is ((source, target) in EXPECTED_MOVES)
 
 
@@ -108,11 +109,12 @@ def test_the_settled_statuses_can_still_start_something_new() -> None:
     assert OrderStatus.REFUNDING in targets_from(OrderStatus.TICKETED)
 
 
-def test_only_ticketing_repeats_itself() -> None:
-    """A self-transition is a retry, and retrying is the one thing only the
-    ticketing step does. Anywhere else it would hide a stuck order."""
+def test_only_the_outward_steps_repeat_themselves() -> None:
+    """A self-transition is a retry, and only the two states that talk to an
+    outside system have anything to retry. Anywhere else it would hide a stuck
+    order rather than describe one."""
     repeats = {item.source for item in TRANSITIONS if item.source is item.target}
-    assert repeats == {OrderStatus.TICKETING}
+    assert repeats == {OrderStatus.TICKETING, OrderStatus.REFUNDING}
 
 
 def test_needs_attention_is_only_left_by_a_person() -> None:

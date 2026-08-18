@@ -159,15 +159,18 @@ stateDiagram-v2
     created --> failed: T3 GTS rad etdi
     created --> needs_attention: T4 timeout, solishtirish topolmadi
     booked --> paid: T5 to'lov settled
+    booked --> needs_attention: T5x summa mos emas
     booked --> cancelled: T6 mijoz / admin
     booked --> cancelled: T7 muddat o'tdi
     paid --> ticketing: T8 orders.ticket
     ticketing --> ticketing: T9 retryable, deadline ichida
     ticketing --> ticketed: T10 chipta chiqdi
+    ticketing --> needs_attention: T10x qisman chipta
     ticketing --> refunding: T11 terminal / deadline / narx oshdi
     paid --> refunding: T12 admin (mijoz so'rovi)
     ticketed --> refunding: T13 tasdiqlangan qaytarish
     ticketed --> voided: T14 void (v2)
+    refunding --> refunding: T15x qayta urinish
     refunding --> refunded: T15
     refunding --> partially_refunded: T16 (v2)
     refunding --> needs_attention: T17 qaytarish ham bajarilmadi
@@ -185,15 +188,18 @@ stateDiagram-v2
 | **T3** | `created` → `failed` | GTS `status: "error"` | — | — | — |
 | **T4** | `created` → `needs_attention` | GTS timeout / erishib bo'lmadi, `orders.reconcile_orphans` 3 urinishda topolmadi | — | `alert.stuck` | — |
 | **T5** | `booked` → `paid` | To'lov `paid` bo'ldi (webhook yoki `payments.reconcile`) | `payment.amount` == `order.amount_total` **va** valyutalar teng | `orders.ticket` · `notify.order_paid` | Summa mos emas → `needs_attention` |
+| **T5x** | `booked` → `needs_attention` | To'lov settled bo'ldi, lekin summa boshqa | — | — | Pul harakatlangan, xavfsiz turadigan joy yo'q |
 | **T6** | `booked` → `cancelled` | `POST /orders/{id}/cancel/` (mijoz) yoki admin | To'lov `paid` emas | `gts.cancel` · `notify.order_cancelled` | To'langan bo'lsa → `409`, qaytarish yo'li taklif qilinadi |
 | **T7** | `booked` → `cancelled` | `orders.expire_unpaid` beat | `now > ticket_time_limit_at − ticket_margin` va to'lov yo'q | `gts.cancel` · `notify.order_expired` | — |
 | **T8** | `paid` → `ticketing` | `orders.ticket` task boshlandi | Status `paid` (aks holda task jimgina chiqadi — idempotentlik) | — | — |
 | **T9** | `ticketing` → `ticketing` | `retryable` xato | `attempts < max` **va** `now < ticket_deadline` | `orders.ticket` (backoff bilan) | — |
 | **T10** | `ticketing` → `ticketed` | GTS `ticketing` muvaffaqiyatli | **Har bir** yo'lovchida chipta raqami bor | `notify.order_ticketed` | Qisman chiqsa → `needs_attention` |
+| **T10x** | `ticketing` → `needs_attention` | Yo'lovchilarning bir qismida chipta bor, bir qismida yo'q | — | — | Avtomatik hech narsa buni tuzata olmaydi |
 | **T11** | `ticketing` → `refunding` | `terminal` xato · `deadline` o'tdi · narx tolerantlikdan oshdi | To'lov `paid` | `refunds` qatori (`kind=auto`, `approved`) · `refunds.commit` | — |
 | **T12** | `paid` → `refunding` | Admin (mijoz so'rovi bo'yicha) | Ticketing hali boshlanmagan | `refunds` qatori · `refunds.commit` | — |
 | **T13** | `ticketed` → `refunding` | Admin tasdiqladi | `refund.status == approved` | `refunds.commit` | — |
 | **T14** | `ticketed` → `voided` | v2 — void oynasi ichida | `now < void_deadline_at` | — | — |
+| **T15x** | `refunding` → `refunding` | Qaytarish urinishi yiqildi | `attempts < 8` | `refunds.commit` (backoff bilan) | — |
 | **T15** | `refunding` → `refunded` | Provayder qaytardi (+ GTS tomoni bajarildi) | Qaytarilgan summa == to'langan summa | `notify.order_refunded` | Kam bo'lsa → T16 |
 | **T16** | `refunding` → `partially_refunded` | v2 / sinxronizatsiya `PRF` keltirdi | — | — | — |
 | **T17** | `refunding` → `needs_attention` | Urinishlar tugadi | — | `alert.stuck` | — |
@@ -398,16 +404,29 @@ bitta valyuta, ular allaqachon `orders` da. Alohida "niyat" qatori hech nima qo'
 | `status` | `requested` · `approved` · `rejected` · `processing` · `succeeded` · `failed` |
 | `amount`, `penalty_amount`, `currency` | `auto` da jarima `0` |
 | `requested_by`, `approved_by`, `reason` | |
-| `provider_refund_ref`, `provider_order_refund_ref` | To'lov provayderi va GTS tomonidagi ma'lumotnomalar |
-| `idempotency_key` | UNIQUE partial |
-| `attempts`, `next_attempt_at` | Poller shuni ham oladi |
+| `provider_refund_ref` | To'lov provayderining qaytarish ma'lumotnomasi |
+| `provider_order_action` | Upstream tomonda nima qilindi — bronni bo'shatish (`cancel`) yoki chiptani qaytarish (`refund`) |
+| `failure_message` | Nega bajarilmagani |
 
-Indeks: `(status)` `WHERE status IN ('requested','approved','processing')`.
+Indekslar: `(order_id, created_at)` · `(status)` · **unique partial
+`(order_id) WHERE status IN ('requested','approved','processing')`** — bitta
+buyurtmada bir vaqtda bitta ochiq qaytarish. Ikkinchisi ochilsa u birinchisi
+bilan bir xil pulga poyga qilardi.
+
+> **O'z jadvali `next_attempt_at` i yo'q.** Navbatni buyurtma yuritadi va
+> supurgich uni o'sha yerdan o'qiydi. Qaytarishsiz buyurtma bo'ladi, buyurtmasiz
+> qaytarish esa yo'q — va qachon qayta urinish haqida bir-biriga zid javob
+> beradigan ikkita ustun bittasi ortiqcha bo'lardi.
 
 Alohida jadval, chunki tasdiq sikli o'ziga xos: admin panelda "tasdiq kutayotgan
 qaytarishlar" ro'yxati kerak, va `orders` ga oltita ustun qo'shish keyinchalik qisman
 qaytarish (bir buyurtmaga bir nechta qatorlar) kerak bo'lganda qayta ko'chirishga
 majbur qilardi.
+
+**Qayta urinish chegarasi — son, muddat emas.** Ticketingdan farqli, qaytarishda
+tashqi deadline yo'q; 8 urinish (backoff bilan taxminan ikki soat) provayderning
+uzilishiga yetadi va hech kim puliga bir kun kutmaydi. Undan keyin —
+`needs_attention`.
 
 ---
 
