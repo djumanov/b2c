@@ -196,7 +196,7 @@ qayta ishlatilmaydi.
 | Nima | Qayerda | Holat |
 |---|---|---|
 | `orders.deleted_at` | `models.py` (`Entity` dan) | Har o'qishda hisobga olinadi, **hech kim yozmaydi** |
-| `save_passenger` | `products/openapi.py:566` | Kontraktda hujjatlashtirilgan, kodda **o'qilmaydi** — GTS'ga uzatiladi va shu yerda tugaydi |
+| `save_passenger` | `products/openapi.py:566` | ✅ **Yopildi 2026-08-18** — `products/service.py::book` uni o'qiydi va tasdiqlangan bron yo'lovchilarini `customers.save_travelers` orqali saqlaydi |
 | `OrderStatus` | `providers/gts/base.py:34` | O'lik kod |
 | `core/money.py` | butun modul | Hech bir jadval ishlatmaydi |
 | `RateLimit("payment")` | `api/deps.py:251` | Chelak bor, iste'molchi yo'q |

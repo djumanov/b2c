@@ -463,10 +463,11 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
 ) -> None:
     """Booking writes exactly one order, and its history line (API.md §21).
 
-    Not a passenger row — not even the ``save_passenger`` the body asks for,
-    which lands with the module that owns passengers — and nothing that
-    resembles a cache of the search (D2). Two tables move, and they are the
-    order and the record of how it got where it is."""
+    Nothing that resembles a cache of the search (D2), and — with
+    ``save_passenger`` left out of the body — no passenger row either. Two
+    tables move, and they are the order and the record of how it got where it
+    is. The passengers of a booking that *does* ask for them are the subject of
+    ``test_saved_travelers``."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
@@ -494,7 +495,9 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
 
     before = await counts()
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
+        BOOKING,
+        json={**BOOKING_BODY, "save_passenger": False},
+        headers=_booking_headers(customer),
     )
     after = await counts()
 

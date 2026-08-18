@@ -38,9 +38,10 @@ customer's reasons have gone to the ``deleted_customers`` archive.
 import hashlib
 import secrets
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import timedelta
-from typing import Final
+from datetime import date, timedelta
+from typing import Any, Final
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +81,7 @@ from app.core.security import (
 from app.db.mixins import utcnow
 from app.db.redis import get_redis
 from app.db.repository import get_live_or_404, live
+from app.modules.catalog import service as catalog_service
 from app.modules.customers import repository
 from app.modules.customers.models import (
     Customer,
@@ -1154,6 +1156,204 @@ async def delete_passenger(
     await session.commit()
 
 
+# --- saving the travellers of a booking (API.md §19, §20) -----------------------------
+
+#: What makes two saved passengers the same person. The document number is
+#: part of it on purpose: ``Passenger`` exists in duplicate for exactly one
+#: reason — the same traveller with a renewed passport — and collapsing those
+#: two rows would be the module contradicting its own comment.
+type _Identity = tuple[str, str, date, str]
+
+
+def _identity(
+    first_name: str, last_name: str, birth_date: date, document_number: str | None
+) -> _Identity:
+    # Case-folded: a booking form does not agree with itself about capitals,
+    # and "ALI" saved twice as "Ali" is the bug this whole path is meant to
+    # spare the customer.
+    return (
+        first_name.casefold(),
+        last_name.casefold(),
+        birth_date,
+        (document_number or "").casefold(),
+    )
+
+
+def _trimmed(value: object, *, limit: int = 120) -> str | None:
+    """A non-empty string, cut to the width of the column it is going into."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned[:limit] or None
+
+
+def _catalog_index(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
+    """``UZ`` → the whole §26 country object, ``PSP`` → the document type."""
+    return {
+        item[key]: item
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get(key), str)
+    }
+
+
+def _catalog_object(
+    index: dict[str, dict[str, Any]], key: str, code: str | None
+) -> dict[str, Any] | None:
+    """The catalogue object for a bare code, or the bare code wearing its shape.
+
+    §19 stores the whole object because the UI shows a flag and a translated
+    name the code cannot carry, but a booking only ever names the code. When
+    the catalogue cannot be reached — it lives behind GTS — the minimal object
+    is still a saved passenger the customer can finish by hand, which is worth
+    more than no passenger at all.
+    """
+    if code is None:
+        return None
+    found = index.get(code) or index.get(code.upper())
+    return found if found is not None else {key: code}
+
+
+def _birth_date(value: object) -> date | None:
+    """``birth_date`` is a string in the order's travellers and a column here.
+
+    Deliberately not lenient: a traveller whose birth date will not parse is
+    skipped rather than saved without one, because ``Passenger.birth_date`` is
+    ``NOT NULL`` and API.md §19 says a passenger without one only *looks* saved.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+async def _catalog_indexes(
+    session: AsyncSession,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    try:
+        countries = _catalog_index(await catalog_service.countries(session), "code")
+        documents = _catalog_index(
+            await catalog_service.document_types(session), "type"
+        )
+    except Exception as exc:  # noqa: BLE001 - enrichment, never a reason to lose a row
+        # The catalogue is two calls to GTS behind a day of Redis. Whatever
+        # went wrong with it, the passenger is still worth saving with the bare
+        # code, so this is the one failure that is answered rather than raised.
+        logger.warning("passenger_catalog_unavailable", error=str(exc))
+        return {}, {}
+    return countries, documents
+
+
+async def _write_travelers(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    travelers: Sequence[Mapping[str, Any]],
+) -> int:
+    seen: set[_Identity] = {
+        _identity(row.first_name, row.last_name, row.birth_date, row.document_number)
+        for row in await repository.live_passengers_for(session, customer_id)
+    }
+    countries: dict[str, dict[str, Any]] | None = None
+    documents: dict[str, dict[str, Any]] | None = None
+    rows: list[Passenger] = []
+
+    for traveler in travelers:
+        first_name = _trimmed(traveler.get("first_name"))
+        last_name = _trimmed(traveler.get("last_name"))
+        birth_date = _birth_date(traveler.get("birth_date"))
+        if first_name is None or last_name is None or birth_date is None:
+            # The three columns with no NULL. An infant booked without a
+            # birth date is a real answer from GTS, not a bug to raise on.
+            continue
+
+        document = traveler.get("document")
+        document = document if isinstance(document, dict) else {}
+        number = _trimmed(document.get("number"), limit=64)
+        identity = _identity(first_name, last_name, birth_date, number)
+        if identity in seen:
+            continue
+        seen.add(identity)
+
+        if countries is None or documents is None:
+            # Fetched on the first traveller worth saving, not before: a
+            # booking that saves nobody must not call the catalogue at all.
+            countries, documents = await _catalog_indexes(session)
+
+        rows.append(
+            Passenger(
+                customer_id=customer_id,
+                first_name=first_name,
+                last_name=last_name,
+                middle_name=_trimmed(traveler.get("middle_name")),
+                birth_date=birth_date,
+                citizenship=_catalog_object(
+                    countries,
+                    "code",
+                    _trimmed(traveler.get("citizenship"), limit=8),
+                ),
+                document_type=_catalog_object(
+                    documents, "type", _trimmed(document.get("type"), limit=16)
+                ),
+                document_number=number,
+                document_expiry_date=_birth_date(document.get("expire_date")),
+            )
+        )
+
+    if not rows:
+        return 0
+    # One write point, reached only once every traveller has been read. A
+    # failure before this line leaves the session exactly as it was found.
+    session.add_all(rows)
+    try:
+        await session.commit()
+    except Exception:
+        # Ours and only ours: the session belongs to the request, and the
+        # booking's own committed work is not this function's to discard.
+        for row in rows:
+            session.expunge(row)
+        raise
+    return len(rows)
+
+
+async def save_travelers(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    travelers: Sequence[Mapping[str, Any]],
+) -> int:
+    """Put a booking's travellers on the customer's list (API.md §19, §20).
+
+    The door ``save_passenger`` comes through. Travellers arrive in the order
+    module's own shape — the same one ``GET /public/orders/{id}/`` publishes —
+    so this reads one vocabulary rather than each vertical's.
+
+    **It never raises.** By the time it runs GTS is holding a seat and the
+    customer is on their way to paying for it; losing a convenience must not
+    cost a booking, and there is nothing here a customer could not redo by
+    hand on ``/public/profile/passengers/``. Whatever goes wrong is logged,
+    and nothing of ours is left pending on the caller's session.
+
+    Returns how many rows were written.
+    """
+    try:
+        written = await _write_travelers(
+            session, customer_id=customer_id, travelers=travelers
+        )
+    except Exception:  # noqa: BLE001 - deliberate; see the docstring
+        # No ``rollback``. Nothing after this reads the session — the request
+        # closes it a moment later — and rolling back here would reach past
+        # this function into a booking that is already committed.
+        logger.warning(
+            "passengers_not_saved", customer_id=str(customer_id), exc_info=True
+        )
+        return 0
+    if written:
+        logger.info("passengers_saved", customer_id=str(customer_id), count=written)
+    return written
+
+
 __all__ = [
     "OTP_MAX_ATTEMPTS",
     "OTP_RESEND_COOLDOWN",
@@ -1175,6 +1375,7 @@ __all__ = [
     "register",
     "request_password_reset",
     "resend_registration_code",
+    "save_travelers",
     "to_profile",
     "update_passenger",
     "update_profile",
