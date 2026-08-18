@@ -183,7 +183,7 @@ GTS kontrakti bizning kontraktimizdan ataylab farq qiladi va **ichkariga o'tmasl
 | GTS tomonda | Bizda | Kim o'giradi |
 |---|---|---|
 | `{status, message, id, time, total, data}` | `{status, data, errors, meta}` | javob xaritasi |
-| **Xatoda ham HTTP 200**, manfiy kodlar bilan | To'g'ri HTTP status + xato katalogi | xato xaritasi: default `502 upstream_error`; alohida kodlar `offer_expired`, `payment_failed` ga; **asl matn `message` da, asl kod `meta.upstream` da** ([API.md](API.md) §3 talabi) |
+| **Xatoda ham HTTP 200**, manfiy kodlar bilan | To'g'ri HTTP status + xato katalogi | xato xaritasi: default `502 upstream_error`; alohida kodlar `offer_expired`, `payment_failed` ga; **asl matn `message` da, asl kod `meta.upstream` da** ([API.md](API.md) §3 talabi). `offers/` va `upsell/` istisno — §9 ga qarang |
 | `BO/PW/TI/TE/CB/VO/RF/PRF` | `booked/pending/ticketed/failed/cancelled/voided/refunded/partially_refunded` | status xaritasi, har vertikal uchun alohida — **hali qurilmagan**: buyurtma qatorida bugun GTS kodi kelganicha turadi ([API.md](API.md) §21), o'girish saga bilan keladi, chunki uning birinchi haqiqiy iste'molchisi — bekor qilish/qaytarish qoidalari |
 | Sessiya muddati tugaydi | — | sessiya menejeri: credential DB'dan deshifrlanadi, sessiya Redis'da, **qulf ostida — faqat bitta worker qayta kiradi**, 401 da bitta avtomatik takror |
 | Taklif va narx tuzilmasi | Bizning `offer` sxemamiz | maydon xaritasi + pul formati (`{amount, currency}`, string) |
@@ -271,6 +271,7 @@ Qidiruv **to'liq stateless** (D2): biz na taklifni, na qidiruv holatini saqlaymi
 | `search/` | So'rov GTS'ga uzatiladi; GTS bergan `request_id` javobda qaytariladi. Biz hech qayerga yozmaymiz |
 | `offers/` | `request_id`, `next_token`, `sort_type`, `limit`, `currency` GTS'ga aynan uzatiladi; GTS javobining `data` qismi **upstream shaklda, kelganicha** qaytariladi — faqat GTS envelope'i bizning envelope'ga almashadi (API.md §20, 2026-08-12 qarori) |
 | Qisman natija | GTS'dan kelganicha uzatiladi — bizda progress hisoblagichi yo'q |
+| Nosozlik | `offers/` va `upsell/` da GTS nosozligi (`status: "error"`, 5xx, timeout, ulanib bo'lmaslik) **bo'sh natijaga** aylanadi: `200`, `offers: []`, `search_status: "In process"` — klient poll qilishda davom etadi, nosozlik logda `warning` bo'lib qoladi ([API.md](API.md) §20). Qolgan qadamlarda `502` |
 | Taklif muddati | **GTS tomonda** tugaydi; uning xatosi `409 offer_expired` ga o'giriladi ([API.md](API.md) §3) |
 
 **Nega kesh qurmaymiz.** GTS `request_id` va `offer_id` bo'yicha o'z keshini yuritadi

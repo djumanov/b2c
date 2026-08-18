@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from app.api.errors import UpstreamError, ValidationFailed
+from app.api.errors import UpstreamError, UpstreamTimeout, ValidationFailed
 from app.providers.gts.base import GtsTimeouts
 from app.providers.products.base import FlowStep, ProductAdapter
 from app.providers.products.flight import FlightAdapter
@@ -39,14 +39,25 @@ class RecordingClient:
     **are** the envelope — ticketing puts the order under ``order`` beside its
     own ``status``, and wrapping one of those again would test a shape GTS
     never sends.
+
+    ``raises`` makes the call fail the way the real client does, **after** the
+    call is recorded: the steps that hide an upstream failure still have to
+    have asked GTS, and a fake that never reached the wire could not tell the
+    two apart.
     """
 
     def __init__(
-        self, data: dict[str, Any], *, status: str = "success", envelope: bool = True
+        self,
+        data: dict[str, Any],
+        *,
+        status: str = "success",
+        envelope: bool = True,
+        raises: Exception | None = None,
     ) -> None:
         self.data = data
         self.status = status
         self.envelope = envelope
+        self.raises = raises
         self.calls: list[tuple[str, dict[str, Any], float | None]] = []
 
     async def get(
@@ -62,12 +73,16 @@ class RecordingClient:
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:
         self.calls.append((path, json, timeout))
+        if self.raises is not None:
+            raise self.raises
         return self.data
 
     async def post_envelope(
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:
         self.calls.append((path, json, timeout))
+        if self.raises is not None:
+            raise self.raises
         if not self.envelope:
             return self.data
         return {"status": self.status, "message": "…", "code": 0, "data": self.data}
@@ -215,6 +230,51 @@ async def test_offers_without_a_request_id_fail_before_gts() -> None:
     assert client.calls == []
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        UpstreamError("no providers", upstream_code=-21),
+        UpstreamError("GTS is unreachable: connection refused"),
+        UpstreamError("GTS returned an unexpected status", upstream_code=500),
+        UpstreamTimeout("GTS did not answer in time"),
+    ],
+    ids=["gts_error", "unreachable", "http_500", "timeout"],
+)
+async def test_an_upstream_failure_is_an_empty_page_not_an_error(
+    failure: Exception,
+) -> None:
+    """API.md §20: a page we could not fetch must not end the search.
+
+    Every way GTS can disappoint lands on the same answer, because the client
+    cannot act on the difference — it can only ask again.
+    """
+    client = RecordingClient({}, raises=failure)
+    params = {"request_id": "r-1", "next_token": "t-2", "limit": 20}
+
+    result = await FlightAdapter().offers(client, params)
+
+    assert client.calls[0][0] == "/v1/content/offers/"
+    assert result == {
+        "request_id": "r-1",
+        # The *same* page is asked for again: advancing past a failure would
+        # skip the offers it was carrying.
+        "next_token": "t-2",
+        "count": 0,
+        "offers": [],
+        "search_status": "In process",
+    }
+
+
+async def test_a_hidden_failure_still_refuses_a_body_without_a_request_id() -> None:
+    """The softening is about GTS, not about us: our own 422 survives it."""
+    client = RecordingClient({}, raises=UpstreamError("no providers"))
+
+    with pytest.raises(ValidationFailed):
+        await FlightAdapter().offers(client, {"limit": 20})
+
+    assert client.calls == []
+
+
 # --- upsell --------------------------------------------------------------------------
 
 
@@ -258,6 +318,23 @@ async def test_an_upsell_during_a_running_search_is_relayed_not_failed() -> None
 
     assert result["search_status"] == "In process"
     assert result["offers"] == [{"offer_id": "u-1"}]
+
+
+async def test_an_upstream_failure_leaves_upsell_with_an_empty_list() -> None:
+    """Fare variants are still part of choosing, so a failure to fetch them is
+    an empty list and another poll — the chosen offer is bookable as it is."""
+    client = RecordingClient({}, raises=UpstreamError("no variants"))
+
+    result = await FlightAdapter().upsell(
+        client, {"request_id": "r-1", "offer_id": "o-1"}
+    )
+
+    assert client.calls[0][0] == "/v1/content/upsell/"
+    assert result == {
+        "request_id": "r-1",
+        "offers": [],
+        "search_status": "In process",
+    }
 
 
 @pytest.mark.parametrize(
@@ -316,6 +393,18 @@ async def test_a_verify_during_a_running_search_is_relayed_not_failed() -> None:
 
     assert result["search_status"] == "In process"
     assert result["verified"] is True
+
+
+async def test_verify_does_not_hide_an_upstream_failure() -> None:
+    """Where the softening stops (API.md §20).
+
+    By ``verify`` one offer has been chosen, and answering "nothing here, ask
+    again" about it would be a lie the customer books on.
+    """
+    client = RecordingClient({}, raises=UpstreamError("offer expired"))
+
+    with pytest.raises(UpstreamError):
+        await FlightAdapter().verify(client, {"request_id": "r-1", "offer_id": "o-1"})
 
 
 @pytest.mark.parametrize(

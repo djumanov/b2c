@@ -312,7 +312,12 @@ FLIGHT_OFFERS: Final[dict[str, Any]] = _operation(
     },
     response_description=(
         "One page of offers. A partial result is normal while `search_status` "
-        "is `In process` — poll again rather than treating it as the end."
+        "is `In process` — poll again rather than treating it as the end. "
+        "**An upstream failure is not an error here**: if GTS refuses, times "
+        "out or cannot be reached, this answers `200` with `offers: []`, "
+        "`count: 0` and `search_status: In process`, and the client polls "
+        "again (API.md §20). Bound the polling — a permanently broken GTS "
+        "never reaches `success`."
     ),
 )
 
@@ -383,7 +388,10 @@ FLIGHT_UPSELL: Final[dict[str, Any]] = _operation(
     },
     response_description=(
         "Branded fares for the chosen offer. Only offers flagged "
-        "`upsell: true` by `offers/` have them."
+        "`upsell: true` by `offers/` have them. Like `offers/`, an upstream "
+        "failure answers `200` with `offers: []` and `search_status: "
+        "In process` instead of a `502` (API.md §20) — the chosen offer is "
+        "still bookable as it stands."
     ),
 )
 

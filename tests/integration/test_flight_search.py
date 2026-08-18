@@ -696,6 +696,160 @@ async def test_a_signin_timeout_is_a_504_too(
     assert response.status_code == 504
 
 
+# --- upstream failures the client never sees (API.md §20) ----------------------------
+
+#: What ``offers/`` answers when the page could not be fetched. The cursor is
+#: echoed from the request, so the retry asks for the same page.
+EMPTY_PAGE: dict[str, Any] = {
+    "request_id": "r-1",
+    "next_token": None,
+    "count": 0,
+    "offers": [],
+    "search_status": "In process",
+}
+
+#: Every way GTS can fail one ``offers/`` page. The client cannot act on the
+#: difference between them — it can only ask again — so they all land on
+#: ``EMPTY_PAGE``.
+OFFERS_FAILURES: list[tuple[str, dict[str, Any]]] = [
+    (
+        "gts_error",
+        {
+            "return_value": httpx.Response(
+                200,
+                json={
+                    "status": "error",
+                    "message": [{"message": "no providers", "data": "none"}],
+                    "code": -21,
+                    "data": None,
+                },
+            )
+        },
+    ),
+    ("http_500", {"return_value": httpx.Response(500, json={"detail": "boom"})}),
+    ("timeout", {"side_effect": httpx.ReadTimeout}),
+    ("unreachable", {"side_effect": httpx.ConnectError}),
+]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "mock_kwargs",
+    [kwargs for _, kwargs in OFFERS_FAILURES],
+    ids=[name for name, _ in OFFERS_FAILURES],
+)
+async def test_a_broken_offers_page_is_empty_not_an_error(
+    api: AsyncClient, session: AsyncSession, mock_kwargs: dict[str, Any]
+) -> None:
+    """The 2026-08-18 decision, end to end.
+
+    A search fans out and answers unevenly; one refusing provider used to
+    become an error screen in front of a customer whose next poll would have
+    carried offers.
+    """
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/offers/").mock(**mock_kwargs)
+
+    response = await api.post(OFFERS, json={"request_id": "r-1"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == EMPTY_PAGE
+
+
+@respx.mock
+async def test_offers_are_empty_even_when_the_session_cannot_be_had(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """The failure need not come from ``offers/`` itself — GTS may be so far
+    gone that sign-in never completes."""
+    await _activate_credential(session)
+    await _enable_flight()
+    respx.post(f"{GTS}/v1/auth/signin/").mock(side_effect=httpx.ConnectTimeout)
+
+    response = await api.post(OFFERS, json={"request_id": "r-1"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == EMPTY_PAGE
+
+
+@respx.mock
+async def test_a_broken_upsell_is_an_empty_list_not_an_error(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/upsell/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "error", "message": "нет вариантов", "code": -21},
+        )
+    )
+
+    response = await api.post(UPSELL, json={"request_id": "r-1", "offer_id": "o-1"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "request_id": "r-1",
+        "offers": [],
+        "search_status": "In process",
+    }
+
+
+@respx.mock
+async def test_a_broken_verify_is_still_a_502(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """Where the softening stops. By ``verify`` an offer has been chosen, and
+    "nothing here, ask again" would be a lie the customer books on."""
+    await _activate_credential(session)
+    await _enable_flight()
+    _mock_signin()
+    respx.post(f"{GTS}/v1/content/verify/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "error", "message": "offer expired", "code": -104},
+        )
+    )
+
+    response = await api.post(VERIFY, json={"request_id": "r-1", "offer_id": "o-1"})
+
+    assert response.status_code == 502
+    assert response.json()["errors"][0]["message"] == "offer expired"
+
+
+@respx.mock
+async def test_a_missing_credential_is_still_a_502_on_offers(
+    api: AsyncClient,
+) -> None:
+    """An unconfigured installation is **our** failure, not GTS's. Hiding it
+    would leave the frontend polling a search that can never start."""
+    await _enable_flight()
+
+    response = await api.post(OFFERS, json={"request_id": "r-1"})
+
+    assert response.status_code == 502
+    assert "not configured" in response.json()["errors"][0]["message"]
+
+
+@respx.mock
+async def test_a_hidden_failure_does_not_excuse_a_bodyless_request(
+    api: AsyncClient, session: AsyncSession
+) -> None:
+    """Our own 422 outlives the softening: it is raised before GTS is asked."""
+    await _activate_credential(session)
+    await _enable_flight()
+    signin = _mock_signin()
+
+    response = await api.post(OFFERS, json={"limit": 20})
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "request_id"
+    assert signin.call_count == 0
+
+
 # --- our own refusals ----------------------------------------------------------------
 
 

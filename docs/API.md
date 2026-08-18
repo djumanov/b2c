@@ -350,7 +350,9 @@ Mahsulot endpointlari (qidiruv, bron, chipta) GTS'ga chiqadi. Qoidalar:
 | Bron/to'lov | **Retry yo'q** — klient qayta yuboradi, `Idempotency-Key` esa ikkinchi amalni to'sadi (§10) |
 
 GTS xatosi hech qachon yashirilmaydi: `502 upstream_error` bilan qaytadi, asl matn
-`message` da, asl kod `meta.upstream` da.
+`message` da, asl kod `meta.upstream` da. **Bitta istisno** — qidiruv bosqichidagi
+`offers/` va `upsell/`: u yerda GTS nosozligi xato emas, **bo'sh natija** bo'lib
+qaytadi va klient qidiruvni davom ettiradi (§20).
 
 **Kesh**: faqat statik kataloglar (shaharlar, aeroportlar, aviakompaniyalar) Redis'da keshlanadi.
 **Qidiruv natijalari bizda keshlanmaydi** — GTS `request_id` bo'yicha o'z keshini yuritadi va
@@ -1104,6 +1106,34 @@ qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijal
 davom etadi. Qolgan barcha maydonlar (shu jumladan `offers[]` elementlari) GTS
 qanday bersa shunday — tarjima siqilmaydi, pul formati o'zgartirilmaydi,
 maydonlar qayta nomlanmaydi.
+
+**`offers/` va `upsell/` nosozlikda xato qaytarmaydi.** GTS bu ikki qadamda
+javob bera olmasa — `status: "error"`, `5xx`, timeout yoki umuman ulanib
+bo'lmasa — javob baribir `200` bo'ladi va **bo'sh natija** keladi:
+
+```json
+{ "status": "success",
+  "data": { "search_status": "In process", "request_id": "…",
+            "next_token": null, "count": 0, "offers": [] } }
+```
+
+Sababi: qidiruv asinxron va uzun, provayderlar birin-ketin javob beradi —
+ularning bir zumlik nosozligi butun qidiruvni foydalanuvchi uchun xato
+ekraniga aylantirmasligi kerak. `search_status` ataylab `"In process"`:
+klient shunchaki keyingi poll'ni qiladi. Nosozlik yo'qolmaydi — server
+logiga `warning` bo'lib tushadi.
+
+> **Klient pollingni cheklashi shart.** Doimiy nosoz GTS bu qoida ostida
+> "hech qachon tugamaydigan qidiruv" bo'lib ko'rinadi, chunki `"success"`
+> hech qachon kelmaydi. Frontend maksimal urinish soni yoki umumiy timeout
+> qo'yishi va undan keyin "natija topilmadi" ko'rsatishi kerak.
+
+Qolgan qadamlar — `search/`, `verify/`, `booking/`, `cancel/` — bunday
+yumshatishga ega emas: u yerda GTS xatosi `502 upstream_error` bo'lib relay
+qilinadi (§12), chunki foydalanuvchi allaqachon aniq taklifni tanlagan va
+bo'sh javob yolg'on bo'lardi. Faol GTS credential'i yo'qligi ham `offers/`
+da `502` bo'lib qoladi — bu GTS'ning nosozligi emas, o'rnatmaning
+sozlanmagani.
 
 `search/` javobida ham bitta qo'shimcha maydon bor: **`fun_fact`** — panel
 kiritgan qiziqarli faktlardan (§30) tasodifiy bittasi. Qiymati — `?lang=`
