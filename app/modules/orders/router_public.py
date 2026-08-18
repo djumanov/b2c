@@ -9,9 +9,13 @@ Booking still writes these rows from the product flow (§20), but everything
 done **to** an order afterwards lives here: paying for one, and releasing one.
 ``refund/``, ``history/`` and ``receipt/`` arrive with the later slices.
 
-``?status=`` takes **our** status now — ``booked``, ``ticketed``, ``cancelled``,
+``?status=`` takes **our** status — ``booked``, ``ticketed``, ``cancelled``,
 … — because the vocabulary is ours (order-system/03-design.md §3.3). GTS's own
-code still travels beside it in ``provider_status``.
+code still travels beside it in ``gts_status``.
+
+The list and the detail answer with **different** shapes, which is the one
+thing worth knowing before reading either: ``OrderListOut`` is a card,
+``OrderOut`` is the record (API.md §21).
 """
 
 import uuid
@@ -26,7 +30,12 @@ from app.api.idempotency import IdempotencyKey
 from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.orders import service
-from app.modules.orders.schemas import OrderOut, TransactionOut, TransactionStartIn
+from app.modules.orders.schemas import (
+    OrderListOut,
+    OrderOut,
+    TransactionOut,
+    TransactionStartIn,
+)
 
 router = enveloped_router(
     prefix="/orders",
@@ -54,7 +63,7 @@ StatusParam = Annotated[
             "Canonical order status — `created`, `booked`, `paid`, `ticketing`, "
             "`ticketed`, `refunding`, `refunded`, `partially_refunded`, "
             "`cancelled`, `voided`, `failed`, `needs_attention`. GTS's own code "
-            "is published beside it as `provider_status`."
+            "is published beside it as `gts_status`, on the detail endpoint."
         )
     ),
 ]
@@ -68,7 +77,13 @@ async def list_orders(
     query: ListQueryDep,
     product: ProductParam = None,
     status: StatusParam = None,
-) -> Page[OrderOut]:
+) -> Page[OrderListOut]:
+    """A card, not the record: route, price, status and the countdown.
+
+    ``data`` and ``passengers`` are on ``{id}/`` — the first because a page of
+    twenty provider answers is hundreds of kilobytes, the second because a list
+    screen has no use for passport numbers (API.md §21).
+    """
     return await service.list_orders(
         session,
         pagination,

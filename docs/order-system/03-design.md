@@ -561,38 +561,48 @@ chelagiga o'tadi.
 > urinishlar esa o'z id'si bilan `/public/transactions/{id}/` da o'qiladi
 > (2026-08-18 qarori).
 
-**`POST /{product}/booking/` javobi:**
+**`POST /{product}/booking/` javobi — additiv.** GTS javobi o'z joyida
+qoladi, ustiga ikkita kalit qo'shiladi:
 
 ```json
 { "status": "success",
   "data": {
-    "order": {
+    "message": "booked",                      ← GTS, o'z joyida
+    "request_id": "…",                        ← GTS
+    "data": { "order_number": 61453, "…" },   ← GTS: buyurtmaning o'zi
+    "order": {                                ← qo'shildi
       "id": "3f1c…", "order_no": "B2C-2608-000123",
       "product": "flight", "status": "booked",
+      "gts_status": "BO",
       "amount": { "amount": "1250000.00", "currency": "UZS" },
-      "provider_order_number": "61453", "provider_pnr": "UBPLKW",
-      "ticket_time_limit_at": "2026-08-20T09:14:22Z",
-      "available_actions": ["pay", "cancel"],
-      "notice": null },
-    "payment": {
-      "id": "9a2e…", "status": "pending",
+      "gts_order_number": "61453", "gts_pnr": "UBPLKW",
+      "passengers": [ … ],
+      "ticket_time_limit_at": "2026-08-20T09:14:22Z" },
+    "payment": {                              ← qo'shildi
+      "status": "pending",
       "amount": { "amount": "1250000.00", "currency": "UZS" },
-      "expires_at": "2026-08-18T10:14:22Z" },
-    "data": { "…GTS bron javobi aynan…" } },
+      "pay_before": "2026-08-20T09:14:22Z" } },
   "errors": [], "meta": null }
 ```
 
 `data.data` — GTS javobi **o'zgarmasdan**. U qoladi, chunki marshrut,
 segmentlar va tarif tafsilotlari faqat shu yerda va biz ularni ustunga
-chiqarmaymiz. So'rov tanasi **o'zgarmaydi** — bugungi mijozlar buziladigan
-narsa faqat javobga qo'shilgan ikkita kalit va yangi majburiy header.
+chiqarmaymiz. So'rov tanasi ham, GTS maydonlarining **joyi ham
+o'zgarmaydi** — bugungi mijozlar uchun bu **qo'shimcha**, buzilish emas
+(2026-08-18 qarori: klientlar bir marta buzilgan edi, ikkinchi marta emas).
 
-Keyingi qadam mijoz uchun: `POST /public/payments/{payment.id}/transactions/`
-(`API.md` §22 — o'zgarishsiz).
+Sim ustida `gts_*` prefiksi ishlatiladi, ustunlarda esa `provider_*`:
+ichkarida tizim mahsulot-agnostik, tashqarida esa klientlar allaqachon
+`gts_order_number` ni bilishadi. O'girish `OrderOut.from_order` da.
 
-**`GET /public/orders/{id}/` javobi** yuqoridagi `order` ga qo'shimcha:
-`travelers[]` (chipta raqami bilan), `payment`, `refunds[]`, `data` (oxirgi
-`provider_response`).
+Keyingi qadam mijoz uchun: `POST /public/orders/{id}/transactions/`
+(`API.md` §22).
+
+**`GET /public/orders/{id}/` javobi** — yuqoridagi `order` ning o'zi, to'liq.
+**`GET /public/orders/` esa qisqartirilgan**: `data` (GTS blobi) va
+`passengers` unda **yo'q**, o'rniga `passenger_count` bor. Sabab —
+sahifadagi 20 ta blob va har so'rovda uchadigan pasport raqamlari
+(`PROJECT.md` §13). To'liq ro'yxat: `API.md` §21.
 
 `notice` — mijozga ko'rsatiladigan ogohlantirish. `ticketing`/`paid` holatida:
 *"Chipta chiqarilmoqda. Agar chipta chiqmasa, to'lov to'liq qaytariladi."*

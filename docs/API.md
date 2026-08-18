@@ -1258,24 +1258,39 @@ yozib olingan haqiqiy chaqiruv, taxmin emas.
 
 #### Javob `200`
 
-Envelope ichidagi `data` — **uchta kalit**:
+**Javob — GTS'ning bron javobi, ustiga bizning ikkita kalitimiz.** GTS nima
+yuborsa o'sha joyida qoladi (`message`, `request_id`, `data`), va yoniga
+`order` bilan `payment` qo'shiladi. Ya'ni GTS maydonlarini o'qiyotgan klient
+uchun **hech narsa o'zgarmaydi**; buyurtmani boshqarish uchun `order` bor.
 
 ```json
 { "status": "success",
   "data": {
-    "order": {
+    "message": "booked",                                    ← GTS
+    "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",   ← GTS
+    "data": {                                               ← GTS: buyurtmaning o'zi
+      "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+      "order_number": 61453,
+      "status": "BO",
+      "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
+      "trip_type": "OW", "refundable": false,
+      "ticket_time_limit": 288000,
+      "routes": [ … ], "price_info": { … },
+      "passengers": [ … ] },
+
+    "order": {                                              ← BIZNIKI
       "id": "3f1c5f6e-2c0a-4f5e-9a7d-1b2c3d4e5f60",
       "order_no": "B2C-2608-000123",
       "product": "flight",
       "status": "booked",
-      "provider_status": "BO",
-      "provider_order_number": "61453",
-      "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-      "provider_pnr": "UBPLKW",
+      "gts_status": "BO",
+      "gts_order_number": "61453",
+      "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+      "gts_pnr": "UBPLKW",
       "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
       "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
       "amount": { "amount": "52.39", "currency": "EUR" },
-      "travelers": [
+      "passengers": [
         { "position": 1, "type": "ADT",
           "first_name": "Azimjon", "last_name": "Yusufov",
           "middle_name": "Kamoliddin", "birth_date": "2002-12-20",
@@ -1294,25 +1309,20 @@ Envelope ichidagi `data` — **uchta kalit**:
       "updated_at": "2026-08-18T09:14:22Z",
       "booked_at": "2026-08-18T09:14:22Z",
       "paid_at": null, "ticketed_at": null, "cancelled_at": null,
-      "data": { "…": "GTS javobi — pastdagi `data` ning nusxasi" }
-    },
-    "payment": {
+      "data": { … } },
+
+    "payment": {                                            ← BIZNIKI
       "status": "pending",
       "amount": { "amount": "52.39", "currency": "EUR" },
-      "pay_before": "2026-08-21T09:14:22Z"
-    },
-    "data": {
-      "message": "booked",
-      "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
-      "data": { "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "order_number": 61453,
-                "status": "BO",
-                "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
-                "trip_type": "OW", "refundable": false,
-                "ticket_time_limit": 288000,
-                "routes": [ … ], "price_info": { … },
-                "passengers": [ … ] } } } }
+      "pay_before": "2026-08-21T09:14:22Z" } } }
 ```
+
+**GTS qismi — aynan va to'liq.** Marshrut, segmentlar, tarif qoidalari va
+bagaj **faqat shu yerda** — biz ularni ustunga chiqarmaymiz. **Ikki qavatli:**
+biz GTS envelope'ining ichini beramiz, uning ichida yana `data` bor —
+buyurtmaning o'zi. Ya'ni buyurtma raqami `data.data.order_number`, statusi
+`data.data.status`. `search_status` bu yerda **yo'q**: bron oqimida "In
+process" holati yo'q.
 
 **`order` — bizniki**, va `GET /public/orders/{id}/` bilan **bir xil shakl**
 (§21). Klient shuni saqlaydi: `id` — keyingi barcha amallarning manzili.
@@ -1322,18 +1332,24 @@ Envelope ichidagi `data` — **uchta kalit**:
 | `id` | **Bizning UUID.** To'lov, bekor qilish, holat so'rash — hammasi shu bilan |
 | `order_no` | Odam o'qiydigan raqam: `B2C-2608-000123`. Support shuni so'raydi |
 | `status` | **Kanonik, bizniki**: `created` · `booked` · `paid` · `ticketing` · `ticketed` · `refunding` · `refunded` · `partially_refunded` · `cancelled` · `voided` · `failed` · `needs_attention`. Bronda odatda **`booked`** |
-| `provider_status` | GTS kodi **o'zgarmasdan**: `BO`, `PW`, `TI`, `CB`… Ma'lumot uchun; qaror `status` bo'yicha qabul qilinadi |
-| `provider_order_number` | GTS buyurtma raqami — **satr** (upstream'da butun son). §21 da shu nom bilan; eski `gts_order_number` **yo'q** |
-| `provider_order_uid` | GTS ichki kaliti. Bizda hech narsa uni olmaydi; GTS supporti so'raydi |
-| `provider_pnr` | Aviakompaniya PNR'i (`gds_pnr`) |
-| `amount` | To'lanadigan summa: `{"amount": "52.39", "currency": "EUR"}`, miqdor **satr** (§1) |
-| `travelers` | Yo'lovchilar **bizning shaklda** — pastga qarang |
+| `gts_status` | GTS kodi **o'zgarmasdan**: `BO`, `PW`, `TI`, `CB`… Ma'lumot uchun; qaror `status` bo'yicha qabul qilinadi |
+| `gts_order_number` | GTS buyurtma raqami — **satr** (GTS'da butun son, §1) |
+| `gts_order_uid` | GTS ichki kaliti. Bizda hech narsa uni olmaydi; GTS supporti so'raydi |
+| `gts_pnr` | Aviakompaniya PNR'i (`gds_pnr`) |
+| `amount` | To'lanadigan summa, miqdor **satr** (§1) |
+| `passengers` | Yo'lovchilar **bizning shaklda** — pastga qarang |
 | `ticket_time_limit_at` | GTS o'rinni shu vaqtgacha ushlab turadi (ISO, UTC). **To'lov shundan oldin tugashi kerak**; keyin bron o'zi bekor bo'ladi |
-| `travel_start_at`, `route_summary` | Ro'yxatda ko'rsatish uchun; kosmetik |
-| `data` | GTS javobi — pastdagi `data` ning **nusxasi**. Bir xil buyurtma ikkala joyda; bittasini o'qing |
+| `travel_start_at`, `route_summary` | Ro'yxatda ko'rsatish uchun |
+| `data` | GTS javobi — yuqoridagi uchta GTS kalitining nusxasi. Bittasini o'qing |
 
-`travelers[]` elementi — `position` (1 dan), `type`, `first_name`, `last_name`,
-`middle_name`, `birth_date`, `gender`, `citizenship`,
+> ⚠ **`passengers` ikki joyda, ikki xil shaklda.** So'rovdagi `passengers` —
+> **GTS'niki** (`phone` obyekt, `document` ichma-ich). `order.passengers` —
+> **bizniki**: GTS javobidan o'qilgan, `phone` bitta satr, va ustiga
+> `position`, `provider_traveler_id`, `ticket_number`, `anonymized_at`
+> qo'shilgan. Nusxalamang — o'giring.
+
+`order.passengers[]` elementi — `position` (1 dan), `type`, `first_name`,
+`last_name`, `middle_name`, `birth_date`, `gender`, `citizenship`,
 `document {type, number, issue_date, expire_date}`, `email`,
 **`phone` — bitta satr** (so'rovdagi `phone_code` + `phone_number` qo'shilgan),
 `provider_traveler_id`, `ticket_number` (chipta chiqqach to'ladi),
@@ -1348,13 +1364,10 @@ maydon yo'qolgan yo'lovchiga aylanmaydi.
 | `amount` | `order.amount` bilan bir xil. Narx hali yo'q bo'lsa `null` |
 | `pay_before` | `ticket_time_limit_at` aynan. `null` bo'lishi mumkin — GTS muddat bermagan bo'lsa |
 
-**`data` — GTS javobi, aynan va to'liq.** Marshrut, segmentlar, tarif qoidalari
-va bagaj **faqat shu yerda** — biz ularni ustunga chiqarmaymiz. **Ikki qavatli:**
-biz GTS envelope'ining ichini beramiz, uning ichida yana `data` bor —
-buyurtmaning o'zi. Ya'ni buyurtma raqami `data.data.order_number`, statusi
-`data.data.status`. Biz shu ikkitasini o'qiymiz, qolganini tegmasdan
-o'tkazamiz. `search_status` bu yerda **yo'q**: bron oqimida "In process"
-holati yo'q.
+> **GTS javobi bo'lmasa.** Birinchi urinish hali ketayotganda kelgan takroriy
+> so'rovda GTS kalitlari (`message`, `request_id`, `data`) **umuman
+> bo'lmaydi** — `order` va `payment` esa har doim bor. Bu rostini aytadi:
+> javob bizda hali yo'q.
 
 > **`status: "needs_attention"` bo'lsa nima qilish kerak.** GTS javob berdi,
 > lekin biz undan buyurtma raqami yoki narxni o'qiy olmadik. O'rin **band
@@ -1439,7 +1452,7 @@ GET  /public/orders/{id}/                → buyurtma holati
 POST /public/orders/{id}/cancel/         → to'lanmagan bronni bo'shatish (§21)
 ```
 
-`{id}` — bron javobidagi **`order.id`**, `provider_order_number` emas.
+`{id}` — bron javobidagi **`order.id`**, `gts_order_number` emas.
 
 > **Bekor qilish bu yerda emas.** `POST /public/{product}/cancel/` **olib
 > tashlandi**; o'rniga `POST /public/orders/{id}/cancel/` (§21). Bekor qilish
@@ -1481,73 +1494,103 @@ ular **bizniki**.
 `created` · `booked` · `paid` · `ticketing` · `ticketed` · `refunding` ·
 `refunded` · `partially_refunded` · `cancelled` · `voided` · `failed` ·
 `needs_attention`. `?status=` filtri ham shu qiymatlarni oladi. GTS'ning o'z
-kodi (`BO`, `TI`, `CB`, …) yonida **`provider_status`** da qoladi — u
-diagnostika uchun, filtr uchun emas. O'tishlar jadvali va har bir statusning
-ma'nosi: [`order-system/03-design.md`](order-system/03-design.md) §3.3.
+kodi (`BO`, `TI`, `CB`, …) yonida **`gts_status`** da qoladi — u diagnostika
+uchun, filtr uchun emas. O'tishlar jadvali va har bir statusning ma'nosi:
+[`order-system/03-design.md`](order-system/03-design.md) §3.3.
 
-**Ro'yxat ham, tafsilot ham buyurtmaning butun yozuvini qaytaradi** — ikkalasi
-bir xil shaklda, qisqartirilgan ro'yxat varianti yo'q. Sabab: `data` baribir
-eng katta maydon va u ikkalasida ham to'liq, ya'ni qolgan ustunlarni ro'yxatdan
-olib tashlash hech narsani tejamaydi, faqat klientni har bir element uchun
-`{id}/` ga borishga majbur qilardi.
+### Ro'yxat — kartaga yetadigan narsa
+
+**Ro'yxat qisqartirilgan.** Unda `data` (GTS'ning butun bron javobi) ham,
+`passengers` ham **yo'q**: birinchisi bir sahifada yuz kilobaytlarga aylanadi,
+ikkinchisi esa har bir so'rovda pasport raqamlarini uchiradi
+([PROJECT.md](PROJECT.md) §13). Ro'yxat ekranida ikkalasi ham kerak emas.
+Ularni ko'rish uchun `{id}/` ga boriladi.
 
 ```json
 GET /public/orders/?product=flight&status=booked&page=1&page_size=20
 
 → { "status": "success",
-    "data": [ { "id": "3f1c…",                     ← bizning UUID
-                "order_no": "B2C-2608-000123",     ← inson o'qiydigan raqamimiz
+    "data": [ { "id": "3f1c…",
+                "order_no": "B2C-2608-000123",
                 "product": "flight",
-                "status": "booked",                ← kanonik, bizniki
-                "provider_status": "BO",           ← GTS'niki, kelganicha
-                "provider_order_number": "61453",  ← bekor qilish shuni oladi
-                "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "provider_pnr": "UBPLKW",
-                "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
-                "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+                "status": "booked",
                 "amount": { "amount": "52.39", "currency": "EUR" },
-                "travelers": [ … ],
-                "travel_start_at": null,
-                "route_summary": null,
-                "ticket_time_limit_at": null,
-                "cancellation_reason": null,
-                "created_at": "2026-08-17T09:14:22Z",
-                "updated_at": "2026-08-17T09:14:22Z",
-                "booked_at": "2026-08-17T09:14:22Z",
-                "paid_at": null,
-                "ticketed_at": null,
-                "cancelled_at": null,
-                "data": { … GTS'ning bron javobi aynan … } } ],
+                "route_summary": "TAS → IST",
+                "travel_start_at": "2026-09-14T05:40:00Z",
+                "passenger_count": 1,
+                "gts_pnr": "UBPLKW",
+                "ticket_time_limit_at": "2026-08-20T09:14:22Z",
+                "created_at": "2026-08-17T09:14:22Z" } ],
     "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
 ```
 
-`GET /public/orders/{id}/` — bitta yozuv, **aynan shu shaklda**. `{id}` —
-bizning UUID.
+| Maydon | Nima |
+|---|---|
+| `id` | Bizning UUID — `{id}/`, `cancel/` va to'lov shuni oladi |
+| `order_no` | Inson o'qiydigan raqamimiz. **Har bir buyurtmada bor**, hatto GTS javob bermaganida ham |
+| `product` | Vertikal kodi — ikonka va bo'lim uchun |
+| `status` | **Kanonik** status (yuqoridagi ro'yxat) |
+| `amount` | To'lanadigan summa — `{amount, currency}`, summa **satr** (§1). Provayder narxlamaguncha `null` |
+| `route_summary` | `TAS → IST` — `data` ni ochmasdan ko'rsatish uchun |
+| `travel_start_at` | Sayohat sanasi |
+| `passenger_count` | Nechta yo'lovchi. **Yo'lovchilarning o'zi ro'yxatda yo'q** |
+| `gts_pnr` | Aviakompaniya lokatori (`gds_pnr`) — chipta chiqqach ko'rsatiladi |
+| `ticket_time_limit_at` | To'lanmagan buyurtmada sanoq: shu vaqtdan keyin bron o'zi bekor bo'ladi |
+| `created_at` | Qachon bron qilingan. Saralash faqat shu maydon bo'yicha (`?ordering=-created_at`) |
+
+### Tafsilot — butun yozuv
+
+`GET /public/orders/{id}/` buyurtmaning **hammasini** qaytaradi: ro'yxatdagi
+maydonlar ustiga yo'lovchilar, GTS javobi va barcha vaqt tamg'alari.
+Bron javobidagi `order` ham **aynan shu shakl** (§20).
+
+```json
+GET /public/orders/3f1c…/
+
+→ { "status": "success",
+    "data": { "id": "3f1c…",
+              "order_no": "B2C-2608-000123",
+              "product": "flight",
+              "status": "booked",                ← kanonik, bizniki
+              "gts_status": "BO",                ← GTS'niki, kelganicha
+              "gts_order_number": "61453",       ← bekor qilish shuni oladi
+              "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+              "gts_pnr": "UBPLKW",
+              "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+              "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+              "amount": { "amount": "52.39", "currency": "EUR" },
+              "passengers": [ … ],
+              "travel_start_at": "2026-09-14T05:40:00Z",
+              "route_summary": "TAS → IST",
+              "ticket_time_limit_at": "2026-08-20T09:14:22Z",
+              "cancellation_reason": null,
+              "created_at": "2026-08-17T09:14:22Z",
+              "updated_at": "2026-08-17T09:14:22Z",
+              "booked_at": "2026-08-17T09:14:22Z",
+              "paid_at": null,
+              "ticketed_at": null,
+              "cancelled_at": null,
+              "data": { … GTS'ning bron javobi aynan … } } }
+```
+
+Ro'yxatdagi maydonlarga qo'shimcha:
 
 | Maydon | Nima |
 |---|---|
-| `id` | Bizning UUID — `/public/orders/{id}/` shuni oladi |
-| `order_no` | Inson o'qiydigan raqamimiz. **Har bir buyurtmada bor**, hatto GTS javob bermaganida ham — support uchun yagona tutqich |
-| `product` | Vertikal kodi |
-| `status` | **Kanonik** status (yuqoridagi ro'yxat) |
-| `provider_status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
-| `provider_order_number` | GTS raqami — **bekor qilish shuni oladi**. GTS'da butun son, bizda satr (§1) |
-| `provider_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
-| `provider_pnr` | Aviakompaniya lokatori (`gds_pnr`) |
+| `gts_status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `gts_order_number` | GTS raqami — **bekor qilish shuni oladi**. GTS'da butun son, bizda satr (§1) |
+| `gts_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
 | `request_id`, `offer_id` | Buyurtmani kelib chiqqan qidiruv va taklifga bog'laydi |
-| `amount` | Mijoz to'laydigan summa — `{amount, currency}`, summa **satr** (§1). Provayder narxlamaguncha `null` |
-| `travelers` | Yo'lovchilar **bizning shaklimizda**, chipta chiqqach har birida `ticket_number` bilan |
-| `travel_start_at`, `route_summary` | Sayohat sanasi va qisqa marshrut — ro'yxatni `data` ni ochmasdan ko'rsatish uchun |
-| `ticket_time_limit_at` | Provayder o'rinni ushlab turadigan muddat |
+| `passengers` | Yo'lovchilar **bizning shaklimizda**, chipta chiqqach har birida `ticket_number` bilan (§20) |
 | `cancellation_reason` | `customer` · `admin` · `timelimit` · `payment_failed` |
-| `created_at`, `updated_at` | Bizning yozuv vaqtlari |
+| `updated_at` | Yozuv oxirgi marta qachon o'zgargani |
 | `booked_at`, `paid_at`, `ticketed_at`, `cancelled_at` | Har bir muhim o'tish qachon sodir bo'lgani |
 | `data` | **Provayderning oxirgi javobi to'liq**, ichi o'girilmasdan (§20) |
 
 Provayder javobini o'qib bo'lmasa buyurtma **`needs_attention`** holatida
-yoziladi: `provider_order_number` va `amount` `null` bo'ladi, javobning o'zi
-esa buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin
-"bron qilindi" deb ham ko'rsatilmaydi.
+yoziladi: `gts_order_number` va `amount` `null` bo'ladi, javobning o'zi esa
+buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin "bron
+qilindi" deb ham ko'rsatilmaydi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
 **Bekor qilish** — `POST /public/orders/{id}/cancel/`. Tanasi yo'q: buyurtma

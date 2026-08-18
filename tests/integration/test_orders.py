@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.crypto import encrypt
 from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
+from app.modules.orders import service as orders_service
 from app.modules.orders.models import Order
 from app.modules.orders.states import OrderStatus
 from app.modules.settings import cache as settings_cache
@@ -86,19 +87,21 @@ GTS_BOOKING: dict[str, Any] = {
 #: fee beside it, and their sum is exactly the recorded ``payable_amount``.
 EXPECTED_TOTAL = "52.39"
 
+#: What ``GET /public/orders/{id}/`` and the booking answer's ``order`` carry.
+#: The wire says ``gts_``; the columns say ``provider_`` (API.md §21).
 ORDER_FIELDS = {
     "id",
     "order_no",
     "product",
     "status",
-    "provider_status",
-    "provider_order_number",
-    "provider_order_uid",
-    "provider_pnr",
+    "gts_status",
+    "gts_order_number",
+    "gts_order_uid",
+    "gts_pnr",
     "request_id",
     "offer_id",
     "amount",
-    "travelers",
+    "passengers",
     "travel_start_at",
     "route_summary",
     "ticket_time_limit_at",
@@ -110,6 +113,21 @@ ORDER_FIELDS = {
     "ticketed_at",
     "cancelled_at",
     "data",
+}
+
+#: What a row of ``GET /public/orders/`` carries — a card, not the record.
+LIST_FIELDS = {
+    "id",
+    "order_no",
+    "product",
+    "status",
+    "amount",
+    "route_summary",
+    "travel_start_at",
+    "passenger_count",
+    "gts_pnr",
+    "ticket_time_limit_at",
+    "created_at",
 }
 
 
@@ -235,10 +253,11 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
 
     assert response.status_code == 200
     answer = response.json()["data"]
-    # Three keys: ours, the payment placeholder the payment slice fills, and
-    # GTS's answer byte for byte (order-system/03-design.md §3.6).
-    assert set(answer) == {"order", "payment", "data"}
-    assert answer["data"] == GTS_BOOKING
+    # GTS's answer, byte for byte and **where it has always been**, with two
+    # keys of ours beside it. Adding a field is not a breaking change; moving
+    # every existing one a level down is (API.md §1, §20).
+    assert {key: answer[key] for key in GTS_BOOKING} == GTS_BOOKING
+    assert set(answer) == set(GTS_BOOKING) | {"order", "payment"}
     assert answer["order"]["status"] == "booked"
     # What is still owed, derived from the order rather than stored (``O12``).
     assert answer["payment"] == {
@@ -247,18 +266,19 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
         "pay_before": None,
     }
 
-    listed = await api.get(ORDERS, headers=headers)
-    assert listed.status_code == 200
-    (order,) = listed.json()["data"]
+    detail = (
+        await api.get(f"{ORDERS}{answer['order']['id']}/", headers=headers)
+    ).json()
+    order = detail["data"]
     assert order["product"] == "flight"
     # Read out of the *inner* data, not the wrapper — the bug this shape
     # caught: reading the top level leaves every identifier NULL.
-    assert order["provider_order_number"] == "61453"
-    assert order["provider_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
-    assert order["provider_pnr"] == "UBPLKW"
+    assert order["gts_order_number"] == "61453"
+    assert order["gts_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
+    assert order["gts_pnr"] == "UBPLKW"
     # Ours and theirs, side by side and never merged.
     assert order["status"] == "booked"
-    assert order["provider_status"] == "BO"
+    assert order["gts_status"] == "BO"
     assert order["booked_at"] is not None
     assert order["cancelled_at"] is None
     # Money is a string with a currency beside it (API.md §1), and it is the
@@ -272,16 +292,71 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     assert order["offer_id"] == "o-1"
     # GTS's answer, verbatim and whole — including the fields we never read.
     assert order["data"] == GTS_BOOKING
-    # The list is the whole row, not a summary: it and the detail endpoint
-    # answer with the same keys, so a client never has to fetch {id}/ just to
-    # render a list (API.md §21).
-    detail = await api.get(f"{ORDERS}{order['id']}/", headers=headers)
-    assert detail.json()["data"] == order
     assert set(order) == ORDER_FIELDS
-    # ``id`` is ours and ``provider_order_number`` is theirs — never merged
+    # The booking answer's ``order`` is the detail, not a third shape.
+    assert answer["order"] == order
+    # ``id`` is ours and ``gts_order_number`` is theirs — never merged
     # (API.md §21), so a client that confuses them fails loudly here.
     assert uuid.UUID(order["id"]) is not None
-    assert order["id"] != order["provider_order_number"]
+    assert order["id"] != order["gts_order_number"]
+
+
+@respx.mock
+async def test_an_answer_we_do_not_have_yet_carries_only_our_half(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """A duplicate replayed while the first attempt is still in flight.
+
+    ``order`` and ``payment`` are always there; GTS's keys are simply absent,
+    which is honest — we do not have an answer to relay. The old shape said
+    ``"data": null``, which claimed a key we could not fill (API.md §20).
+    """
+    await _installation(session)
+    order = await _order(session, customer, status="created", provider_response=None)
+
+    answer = orders_service.booking_answer(order)
+
+    assert set(answer) == {"order", "payment"}
+    assert answer["order"]["status"] == "created"
+    assert answer["payment"]["status"] == "pending"
+
+
+@respx.mock
+async def test_the_list_is_a_card_and_the_detail_is_the_record(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The list used to be the whole row. It stopped being one when ``data``
+    left it: twenty provider answers on a page is hundreds of kilobytes, and
+    every one of them carries passport numbers past a screen that wants a
+    route and a price (API.md §21, PROJECT.md §13)."""
+    await _installation(session)
+    _mock_signin()
+    _mock_booking()
+    await _book(api, headers)
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+
+    assert set(row) == LIST_FIELDS
+    # The two heavy ones are gone, and the count stands in for the travellers.
+    assert "data" not in row
+    assert "passengers" not in row
+    assert row["passenger_count"] == 1
+    assert row["amount"] == {"amount": EXPECTED_TOTAL, "currency": "EUR"}
+    assert row["gts_pnr"] == "UBPLKW"
+
+    # Every field the card shows means the same thing on the record, so the
+    # two cannot drift into disagreeing about one.
+    detail = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
+    assert {key: detail[key] for key in row if key != "passenger_count"} == {
+        key: value for key, value in row.items() if key != "passenger_count"
+    }
+    assert len(detail["passengers"]) == row["passenger_count"]
 
 
 @respx.mock
@@ -345,8 +420,11 @@ async def test_the_travellers_are_stored_in_our_own_shape(
 
     await _book(api, headers)
 
-    (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
-    assert order["travelers"] == [
+    # The detail, not the list: travellers are one of the two things the card
+    # deliberately leaves behind (API.md §21).
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    order = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
+    assert order["passengers"] == [
         {
             "position": 1,
             "type": "ADT",
@@ -392,9 +470,10 @@ async def test_an_unreadable_answer_lands_in_needs_attention(
 
     assert response.status_code == 200
     assert response.json()["data"]["order"]["status"] == "needs_attention"
-    (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    order = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
     assert order["status"] == "needs_attention"
-    assert order["provider_order_number"] is None
+    assert order["gts_order_number"] is None
     assert order["amount"] is None
     assert order["data"] == {"data": {"reference": "1250", "state": "held"}}
     # The evidence is on the event, which is what a person will read.
@@ -419,7 +498,6 @@ async def test_a_write_that_fails_never_reaches_gts(
     the request still answered 200 (02-current-audit.md A1). Now the write comes
     first, so a database that cannot take the row costs a 500 and **no seat**.
     """
-    from app.modules.orders import service as orders_service
 
     async def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("the database went away")
@@ -790,7 +868,7 @@ async def test_cancelling_my_own_booking_moves_the_order(
     detail = response.json()["data"]
     # Ours says what happened, theirs says what they called it.
     assert detail["status"] == "cancelled"
-    assert detail["provider_status"] == "CB"
+    assert detail["gts_status"] == "CB"
     assert detail["cancellation_reason"] == "customer"
     assert detail["cancelled_at"] is not None
 
