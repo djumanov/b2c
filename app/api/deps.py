@@ -271,8 +271,15 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _rate_limit_subject(request: Request) -> str:
-    """Prefer the authenticated subject; fall back to the IP (API.md §14)."""
+def request_subject(request: Request) -> str:
+    """Who is asking: the authenticated subject, or the IP (API.md §14).
+
+    Read straight off the header rather than through ``current_customer``: this
+    is used by the rate limiter, which runs before any principal is resolved,
+    and by ``api/idempotency.py``, which must not acquire a dependency on the
+    database to name a Redis key. A token that will not decode is nobody, not
+    an error — the endpoint's own auth dependency is what refuses it.
+    """
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() == "bearer" and token.strip():
@@ -296,7 +303,7 @@ def RateLimit(  # noqa: N802 - reads as a marker at the use site
 
     async def dependency(request: Request) -> None:
         redis = get_redis()
-        key = f"ratelimit:{kind}:{_rate_limit_subject(request)}"
+        key = f"ratelimit:{kind}:{request_subject(request)}"
         async with redis.pipeline(transaction=True) as pipe:
             pipe.incr(key)
             pipe.ttl(key)
@@ -373,5 +380,6 @@ __all__ = [
     "current_customer",
     "current_customer_optional",
     "current_staff",
+    "request_subject",
     "require_owner",
 ]

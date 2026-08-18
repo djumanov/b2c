@@ -353,8 +353,9 @@ async def test_booking_relays_the_answer_beside_our_own_order(
 
     assert response.status_code == 200
     answer = response.json()["data"]
-    assert answer["data"] == gts_booking
-    assert answer["order"]["provider_order_number"] == "1250"
+    # GTS's answer where it has always been, ours beside it (API.md §20).
+    assert {key: answer[key] for key in gts_booking} == gts_booking
+    assert answer["order"]["gts_order_number"] == "1250"
     assert answer["payment"]["status"] == "pending"
     assert route.call_count == 1
     # Passengers and all, byte for byte — the request is untouched.

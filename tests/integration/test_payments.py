@@ -326,7 +326,7 @@ async def test_someone_elses_order_cannot_be_paid_for(
     assert provider.charged == []
 
 
-async def test_starting_without_a_key_is_refused(
+async def test_starting_without_a_key_charges_once(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
@@ -334,17 +334,21 @@ async def test_starting_without_a_key_is_refused(
     installation: None,
     provider: RecordingProvider,
 ) -> None:
+    """No header is the ordinary case: the server derives the key from the
+    request, so a double-tapped pay button is still one charge (API.md §10)."""
     order = await _booked(session, customer)
+    body = {"method": "payme", "return_url": RETURN_URL}
 
-    response = await api.post(
-        f"{ORDERS}{order.id}/transactions/",
-        json={"method": "payme", "return_url": RETURN_URL},
-        headers=headers,
+    first = await api.post(
+        f"{ORDERS}{order.id}/transactions/", json=body, headers=headers
+    )
+    second = await api.post(
+        f"{ORDERS}{order.id}/transactions/", json=body, headers=headers
     )
 
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "Idempotency-Key"
-    assert provider.charged == []
+    assert first.status_code == 201
+    assert first.json() == second.json()
+    assert len(provider.charged) == 1
 
 
 async def test_the_same_key_starts_one_attempt(

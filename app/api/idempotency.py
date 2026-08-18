@@ -2,14 +2,38 @@
 
 Booking, payment and refund calls reach GTS or a payment provider. Networks
 drop responses and users press buttons twice, so the same request will arrive
-twice; charging twice is not recoverable by an apology. The client sends a key,
-we remember the first outcome for 24 hours, and a repeat returns it instead of
-acting again.
+twice; charging twice is not recoverable by an apology. The first outcome is
+remembered for 24 hours, and a repeat returns it instead of acting again.
+
+**The key is not asked of the client.** It was, and the cost was a rule the
+client had to keep: mint a UUID when the button is pressed, hold it in screen
+state, send the same one on every retry, mint a new one when the form changes.
+Every one of those can be got wrong, and getting one wrong costs a second seat
+or a second charge. So when the header is absent the key is **derived from the
+request itself** — the same request always produces the same key, and the
+client keeps no state at all.
+
+Derivation is deliberately *not* random. A fresh key per request would give
+every duplicate a different key, which is the same as having no first layer.
+It is ``sha256`` over the subject, the method, the path and the **canonical**
+body, and each of those is load-bearing:
+
+* the **subject**, because the Redis record lives in one flat namespace and two
+  customers whose bodies happen to match must never read each other's answer;
+* the **canonical** body rather than the raw bytes, because a client that
+  serialises the same booking twice does not always produce the same bytes —
+  key order and whitespace are the serialiser's business — and hashing the raw
+  form would turn a formatting difference into a second booking.
+
+A supplied header still wins, and is the stronger promise of the two: a derived
+key protects *this request*, while a client's key protects *the intent* across
+an edited body. ``auto:`` is reserved so the two namespaces cannot meet.
 
 Two failure modes are handled explicitly:
 
 * **Key reused with a different body.** That is a client bug, and replaying the
-  old answer would hide it. It is a ``422``.
+  old answer would hide it. It is a ``422``. It cannot happen on the derived
+  path: a different body is a different key.
 * **Two identical requests racing.** The first claims the key; the second sees
   the claim and gets ``409`` rather than a second charge. The claim is made
   with ``SET NX`` and **its answer is what decides who won** — a read followed
@@ -17,8 +41,6 @@ Two failure modes are handled explicitly:
   one case this module exists for. A crash mid-flight leaves the claim to
   expire on its own after ``IN_FLIGHT_TTL_SECONDS``, so the operation can be
   retried in a minute rather than tomorrow.
-
-Missing key on such an endpoint is a ``422`` — never a silent pass.
 """
 
 import hashlib
@@ -28,6 +50,7 @@ from typing import Annotated, Any, Final
 
 from fastapi import Depends, Header, Request
 
+from app.api.deps import request_subject
 from app.api.errors import Conflict, ValidationFailed
 from app.db.redis import get_redis
 
@@ -41,8 +64,17 @@ KEY_TTL_SECONDS: Final = 24 * 60 * 60
 #: is a tolerable wait.
 IN_FLIGHT_TTL_SECONDS: Final = 60
 
+#: The header's name, published in the schema and named in ``field`` when a
+#: supplied one is refused.
+IDEMPOTENCY_HEADER: Final = "Idempotency-Key"
+
 _PREFIX: Final = "idempotency"
 _IN_FLIGHT: Final = "__in_flight__"
+
+#: Reserved for keys this module derives. A client may not write into it, or it
+#: could aim a request at another subject's derived key and be handed their
+#: answer.
+_DERIVED_PREFIX: Final = "auto:"
 
 
 def _record_key(key: str) -> str:
@@ -58,6 +90,36 @@ def fingerprint(method: str, path: str, body: bytes) -> str:
     digest.update(b"\0")
     digest.update(body)
     return digest.hexdigest()
+
+
+def canonical(body: bytes) -> bytes:
+    """The body with its keys sorted and its whitespace gone.
+
+    Two serialisations of the same object are the same request, and the client
+    does not choose which one its JSON library emits. A body that will not
+    parse — an empty one, on ``cancel/`` — is returned as it arrived, because
+    there is nothing to normalise and the bytes are already stable.
+    """
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return body
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":")).encode()
+
+
+def derived_key(subject: str, method: str, path: str, body: bytes) -> str:
+    """The key for a request that did not bring one (API.md §10).
+
+    Deterministic on purpose: the same request must hash to the same key, or
+    the first layer stops existing. See the module docstring for why each part
+    is in here.
+    """
+    digest = hashlib.sha256()
+    for part in (subject, method, path):
+        digest.update(part.encode())
+        digest.update(b"\0")
+    digest.update(canonical(body))
+    return f"{_DERIVED_PREFIX}{digest.hexdigest()}"
 
 
 @dataclass(slots=True)
@@ -102,14 +164,15 @@ def _answer_from(key: str, current: str, stored: str | bytes) -> IdempotencyCont
     return IdempotencyContext(key=key, fingerprint=current, replayed=record["response"])
 
 
-#: Declared optional so a missing key becomes *our* 422 with *our* message
-#: rather than FastAPI's generic one. ``api/openapi.py`` marks it required in
-#: the published schema, which is where a client reads the rule.
 _HEADER_DESCRIPTION: Final = (
-    "**Required.** A fresh UUIDv4 per attempt. The same key replays the first "
-    "outcome for 24 hours instead of acting again; the same key with a "
+    "**Optional.** Leave it out and the server derives one from the request "
+    "itself, so an identical repeat never acts twice — the client keeps no "
+    "state. Send one to make the promise stronger: a supplied key holds across "
+    "an edited body, where a derived one does not. Either way the same key "
+    "replays the first outcome for 24 hours, a supplied key reused with a "
     "different body is a `422`, and a duplicate arriving while the first is "
-    "still running is a `409` (API.md §10)."
+    "still running is a `409` (API.md §10). Keys beginning `auto:` are the "
+    "server's own and are refused."
 )
 
 
@@ -117,16 +180,27 @@ async def idempotency_key(
     request: Request,
     idempotency_key: Annotated[
         str | None,
-        Header(alias="Idempotency-Key", description=_HEADER_DESCRIPTION),
+        Header(alias=IDEMPOTENCY_HEADER, description=_HEADER_DESCRIPTION),
     ] = None,
 ) -> IdempotencyContext:
-    if not idempotency_key or not idempotency_key.strip():
+    body = await request.body()
+    supplied = (idempotency_key or "").strip()
+    if supplied.startswith(_DERIVED_PREFIX):
         raise ValidationFailed(
-            "This operation requires an Idempotency-Key header",
-            field="Idempotency-Key",
+            "Keys beginning `auto:` are reserved for the server",
+            field=IDEMPOTENCY_HEADER,
         )
-    key = idempotency_key.strip()
-    current = fingerprint(request.method, request.url.path, await request.body())
+    if supplied:
+        key = supplied
+        current = fingerprint(request.method, request.url.path, body)
+    else:
+        # Derived from the canonical body, and fingerprinted over the same
+        # bytes: the key and the fingerprint then move together, so the
+        # "reused for a different request" 422 cannot fire on this path.
+        key = derived_key(
+            request_subject(request), request.method, request.url.path, body
+        )
+        current = fingerprint(request.method, request.url.path, canonical(body))
 
     redis = get_redis()
     record_key = _record_key(key)
@@ -162,10 +236,13 @@ IdempotencyKey = Annotated[IdempotencyContext, Depends(idempotency_key)]
 
 
 __all__ = [
+    "IDEMPOTENCY_HEADER",
     "IN_FLIGHT_TTL_SECONDS",
     "KEY_TTL_SECONDS",
     "IdempotencyContext",
     "IdempotencyKey",
+    "canonical",
+    "derived_key",
     "fingerprint",
     "idempotency_key",
 ]

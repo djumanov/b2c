@@ -37,7 +37,7 @@ GTS'dan `VO`/`PRF` olib kelsa, holat to'g'ri yoziladi.
 | **O5** | Ticketing xatolari **sinflanadi**: `retryable` / `terminal` / `deadline` | Muqobil: har qanday xatoda refund. Rad etildi: GTS deposit balansimiz bo'shashi — *bizning* operatsion nosozligimiz, va u kundagi barcha buyurtmalarni keraksiz qaytarardi (`01-research.md` §1.6 №10) |
 | **O6** | Ticketingdan **oldin** qayta narxlash (`reprice_check`) | Muqobil: to'g'ridan-to'g'ri ticketing. Rad etildi: to'lov bilan chipta orasida tarif o'zgarsa, farqni kim to'lashi noaniq qoladi |
 | **O7** | `orders.currency` **har doim** `payments.currency` ga teng | Muqobil: buyurtma GTS valyutasida, to'lov UZS'da, oradagi konvertatsiya bizda. Rad etildi: `ARCHITECTURE.md` A3 konvertatsiyani GTS tomonga qo'ygan; ikkinchi kurs manbasi ikkinchi haqiqat degani |
-| **O8** | Idempotentlik **uch qavatda**; haqiqiy qo'riqchi — bazadagi `UNIQUE` | Muqobil: faqat Redis. Rad etildi: Redis'dagi yozuv — kesh; `FLUSHALL` yoki evict ikkinchi **haqiqiy** bron degani (X6) |
+| **O8** | Idempotentlik **uch qavatda**; haqiqiy qo'riqchi — bazadagi `UNIQUE`. Birinchi qavatning kalitini **klient bermasa server so'rovdan hosil qiladi** (2026-08-18) | Muqobil: faqat Redis — rad etildi, Redis'dagi yozuv kesh: `FLUSHALL` yoki evict ikkinchi **haqiqiy** bron degani (X6). Kalitni majburiy qilish ham rad etildi: u himoyani klientning holat boshqaruviga bog'lardi, va o'sha holat buzilishining narxi ikkinchi o'rin |
 | **O9** | **Event sourcing yo'q** — append-only status tarixi; provayderning xom javobi o'sha hodisaning `meta` sida, alohida snapshot jadvalisiz | `01-research.md` §1.8 da asoslangan (X10) |
 | **O10** | Yo'lovchilar `orders.travelers` JSONB da, **bizning shaklimizda** | Muqobil: `order_travelers` jadvali. Rad etildi: v1 da yo'lovchi bo'yicha qidiruv talabi yo'q, jadval esa faqat `JOIN` qo'shardi. A8 baribir yopiladi — shaklni biz yozamiz, demak anonimlashtirsa bo'ladi (GTS blobida bu imkonsiz edi) |
 | **O11** | Qaytarish: **quote (o'qish) → so'rov → admin tasdig'i → bajarish**. Avtomatik kompensatsiya tasdiqsiz | Muqobil: to'liq avtomatik. Rad etildi: jarima summasi tarif qoidasidan keladi va xato qimmatga tushadi (`PROJECT.md` §16.3 hali ochiq) |
@@ -183,7 +183,7 @@ stateDiagram-v2
 
 | # | Dan → Ga | Trigger | Guard | Keyingi qadam (o'sha tranzaksiyada belgilanadi) | Guard buzilsa |
 |---|---|---|---|---|---|
-| **T1** | ∅ → `created` | `POST /{product}/booking/` | `Idempotency-Key` bor; `offer_id` bor; mijoz autentifikatsiyadan o'tgan | — | `422` |
+| **T1** | ∅ → `created` | `POST /{product}/booking/` | `request_id` va `offer_id` bor; mijoz autentifikatsiyadan o'tgan (`Idempotency-Key` — ixtiyoriy, bo'lmasa so'rovdan hosil qilinadi) | — | `422` |
 | **T2** | `created` → `booked` | GTS `booking` muvaffaqiyatli | `provider_order_number` **va** summa/valyuta o'qildi | `travelers` to'ldiriladi · `order_payments` qatori · `notify.order_booked` | O'qilmasa → `needs_attention`, xom javob hodisada |
 | **T3** | `created` → `failed` | GTS `status: "error"` | — | — | — |
 | **T4** | `created` → `needs_attention` | GTS timeout / erishib bo'lmadi, `orders.reconcile_orphans` 3 urinishda topolmadi | — | `alert.stuck` | — |
@@ -561,38 +561,48 @@ chelagiga o'tadi.
 > urinishlar esa o'z id'si bilan `/public/transactions/{id}/` da o'qiladi
 > (2026-08-18 qarori).
 
-**`POST /{product}/booking/` javobi:**
+**`POST /{product}/booking/` javobi — additiv.** GTS javobi o'z joyida
+qoladi, ustiga ikkita kalit qo'shiladi:
 
 ```json
 { "status": "success",
   "data": {
-    "order": {
+    "message": "booked",                      ← GTS, o'z joyida
+    "request_id": "…",                        ← GTS
+    "data": { "order_number": 61453, "…" },   ← GTS: buyurtmaning o'zi
+    "order": {                                ← qo'shildi
       "id": "3f1c…", "order_no": "B2C-2608-000123",
       "product": "flight", "status": "booked",
+      "gts_status": "BO",
       "amount": { "amount": "1250000.00", "currency": "UZS" },
-      "provider_order_number": "61453", "provider_pnr": "UBPLKW",
-      "ticket_time_limit_at": "2026-08-20T09:14:22Z",
-      "available_actions": ["pay", "cancel"],
-      "notice": null },
-    "payment": {
-      "id": "9a2e…", "status": "pending",
+      "gts_order_number": "61453", "gts_pnr": "UBPLKW",
+      "passengers": [ … ],
+      "ticket_time_limit_at": "2026-08-20T09:14:22Z" },
+    "payment": {                              ← qo'shildi
+      "status": "pending",
       "amount": { "amount": "1250000.00", "currency": "UZS" },
-      "expires_at": "2026-08-18T10:14:22Z" },
-    "data": { "…GTS bron javobi aynan…" } },
+      "pay_before": "2026-08-20T09:14:22Z" } },
   "errors": [], "meta": null }
 ```
 
 `data.data` — GTS javobi **o'zgarmasdan**. U qoladi, chunki marshrut,
 segmentlar va tarif tafsilotlari faqat shu yerda va biz ularni ustunga
-chiqarmaymiz. So'rov tanasi **o'zgarmaydi** — bugungi mijozlar buziladigan
-narsa faqat javobga qo'shilgan ikkita kalit va yangi majburiy header.
+chiqarmaymiz. So'rov tanasi ham, GTS maydonlarining **joyi ham
+o'zgarmaydi** — bugungi mijozlar uchun bu **qo'shimcha**, buzilish emas
+(2026-08-18 qarori: klientlar bir marta buzilgan edi, ikkinchi marta emas).
 
-Keyingi qadam mijoz uchun: `POST /public/payments/{payment.id}/transactions/`
-(`API.md` §22 — o'zgarishsiz).
+Sim ustida `gts_*` prefiksi ishlatiladi, ustunlarda esa `provider_*`:
+ichkarida tizim mahsulot-agnostik, tashqarida esa klientlar allaqachon
+`gts_order_number` ni bilishadi. O'girish `OrderOut.from_order` da.
 
-**`GET /public/orders/{id}/` javobi** yuqoridagi `order` ga qo'shimcha:
-`travelers[]` (chipta raqami bilan), `payment`, `refunds[]`, `data` (oxirgi
-`provider_response`).
+Keyingi qadam mijoz uchun: `POST /public/orders/{id}/transactions/`
+(`API.md` §22).
+
+**`GET /public/orders/{id}/` javobi** — yuqoridagi `order` ning o'zi, to'liq.
+**`GET /public/orders/` esa qisqartirilgan**: `data` (GTS blobi) va
+`passengers` unda **yo'q**, o'rniga `passenger_count` bor. Sabab —
+sahifadagi 20 ta blob va har so'rovda uchadigan pasport raqamlari
+(`PROJECT.md` §13). To'liq ro'yxat: `API.md` §21.
 
 `notice` — mijozga ko'rsatiladigan ogohlantirish. `ticketing`/`paid` holatida:
 *"Chipta chiqarilmoqda. Agar chipta chiqmasa, to'lov to'liq qaytariladi."*
@@ -801,20 +811,31 @@ Uchinchi urinishdan keyin baribir noaniq bo'lsa — `T4`.
 
 | Qavat | Nima | Qayerda |
 |---|---|---|
-| **HTTP** | `Idempotency-Key`, 24 soat, barmoq izi mos kelmasa `422`, poyga `409` | `app/api/idempotency.py` — **tayyor**, ulash qoldi |
-| **Baza** | `uq_orders_idempotency_key` · `uq_order_refunds_idempotency_key` · `uq_order_payments_provider_ref` · `uq_orders_provider_number_live` | Migratsiyalar |
+| **HTTP** | `Idempotency-Key`, 24 soat, barmoq izi mos kelmasa `422`, poyga `409`. Kalitni klient beradi **yoki** server so'rovdan hosil qiladi | `app/api/idempotency.py` |
+| **Baza** | `uq_orders_customer_id_idempotency_key` · `uq_order_refunds_idempotency_key` · `uq_order_payments_provider_ref` · `uq_orders_provider_number_live` | Migratsiyalar |
 | **Task** | Har bir task birinchi ish sifatida holatni tekshiradi va mos kelmasa **muvaffaqiyat** qaytaradi | `orders/tasks.py` |
 
 **Nega uchalasi ham kerak.** Redis'dagi yozuv — kesh: `FLUSHALL`, evict yoki
 qayta ishga tushirish uni yo'q qiladi. Shunda takroriy so'rov bazaga yetadi va
-`uq_orders_idempotency_key` uni ushlaydi. `IntegrityError` **xato emas** —
-mavjud buyurtma o'qib olinadi va `200` bilan qaytariladi, xuddi Redis replay
-qilgandek.
+`uq_orders_customer_id_idempotency_key` uni ushlaydi. `IntegrityError` **xato
+emas** — mavjud buyurtma o'qib olinadi va `200` bilan qaytariladi, xuddi Redis
+replay qilgandek.
+
+**Kalit qayerdan keladi.** Klient `Idempotency-Key` yuborsa — o'shanikisi.
+Yubormasa server uni so'rovning o'zidan **deterministik** hisoblaydi:
+`"auto:" + sha256(sub'ekt | metod | yo'l | normallashtirilgan tana)`
+(`API.md` §10). Tasodifiy kalit yaratish **rad etildi**: u har so'rovga
+boshqa qiymat berardi, ya'ni birinchi qavat butunlay yo'qolardi. Sub'ekt
+kalitning ichida, chunki Redis yozuvi (`idempotency:{key}`) global
+bo'shliqda — usiz ikki mijozning bir xil tanasi bir-birining javobini
+ko'rardi. Hosil qilingan yo'lda barmoq izi ham o'sha normallashtirilgan tana
+ustidan hisoblanadi, ya'ni *bir xil kalit ⟹ bir xil barmoq izi* va "kalit
+boshqa tana bilan ishlatilgan" `422` konstruksiya bo'yicha chiqmaydi.
 
 ### Bron so'rovining aniq ketma-ketligi
 
 ```
-1. Idempotency-Key da'vo qilinadi        (Redis SET NX)
+1. Kalit hisoblanadi va da'vo qilinadi    (Redis SET NX)
 2. INSERT orders (created) + COMMIT       ← bu yerdan keyin bron yo'qolmaydi
 3. GTS /v1/content/booking/
 4. T2 (booked) yoki T3 (failed) + COMMIT
@@ -835,9 +856,10 @@ Jarayon 3 va 4 orasida o'lsa, qator `created` da qoladi va
 * Webhook va `payments.reconcile` bir vaqtda kelsa: ikkalasi ham `T5` ni
   chaqiradi, ikkinchisi jadvalda `paid → paid` yo'qligi sababli `409` oladi va
   task uni **muvaffaqiyat** deb hisoblaydi (holat allaqachon kerakli joyda);
-* Bir xil `offer_id` bo'yicha ochiq buyurtma bo'lsa (`created`/`booked`) va
-  boshqa `Idempotency-Key` kelsa — `409`. Bu ikki marta bosishning kalitni
-  yangilaydigan variantidan himoya qiladi.
+* Ikki marta bosish endi birinchi qavatda tugaydi: aynan bir xil tana aynan
+  bir xil kalitni beradi, ya'ni ikkinchi so'rov `409` yoki birinchisining
+  javobini oladi — klient kalitni yangilab yuborishi mumkin bo'lgan yo'l
+  yopildi.
 
 ---
 

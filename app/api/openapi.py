@@ -33,12 +33,6 @@ from app.api.errors import ERROR_STATUS, ErrorCode
 
 WEBHOOK_PATH_MARKER: Final = "/webhooks/"
 
-#: Declared ``str | None`` on the dependency so a missing key becomes our own
-#: ``422`` rather than FastAPI's, which leaves the generated schema calling it
-#: optional. It is not: booking, paying and refunding all refuse without it
-#: (API.md §10), and a client reading the schema would be told the opposite.
-IDEMPOTENCY_HEADER: Final = "Idempotency-Key"
-
 _API_ERROR_REF: Final = "#/components/schemas/ApiError"
 _PAGE_META_REF: Final = "#/components/schemas/PageMeta"
 
@@ -161,22 +155,6 @@ def _wrap_operation(operation: dict[str, Any], components: dict[str, Any]) -> No
         responses.setdefault(str(ERROR_STATUS[code]), _error_response(code))
 
 
-def _require_idempotency_key(operation: dict[str, Any]) -> None:
-    """Say the header is mandatory where it is (see ``IDEMPOTENCY_HEADER``)."""
-    for parameter in operation.get("parameters") or ():
-        if (
-            isinstance(parameter, dict)
-            and parameter.get("in") == "header"
-            and parameter.get("name") == IDEMPOTENCY_HEADER
-        ):
-            parameter["required"] = True
-            schema = parameter.get("schema")
-            # ``str | None`` publishes an anyOf with a null branch; the header
-            # is a string or it is absent, and absent is now a 422.
-            if isinstance(schema, dict) and "anyOf" in schema:
-                parameter["schema"] = {"type": "string"}
-
-
 def _deep_update(target: dict[str, Any], source: dict[str, Any]) -> None:
     """Merge ``source`` into ``target``, recursing into nested dicts."""
     for key, value in source.items():
@@ -232,11 +210,10 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
             continue
         for method, operation in operations.items():
             if method.lower() in {"get", "post", "put", "patch", "delete"}:
-                _require_idempotency_key(operation)
                 _wrap_operation(operation, components)
 
     app.openapi_schema = schema
     return schema
 
 
-__all__ = ["IDEMPOTENCY_HEADER", "WEBHOOK_PATH_MARKER", "build_openapi"]
+__all__ = ["WEBHOOK_PATH_MARKER", "build_openapi"]

@@ -152,7 +152,7 @@ async def gts_installation(
         # (``tests/integration/test_orders.py``). What matters here is that the
         # provider's answer still travels whole and gains nothing of GTS's that
         # we invented.
-        return {"order": {"status": "booked"}, "payment": None, "data": order.raw}
+        return {**order.raw, "order": {"status": "booked"}, "payment": None}
 
     monkeypatch.setattr(products_service.orders_service, "start_order", started)
     monkeypatch.setattr(products_service.orders_service, "confirm_booking", confirmed)
@@ -283,12 +283,12 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     assert upsell.json()["data"]["offers"] == [{"offer_id": "u-1"}]
     assert verify.status_code == 200
     assert verify.json()["data"]["verified"] is True
-    # Booking now answers with our order beside GTS's answer — but the answer
-    # itself is still relayed whole and gains no field we invented, which is the
-    # half of the old claim that survived the money path landing on this step
-    # (order-system/03-design.md §3.6).
+    # Booking answers with our order beside GTS's answer — and GTS's half is
+    # still relayed whole, in the place it has always been, gaining no field we
+    # invented (API.md §20).
     assert booking.status_code == 200
-    assert booking.json()["data"]["data"] == GTS_BOOKING
+    answer = booking.json()["data"]
+    assert {key: answer[key] for key in GTS_BOOKING} == GTS_BOOKING
     # ...and no trace on the way down: only the platform's own keys exist, and
     # neither GTS identifier is in any of them. Values are held to the same rule
     # apart from the idempotency record, which by definition holds a copy of the

@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
@@ -56,6 +57,7 @@ from app.modules.orders.models import (
     OrderRefund,
 )
 from app.modules.orders.schemas import (
+    OrderListOut,
     OrderOut,
     TransactionOut,
     TransactionStartIn,
@@ -355,24 +357,37 @@ async def fail_booking(session: AsyncSession, order: Order, *, reason: str) -> O
 
 
 def booking_answer(order: Order) -> dict[str, Any]:
-    """What ``booking/`` returns (order-system/03-design.md §3.6).
+    """What ``booking/`` returns: the provider's answer, plus two keys (§20).
 
-    Three keys. ``data`` is the provider's answer, unchanged and complete,
-    because the route, the segments and the fare rules live only there and we
-    do not lift them out. ``order`` is ours, and ``payment`` says what is still
-    owed and until when.
+    **Additive, not nested.** The provider's answer stays exactly where it was
+    before this module existed, and ``order`` and ``payment`` arrive beside it.
+    Adding an optional field is not a breaking change; moving every existing
+    field one level down is (API.md §1), and doing the second one cost the
+    clients a release for no gain.
 
-    ``payment`` is derived from the order rather than stored (``payment_state``).
+    ``order`` is ours — the record this booking wrote — and ``payment`` says
+    what is still owed and until when; it is derived from the order rather than
+    stored (``payment_state``).
 
-    ``data`` is ``null`` on an order that never got an answer — a duplicate
-    replayed while the first attempt is still in flight. That is honest: we
-    genuinely do not have one yet.
+    An order that never got an answer — a duplicate replayed while the first
+    attempt is still in flight — carries **none** of the provider's keys at
+    all. That is honest: we genuinely do not have one yet.
     """
-    return {
-        "order": OrderOut.from_order(order).model_dump(mode="json"),
-        "payment": payment_state(order),
-        "data": order.provider_response,
-    }
+    answer = dict(order.provider_response or {})
+    # Ours win. Nothing GTS sends back from a booking is called either of
+    # these, but their cancel answer does use ``order``, so this is not a
+    # theoretical collision — it is one worth hearing about if it happens.
+    for key in ("order", "payment"):
+        if key in answer:
+            logger.warning(
+                "booking_answer_key_overwritten",
+                order_id=str(order.id),
+                order_no=order.order_no,
+                key=key,
+            )
+    answer["order"] = OrderOut.from_order(order).model_dump(mode="json")
+    answer["payment"] = payment_state(order)
+    return answer
 
 
 async def owned_by_provider_number(
@@ -1056,13 +1071,18 @@ async def list_orders(
     customer_id: uuid.UUID,
     product: str | None = None,
     status: str | None = None,
-) -> Page[OrderOut]:
+) -> Page[OrderListOut]:
     """This customer's orders, newest first (API.md §21).
+
+    ``OrderListOut``, not ``OrderOut``: a card wants a route, a price and a
+    status, and the two heaviest fields on the row — the provider's answer and
+    the travellers — are neither. The provider's answer is not even read out of
+    Postgres, which is what ``defer`` is doing on the query below.
 
     No ``apply_search`` yet: searching by PNR and passenger name is an admin
     need and arrives with that surface (API.md §31).
     """
-    stmt = repository.owned_orders(customer_id)
+    stmt = repository.owned_orders(customer_id).options(defer(Order.provider_response))
     if product is not None:
         stmt = stmt.where(Order.product == product)
     if status is not None:
@@ -1072,7 +1092,7 @@ async def list_orders(
         stmt, query, allowed=_ORDER_ORDERING, default="-created_at", tiebreak=Order.id
     )
     rows, total = await paginate(session, stmt, pagination)
-    return page([OrderOut.from_order(row) for row in rows], pagination, total)
+    return page([OrderListOut.from_order(row) for row in rows], pagination, total)
 
 
 async def get_order(
