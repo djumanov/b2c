@@ -26,7 +26,6 @@ from app.db.base import Base
 from app.modules.cms.models import ContentStatus, FunFact
 from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
-from app.modules.orders.models import Order
 from app.modules.settings import cache as settings_cache
 from tests.integration.conftest import customer_headers_for
 
@@ -35,7 +34,6 @@ OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
 BOOKING = "/api/v1/public/flight/booking/"
-CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
 
 BOOKING_BODY: dict[str, Any] = {
@@ -319,7 +317,7 @@ async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
     assert garbage.status_code == 401
 
 
-# --- booking and cancel (API.md §20) -------------------------------------------------
+# --- booking (API.md §20) -------------------------------------------------
 
 
 def _booking_headers(customer: Customer) -> dict[str, str]:
@@ -364,44 +362,7 @@ async def test_booking_relays_the_answer_beside_our_own_order(
 
 
 @respx.mock
-async def test_cancel_passes_through_untouched(
-    api: AsyncClient, session: AsyncSession, customer: Customer
-) -> None:
-    """The body still reaches GTS verbatim — the ownership check reads
-    ``order_id``, it does not rewrite the request (API.md §20)."""
-    await _activate_credential(session)
-    await _enable_flight()
-    _mock_signin()
-    session.add(
-        Order(
-            order_no="B2C-2608-800001",
-            customer_id=customer.id,
-            product="flight",
-            status="booked",
-            provider_order_number="61453",
-            provider_status="BO",
-            amount_total="52.39",
-            currency="EUR",
-            provider_response={"data": {"order_number": 61453, "status": "BO"}},
-        )
-    )
-    await session.commit()
-    gts_cancel = {"data": {"order_number": 61453, "status": "CB"}}
-    route = respx.post(f"{GTS}/v1/content/cancel/").mock(
-        return_value=httpx.Response(200, json=_envelope(gts_cancel))
-    )
-
-    body = {"order_number": 61453, "reason": "changed my mind"}
-    response = await api.post(CANCEL, json=body, headers=customer_headers_for(customer))
-
-    assert response.status_code == 200
-    assert response.json()["data"] == gts_cancel
-    assert route.call_count == 1
-    assert jsonlib.loads(route.calls.last.request.content) == body
-
-
-@respx.mock
-@pytest.mark.parametrize("path", [BOOKING, CANCEL])
+@pytest.mark.parametrize("path", [BOOKING])
 async def test_the_writing_steps_refuse_the_anonymous(
     api: AsyncClient, session: AsyncSession, path: str
 ) -> None:
@@ -771,7 +732,7 @@ async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
     assert "Retry-After" in last.headers
 
 
-@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY, BOOKING, CANCEL])
+@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY, BOOKING])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     response = await api.post(path.rstrip("/"), json={})
 

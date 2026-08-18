@@ -13,13 +13,15 @@ whoever handed over the id.
 """
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repository import live
 from app.modules.orders.models import Order, OrderEvent, OrderPayment, OrderRefund
-from app.modules.orders.states import RefundState
+from app.modules.orders.states import OrderStatus, RefundState
 from app.providers.payments.base import TransactionStatus
 
 #: The states a refund is still running in — the unique index uses the same set.
@@ -80,6 +82,39 @@ async def order_by_idempotency_key(
         )
     )
     return row
+
+
+async def expiring_orders(
+    session: AsyncSession, *, deadline: datetime, fallback_before: datetime, limit: int
+) -> Sequence[Order]:
+    """Holds whose payment window has closed, locked for one sweep.
+
+    Two conditions because a provider may not have named a deadline. When it
+    did, the window closes a margin before it, so there is still time to release
+    the seat rather than letting the hold lapse untidily. When it did not, the
+    bound is ours: an order that has been unpaid since before ``fallback_before``
+    has waited long enough.
+
+    ``SKIP LOCKED`` so several workers may sweep at once without both taking the
+    same order.
+    """
+    rows = await session.scalars(
+        select(Order)
+        .where(
+            Order.status == OrderStatus.BOOKED.value,
+            or_(
+                Order.ticket_time_limit_at <= deadline,
+                and_(
+                    Order.ticket_time_limit_at.is_(None),
+                    Order.created_at <= fallback_before,
+                ),
+            ),
+        )
+        .order_by(Order.created_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return rows.all()
 
 
 async def lock_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
@@ -220,6 +255,7 @@ __all__ = [
     "attempt_by_provider_ref",
     "attempts_of",
     "events_of",
+    "expiring_orders",
     "lock_attempt",
     "unreferenced_attempt",
     "lock_order",

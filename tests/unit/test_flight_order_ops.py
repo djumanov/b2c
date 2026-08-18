@@ -425,20 +425,30 @@ async def test_an_answer_that_names_no_order_is_refused(
 # --- cancelling -----------------------------------------------------------------------
 
 
-async def test_cancelling_reads_the_code_and_keeps_the_answer() -> None:
-    client = RecordingClient({"data": {"order_number": 61453, "status": "CB"}})
+async def test_cancelling_reads_the_code_out_of_its_own_key() -> None:
+    """The recorded cancel answer has **no ``data``** — it puts the order under
+    ``order``, and the bare-``data`` reader refuses anything without one. That
+    would have made every live cancellation a 502 (STATUS.md §8.15a)."""
+    answer = {
+        "status": "success",
+        "code": 100,
+        "order": {"order_number": 61453, "status": "CB"},
+    }
+    client = RecordingClient(answer, envelope=False)
 
     result = await FlightAdapter().cancel(client, {"order_number": 61453})
 
     assert result.provider_status == "CB"
-    assert result.raw == {"data": {"order_number": 61453, "status": "CB"}}
+    assert result.raw == answer
 
 
 async def test_cancelling_needs_nothing_from_the_answer() -> None:
     """The client raises on a refusal, so reaching this line means the seat is
     released whether or not GTS bothered to name a status. Insisting on one
     would turn a successful cancellation into an error."""
-    result = await FlightAdapter().cancel(RecordingClient({}), {"order_number": 1})
+    result = await FlightAdapter().cancel(
+        RecordingClient({"status": "success"}, envelope=False), {"order_number": 1}
+    )
 
     assert result.provider_status is None
 

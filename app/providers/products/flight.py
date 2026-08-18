@@ -171,6 +171,21 @@ def _number(order_number: str) -> int | str:
         return order_number
 
 
+def _nested_body(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The order inside a GTS envelope, or nothing.
+
+    Unlike ``_order_body`` this does **not** fall back to the payload itself.
+    The envelope carries a ``status`` of its own — ``"success"`` — and reading
+    that as the order's would record a provider status GTS never gave, on every
+    answer that happened not to nest one.
+    """
+    for key in ("data", "order"):
+        inner = envelope.get(key)
+        if isinstance(inner, dict):
+            return inner
+    return {}
+
+
 def _order_body(response: Mapping[str, Any]) -> Mapping[str, Any]:
     """The order itself, out of GTS's two-layer booking answer.
 
@@ -410,7 +425,6 @@ class FlightAdapter:
                 FlowStep.UPSELL,
                 FlowStep.VERIFY,
                 FlowStep.BOOKING,
-                FlowStep.CANCEL,
             }
         )
 
@@ -439,7 +453,7 @@ class FlightAdapter:
         payload = await client.post_envelope(
             "/v1/content/offers/", json=params, timeout=GtsTimeouts.SEARCH_SECONDS
         )
-        data: dict[str, Any] = payload["data"]
+        data: dict[str, Any] = payload.get("data") or {}
         return {**data, "search_status": payload.get("status")}
 
     async def upsell(
@@ -458,7 +472,7 @@ class FlightAdapter:
         envelope = await client.post_envelope(
             "/v1/content/upsell/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
         )
-        data: dict[str, Any] = envelope["data"]
+        data: dict[str, Any] = envelope.get("data") or {}
         return {**data, "search_status": envelope.get("status")}
 
     async def verify(
@@ -474,7 +488,7 @@ class FlightAdapter:
         envelope = await client.post_envelope(
             "/v1/content/verify/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
         )
-        data: dict[str, Any] = envelope["data"]
+        data: dict[str, Any] = envelope.get("data") or {}
         return {**data, "search_status": envelope.get("status")}
 
     async def book(self, client: GtsClient, payload: dict[str, Any]) -> BookingResult:
@@ -536,15 +550,21 @@ class FlightAdapter:
         here costs a real seat, so the pipe forwards and lets GTS answer
         (API.md §20).
 
+        ``post_envelope`` for the same reason ticketing uses it: the recorded
+        cancel answer is ``{status, code, order}`` with **no ``data`` key**, and
+        the bare-``data`` reader refuses anything without one — which would have
+        made every cancellation a ``502`` against live GTS (STATUS.md §8.15a).
+        Reading the whole envelope survives either spelling.
+
         Nothing is required of the answer either: the client raises on a
         refusal, so reaching this line means the seat is released whether or not
         GTS bothered to name a status.
         """
-        raw = await client.post(
+        raw = await client.post_envelope(
             "/v1/content/cancel/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
         )
         return CancelResult(
-            provider_status=_text(_order_body(raw), "status", limit=16), raw=raw
+            provider_status=_text(_nested_body(raw), "status", limit=16), raw=raw
         )
 
     async def reprice(self, client: GtsClient, order_number: str) -> RepriceResult:
@@ -561,7 +581,7 @@ class FlightAdapter:
             json={"order_number": _number(order_number)},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
-        total = _money(_order_body(envelope))
+        total = _money(_nested_body(envelope))
         if total is None:
             raise UnreadableAnswer(
                 "the GTS reprice answer names no price", raw=envelope
@@ -586,7 +606,7 @@ class FlightAdapter:
             json={"order_number": _number(order_number), "payment_method": "deposit"},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
-        body = _order_body(envelope)
+        body = _nested_body(envelope)
         code = _text(body, "status", limit=16)
         return TicketingResult(
             provider_status=code,

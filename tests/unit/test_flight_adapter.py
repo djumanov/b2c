@@ -83,7 +83,6 @@ def test_the_adapter_satisfies_the_port() -> None:
         FlowStep.UPSELL,
         FlowStep.VERIFY,
         FlowStep.BOOKING,
-        FlowStep.CANCEL,
     }
 
 
@@ -424,8 +423,11 @@ async def test_booking_junk_fails_before_a_session_is_spent(
 
 
 async def test_cancel_sends_the_body_untouched_and_keeps_the_answer_whole() -> None:
-    gts_answer = {"order_id": "1250", "status": "CB"}
-    client = RecordingClient(gts_answer)
+    # ``envelope=False``: the recorded cancel answer *is* the envelope — it puts
+    # the order under ``order`` beside its own ``status`` and has no ``data``
+    # key at all, which is why the adapter reads the whole payload.
+    gts_answer = {"status": "success", "code": 100, "order": {"status": "CB"}}
+    client = RecordingClient(gts_answer, envelope=False)
     payload = {"order_id": "1250"}
 
     result = await FlightAdapter().cancel(client, payload)

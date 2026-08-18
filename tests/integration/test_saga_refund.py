@@ -51,7 +51,7 @@ def world(connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch) -> Any:
     async def no_credential_needed(session: object) -> object:
         return object()
 
-    monkeypatch.setattr(tasks.products_service, "gts_client", no_credential_needed)
+    monkeypatch.setattr(tasks.integrations_service, "gts_client", no_credential_needed)
     yield operations, provider
     registry.register(FlightAdapter())
     clear_overrides()

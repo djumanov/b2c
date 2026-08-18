@@ -772,69 +772,8 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     ),
 )
 
-FLIGHT_CANCEL: Final[dict[str, Any]] = _operation(
-    request_schema={
-        "type": "object",
-        "additionalProperties": True,
-        "required": ["order_number"],
-        "description": (
-            "`order_number` is required and is the **only** thing we read: it "
-            "names the order to verify ownership against. Everything else is "
-            "forwarded to GTS untouched and the body is never rebuilt — which "
-            "further fields name a booking upstream is not fixed anywhere we "
-            "control, and refusing a valid cancellation before GTS sees it "
-            "would cost a real seat." + _UNCONFIRMED
-        ),
-        "properties": {
-            "order_number": {
-                "type": "integer",
-                "description": (
-                    "**GTS's** order number, from `booking/`'s `data.data."
-                    "order_number` — the value `GET /public/orders/` reports "
-                    "as `gts_order_number`. Not our `id`, which is a UUID and "
-                    "means nothing upstream.\n\n"
-                    "Missing → `422` naming this field. Belonging to another "
-                    "customer, or to no order we recorded → `404`, and GTS is "
-                    "not called at all (§21)."
-                ),
-            }
-        },
-    },
-    # The whole of GTS's recorded cancel body (EASY_GATEWAY collection,
-    # ``/content/Cancel``) — one field. Inventing a second would publish one
-    # that does not exist, which is the same reason the adapter refuses to
-    # rebuild this body (providers/products/flight.py).
-    request_example={"order_number": 61453},
-    response_schema={
-        "type": "object",
-        "additionalProperties": True,
-        "description": (
-            "GTS's answer, verbatim. ⚠ The only recorded cancel response is an "
-            "older one shaped `{status, code, order}` — it has no `data` key, "
-            "which our GTS client requires, so this step's answer is the least "
-            "certain thing on the flow and is the first to check against live "
-            "GTS (STATUS.md §8)." + _UNCONFIRMED
-        ),
-        "properties": {
-            "status": {
-                "type": "string",
-                "enum": ["BO", "PW", "TI", "TE", "CB", "VO", "RF", "PRF"],
-                "description": "`CB` once the booking is released (GTS.md §4).",
-            },
-        },
-    },
-    response_example={"order_number": 61453, "status": "CB"},
-    response_description=(
-        "The booking is released and the stored order takes GTS's new status. "
-        "Only bookings GTS still holds — a ticketed order needs "
-        "`void`/`refund`, which are not built yet."
-    ),
-)
-
-
 __all__ = [
     "FLIGHT_BOOKING",
-    "FLIGHT_CANCEL",
     "FLIGHT_OFFERS",
     "FLIGHT_SEARCH",
     "FLIGHT_UPSELL",

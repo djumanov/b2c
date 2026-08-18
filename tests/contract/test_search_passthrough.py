@@ -9,9 +9,9 @@ appear in **no key and no value**.
 A cache of ours would have to leave a trace here; this sweep is how it would
 be caught.
 
-Booking and cancel are in the round trip on purpose. They are the two steps
-that could plausibly want to remember something, and what they may remember is
-**the order, and only the order** (API.md §21): the customer's own purchase,
+Booking is in the round trip on purpose. It is the step that could plausibly
+want to remember something, and what it may remember is **the order, and only
+the order** (API.md §21): the customer's own purchase,
 never the search that led to it. ``ALLOWED_KEY`` below is the whole of what may
 survive them in Redis, and the idempotency record joined it when booking became
 a money endpoint — a replay of *our own answer*, not a copy of GTS's offers.
@@ -60,7 +60,6 @@ OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
 BOOKING = "/api/v1/public/flight/booking/"
-CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
 ORDER_NUMBER = 61453
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
@@ -155,27 +154,9 @@ async def gts_installation(
         # we invented.
         return {"order": {"status": "booked"}, "payment": None, "data": order.raw}
 
-    async def any_order(
-        session: object, *, customer_id: uuid.UUID, provider_order_number: str
-    ) -> None:
-        return None
-
-    def cancellable(order: object) -> None:
-        return None
-
-    async def no_op(session: object, order: object, result: Any) -> None:
-        return None
-
     monkeypatch.setattr(products_service.orders_service, "start_order", started)
     monkeypatch.setattr(products_service.orders_service, "confirm_booking", confirmed)
     monkeypatch.setattr(products_service.orders_service, "booking_answer", answered)
-    monkeypatch.setattr(
-        products_service.orders_service, "owned_by_provider_number", any_order
-    )
-    monkeypatch.setattr(
-        products_service.orders_service, "ensure_cancellable", cancellable
-    )
-    monkeypatch.setattr(products_service.orders_service, "apply_cancel", no_op)
 
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
     return credential
@@ -264,12 +245,6 @@ def _mock_gts() -> respx.Route:
             json=_envelope(GTS_BOOKING),
         )
     )
-    respx.post(f"{GTS}/v1/content/cancel/").mock(
-        return_value=httpx.Response(
-            200,
-            json=_envelope({"data": {"order_number": ORDER_NUMBER, "status": "CB"}}),
-        )
-    )
     return search_route
 
 
@@ -297,7 +272,6 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
         json={"request_id": REQUEST_ID, "offer_id": OFFER_ID, "passengers": []},
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
-    cancel = await client.post(CANCEL, json={"order_number": ORDER_NUMBER})
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
@@ -315,11 +289,6 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     # (order-system/03-design.md §3.6).
     assert booking.status_code == 200
     assert booking.json()["data"]["data"] == GTS_BOOKING
-    assert cancel.status_code == 200
-    assert cancel.json()["data"] == {
-        "data": {"order_number": ORDER_NUMBER, "status": "CB"}
-    }
-
     # ...and no trace on the way down: only the platform's own keys exist, and
     # neither GTS identifier is in any of them. Values are held to the same rule
     # apart from the idempotency record, which by definition holds a copy of the

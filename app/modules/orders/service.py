@@ -23,7 +23,7 @@ lost either way.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -46,6 +46,7 @@ from app.api.listing import (
 )
 from app.core.logging import get_logger
 from app.core.money import Money
+from app.modules.integrations import service as integrations_service
 from app.modules.orders import repository
 from app.modules.orders.models import (
     ORDER_NO_SEQUENCE,
@@ -77,10 +78,13 @@ from app.providers.payments.base import (
     TransactionFlow,
     TransactionStatus,
 )
+from app.providers.products.base import registry
 from app.providers.products.orders import (
     BookingResult,
     CancelResult,
+    OrderOperations,
     TicketingResult,
+    order_operations,
 )
 
 logger = get_logger(__name__)
@@ -402,6 +406,48 @@ def ensure_cancellable(order: Order) -> None:
         )
 
 
+async def cancel_order(
+    session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> OrderOut:
+    """Release a reservation this customer made (API.md §21).
+
+    Three steps, and their order is the whole of it: the order is found by its
+    owner, the move is refused **before** the provider is called if the state
+    does not allow it, and only then is the seat given back. Checking afterwards
+    would release a real seat and then answer ``409``.
+
+    The provider is not asked to validate anything for us. Its own cancel body
+    is ``{"order_number": …}`` and that is what it gets — which field names a
+    booking upstream is not ours to decide, and a wrong guess costs a seat
+    (``providers/products/flight.py``).
+    """
+    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
+    ensure_cancellable(order)
+    if order.provider_order_number is None:
+        raise Conflict("This order has no reservation to release")
+
+    operations = _order_operations(order.product)
+    result = await operations.cancel(
+        await integrations_service.gts_client(session),
+        {"order_number": order.provider_order_number},
+    )
+    return OrderOut.from_order(await apply_cancel(session, order, result))
+
+
+def _order_operations(product: str) -> OrderOperations:
+    """The vertical's order half, or the gate's own ``404``.
+
+    Unreachable in practice — an order exists only because its vertical booked
+    it — but the narrowing is what makes the call type-safe, and answering with
+    the gate's words keeps the two indistinguishable if it ever is reached.
+    """
+    adapter = registry.get(product)
+    operations = None if adapter is None else order_operations(adapter)
+    if operations is None:
+        raise NotFound("This section is not available on this installation")
+    return operations
+
+
 async def apply_cancel(
     session: AsyncSession, order: Order, result: CancelResult
 ) -> Order:
@@ -708,6 +754,47 @@ def ticket_deadline(order: Order, settings: OrderSettingsOut) -> datetime:
     return limit - timedelta(minutes=settings.ticket_margin_minutes)
 
 
+async def due_for_expiry(
+    session: AsyncSession, settings: OrderSettingsOut, *, limit: int
+) -> Sequence[Order]:
+    """Unpaid holds whose window has closed — a door for the sweep."""
+    now = datetime.now(UTC)
+    return await repository.expiring_orders(
+        session,
+        deadline=now + timedelta(minutes=settings.ticket_margin_minutes),
+        fallback_before=now - timedelta(minutes=settings.hold_fallback_minutes),
+        limit=limit,
+    )
+
+
+async def expire_booking(session: AsyncSession, order: Order) -> Order:
+    """T7 — the hold lapsed unpaid, so the seat goes back.
+
+    Distinct from a customer cancelling only by its reason, and that is the
+    whole reason ``cancellation_reason`` exists rather than a second status: the
+    two look identical to everything except a report (order-system §3.3).
+    """
+    logger.info(
+        "order_expired",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        ticket_time_limit_at=(
+            None
+            if order.ticket_time_limit_at is None
+            else order.ticket_time_limit_at.isoformat()
+        ),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.CANCELLED,
+        actor=Actor.system("orders.expire"),
+        action=EventAction.BOOKING_EXPIRED,
+        reason="The hold lapsed before the order was paid for",
+        fields={"cancellation_reason": "timelimit"},
+    )
+
+
 async def claim_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
     """The order, locked, for a background step that is about to work on it.
 
@@ -1001,13 +1088,16 @@ __all__ = [
     "abandon_attempt",
     "abandon_refund",
     "apply_cancel",
+    "cancel_order",
     "attach_redirect",
     "begin_ticketing",
     "booking_answer",
     "claim_order",
     "claim_refund",
     "confirm_booking",
+    "due_for_expiry",
     "ensure_cancellable",
+    "expire_booking",
     "fail_booking",
     "finish_ticketing",
     "get_order",

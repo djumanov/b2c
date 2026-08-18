@@ -16,19 +16,23 @@ indistinguishable (API.md §41).
 **Auth is optional on the search steps** (§20's ``(✓)``): the search form is
 public. A presented but invalid token still 401s — ``OptionalCustomer``
 forgives absence, not garbage — and the search rate limit keys on the subject
-when there is one, the IP otherwise. ``booking/`` and ``cancel/`` are the
-exception and demand a customer (§20's ``✓``, PROJECT.md D4: no guest
-purchase).
+when there is one, the IP otherwise. ``booking/`` is the exception and demands
+a customer (§20's ``✓``, PROJECT.md D4: no guest purchase).
 
-**The gate runs before the token** on those two: ``adapter`` is declared ahead
-of the principal, so a vertical this installation does not sell answers 404 to
-an anonymous caller rather than 401. Which verticals we sell must not be
-readable from the difference (API.md §41).
+**The gate runs before the token** on booking: ``adapter`` is declared ahead of
+the principal, so a vertical this installation does not sell answers 404 to an
+anonymous caller rather than 401. Which verticals we sell must not be readable
+from the difference (API.md §41).
 
 **Booking is a money endpoint.** It carries a mandatory ``Idempotency-Key``
 and the 10/min payment bucket, because it writes an order and takes real
-inventory (API.md §10, §14). ``cancel/`` does not yet — it moves onto the order
-resource with the cancellation slice and gains one there.
+inventory (API.md §10, §14).
+
+**Cancelling is not here any more.** It moved to
+``POST /public/orders/{id}/cancel/``: releasing a reservation is an operation on
+the order, not a step of the search flow, and it needed the order's state to
+decide whether it is allowed at all (API.md §16, order-system/03-design.md
+``O3``).
 
 **The bodies stay ``dict``, the documentation does not.** Every step carries an
 ``openapi_extra`` from ``products/openapi.py`` describing what it sends and
@@ -50,7 +54,6 @@ from app.db.session import SessionDep
 from app.modules.products import service
 from app.modules.products.openapi import (
     FLIGHT_BOOKING,
-    FLIGHT_CANCEL,
     FLIGHT_OFFERS,
     FLIGHT_SEARCH,
     FLIGHT_UPSELL,
@@ -61,10 +64,10 @@ from app.providers.products.base import FlowStep, ProductAdapter, registry
 
 router = enveloped_router(prefix="/{product}", tags=["products"])
 
-# The vertical registry is populated by ``products.service``, which this module
-# imports. It moved there when ticketing arrived: a Celery worker never imports
-# a router, so an adapter registered here would be missing from every
-# background step.
+# The vertical registry populates itself: ``providers/products/__init__.py``
+# registers every adapter, and importing ``providers.products.base`` runs it.
+# That is where it belongs — a Celery worker never imports a router, and
+# ticketing needs the same registry a request does.
 
 
 class RequireProductStep:
@@ -209,23 +212,6 @@ async def booking(
         raise
     await idempotency.store(answer)
     return answer
-
-
-@router.post(
-    "/cancel/",
-    summary="Cancel a booking that has not been ticketed",
-    openapi_extra=FLIGHT_CANCEL,
-)
-async def cancel(
-    payload: dict[str, Any],
-    session: SessionDep,
-    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.CANCEL))],
-    customer: CurrentCustomer,
-) -> dict[str, Any]:
-    # The customer is the ownership check now: the order row booking wrote is
-    # what says this booking is theirs, and a booking that is not answers 404
-    # without GTS being called at all (ARCHITECTURE.md §14 A1).
-    return await service.cancel(session, adapter, payload, customer_id=customer.id)
 
 
 __all__ = ["RequireProductStep", "router"]

@@ -958,7 +958,7 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
 | `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
 | `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi. **`Idempotency-Key` majburiy** (§10), limit 10/daq (§14) |
-| `POST` | `/public/{product}/cancel/` | ✓ | Chipta chiqarilmagan bronni bekor qiladi |
+| ~~`POST`~~ | ~~`/public/{product}/cancel/`~~ | — | **Olib tashlandi.** Bekor qilish buyurtma resursida: `POST /public/orders/{id}/cancel/` (§21) |
 
 > **`booking/` — pul endpointi.** U buyurtma yaratadi va haqiqiy o'rin band
 > qiladi, shuning uchun `Idempotency-Key` majburiy (§10) va 10/daq to'lov
@@ -1244,7 +1244,7 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
 | `GET` | `/public/orders/{id}/` | ✓ | Tafsilot |
 | `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) — **hali qurilmagan** |
-| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish — **hali qurilmagan**, §20 dagi `cancel/` orqali |
+| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bronni bo'shatish. **`Idempotency-Key` majburiy**, limit 10/daq |
 
 **Buyurtma yozuvi — egalikning manbai va holat mashinasining o'zi.**
 `booking/` muvaffaqiyatli o'tganda buyurtma mijozning nomiga yoziladi (§20).
@@ -1325,12 +1325,19 @@ esa buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin
 "bron qilindi" deb ham ko'rsatilmaydi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
-> **Hali qurilmagani.** `receipt/`, `{id}/cancel/`, `{id}/history/`,
-> `{id}/refund/`, `payment_id` va `available_actions` — bo'laklar bo'yicha
-> keladi ([`order-system/04-plan.md`](order-system/04-plan.md)). Bugun bekor
-> qilish §20 dagi `POST /public/{product}/cancel/` orqali va u endi holatni
-> ham tekshiradi: chiptalangan buyurtmani bekor qilishga urinish GTS'ga
-> **umuman bormaydi**, `409 conflict` qaytadi.
+**Bekor qilish** — `POST /public/orders/{id}/cancel/`. Tanasi yo'q: buyurtma
+`{id}` bilan nomlanadi va provayderga uning o'z tutqichi (`order_number`)
+uzatiladi. Holat ruxsat bermasa GTS'ga **umuman borilmaydi** — chiptalangan
+buyurtma `409 conflict` qaytaradi, o'rin esa bo'shatilmaydi. Javob —
+yangilangan buyurtma (§21 shakli).
+
+Bron muddati to'lovsiz o'tsa buyurtmani **tizim o'zi** yopadi: o'rin
+provayderga qaytariladi, `status` `cancelled` va `cancellation_reason`
+`timelimit` bo'ladi.
+
+> **Hali qurilmagani.** `receipt/`, `{id}/history/`, `{id}/refund/` va
+> `available_actions` — bo'laklar bo'yicha keladi
+> ([`order-system/04-plan.md`](order-system/04-plan.md)).
 
 ---
 

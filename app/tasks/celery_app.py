@@ -78,6 +78,13 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.orders.run_due",
         "schedule": 30.0,
     },
+    # Holds nobody paid for. Every minute because the window closes on the
+    # provider's clock, and a seat released late is a seat somebody else could
+    # have bought (order-system/03-design.md §3.7).
+    "orders-expire-unpaid-every-minute": {
+        "task": "app.tasks.orders.expire_unpaid",
+        "schedule": 60.0,
+    },
     "heartbeat-every-five-minutes": {
         "task": "app.tasks.heartbeat.heartbeat",
         "schedule": 300.0,

@@ -24,7 +24,8 @@ ishlatadi, va pul yo'lida "yarim ulangan" holat eng qimmat xato.
 | S5 | Ticketing + poller + reprice | yo'q | GTS ticketing | S4 |
 | S6a | Avtomatik kompensatsiya | `order_refunds` | GTS + provayder | S5 |
 | S6b | Mijoz so'rovi bo'yicha qaytarish va admin tasdig'i | yo'q | GTS refund-check/commit | S6a |
-| S7 | Bekor qilish, sinxronizatsiya, admin yuzasi, maxfiylik | yo'q | GTS cancel/retrieve | S6 |
+| S7a | Bekor qilish va bron muddati | yo'q | GTS cancel | S6a |
+| S7b | Sinxronizatsiya, admin yuzasi, kvitansiya, maxfiylik | yo'q | GTS retrieve | S7a |
 
 Oldingi qoralamada 11 ta bo'lak bor edi; outbox, snapshot va yo'lovchilar
 jadvallari tashlangach ular ettitaga siqildi.

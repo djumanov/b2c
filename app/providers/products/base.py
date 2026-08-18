@@ -45,8 +45,6 @@ class FlowStep(StrEnum):
     #: eSIM and transfer replace ``verify`` with this (PROJECT.md §8).
     OFFER = "offer"
     BOOKING = "booking"
-    #: flight — release a booking GTS still holds (GTS.md §4)
-    CANCEL = "cancel"
     #: railway
     TRAINS = "trains"
     TRAIN_DETAILS = "train-details"

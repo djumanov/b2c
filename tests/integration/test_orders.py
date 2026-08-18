@@ -17,6 +17,7 @@ The state machine itself is ``test_order_transitions.py``'s subject; what is
 checked here is that the two write paths go through it.
 """
 
+import json as jsonlib
 import uuid
 from typing import Any
 
@@ -154,10 +155,11 @@ def _mock_booking(answer: dict[str, Any] = GTS_BOOKING) -> respx.Route:
     )
 
 
-def _mock_cancel(answer: dict[str, Any] | None = None) -> respx.Route:
+def _mock_cancel() -> respx.Route:
+    """GTS's recorded cancel answer: ``order``, and **no ``data``**."""
     return respx.post(f"{GTS}/v1/content/cancel/").mock(
         return_value=httpx.Response(
-            200, json=_envelope(answer or {"data": {"status": "CB"}})
+            200, json={"status": "success", "code": 100, "order": {"status": "CB"}}
         )
     )
 
@@ -663,7 +665,11 @@ async def test_the_history_needs_a_customer_token(api: AsyncClient) -> None:
     assert (await api.get(ORDERS)).status_code == 401
 
 
-# --- ownership and state on cancel (API.md §20) ---------------------------------------
+# --- cancelling, on the order (API.md §21) --------------------------------------------
+
+
+def _cancel(api: AsyncClient, order: Order, headers: dict[str, str]) -> Any:
+    return api.post(f"{ORDERS}{order.id}/cancel/", headers=_booking_headers(headers))
 
 
 @respx.mock
@@ -673,15 +679,15 @@ async def test_cancelling_someone_elses_booking_never_reaches_gts(
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
-    """The hole this module was built to close: knowing a GTS identifier used
-    to be enough to release somebody else's seat."""
+    """The hole this module was built to close: knowing an identifier used to
+    be enough to release somebody else's seat."""
     await _installation(session)
     signin = _mock_signin()
     cancel = _mock_cancel()
     stranger = await make_customer(session, email="someone.else@example.uz")
-    await _order(session, stranger)
+    order = await _order(session, stranger)
 
-    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
+    response = await _cancel(api, order, headers)
 
     assert response.status_code == 404
     assert cancel.call_count == 0
@@ -700,11 +706,13 @@ async def test_cancelling_my_own_booking_moves_the_order(
     cancel = _mock_cancel()
     order = await _order(session, customer)
 
-    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
+    response = await _cancel(api, order, headers)
 
     assert response.status_code == 200
     assert cancel.call_count == 1
-    detail = (await api.get(f"{ORDERS}{order.id}/", headers=headers)).json()["data"]
+    # The provider is named by **its** handle, not ours.
+    assert jsonlib.loads(cancel.calls.last.request.content) == {"order_number": "61453"}
+    detail = response.json()["data"]
     # Ours says what happened, theirs says what they called it.
     assert detail["status"] == "cancelled"
     assert detail["provider_status"] == "CB"
@@ -725,9 +733,9 @@ async def test_a_ticketed_order_is_refused_before_gts_is_called(
     await _installation(session)
     signin = _mock_signin()
     cancel = _mock_cancel()
-    await _order(session, customer, status=OrderStatus.TICKETED.value)
+    order = await _order(session, customer, status=OrderStatus.TICKETED.value)
 
-    response = await api.post(CANCEL, json={"order_number": 61453}, headers=headers)
+    response = await _cancel(api, order, headers)
 
     assert response.status_code == 409
     assert response.json()["errors"][0]["code"] == "conflict"
@@ -736,19 +744,41 @@ async def test_a_ticketed_order_is_refused_before_gts_is_called(
 
 
 @respx.mock
-async def test_cancelling_without_an_order_number_is_a_422(
+async def test_cancelling_needs_a_key_and_only_cancels_once(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
+    """A money endpoint like the others: releasing a seat twice is not harmful
+    on its own, but a second call would answer 409 to a client that had already
+    succeeded (API.md §10)."""
     await _installation(session)
-    signin = _mock_signin()
+    _mock_signin()
     cancel = _mock_cancel()
+    order = await _order(session, customer)
+    key = str(uuid.uuid4())
 
-    response = await api.post(CANCEL, json={"pnr": "ABCDEF"}, headers=headers)
+    keyless = await api.post(f"{ORDERS}{order.id}/cancel/", headers=headers)
+    first = await api.post(
+        f"{ORDERS}{order.id}/cancel/", headers=_booking_headers(headers, key)
+    )
+    second = await api.post(
+        f"{ORDERS}{order.id}/cancel/", headers=_booking_headers(headers, key)
+    )
 
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "order_number"
-    assert cancel.call_count == 0
-    assert signin.call_count == 0
+    assert keyless.status_code == 422
+    assert keyless.json()["errors"][0]["field"] == "Idempotency-Key"
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert cancel.call_count == 1
+
+
+async def test_cancelling_needs_a_customer_token(
+    api: AsyncClient, session: AsyncSession, customer: Customer
+) -> None:
+    order = await _order(session, customer)
+
+    response = await api.post(f"{ORDERS}{order.id}/cancel/")
+
+    assert response.status_code == 401

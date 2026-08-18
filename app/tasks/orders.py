@@ -15,6 +15,10 @@ to thirty seconds of latency the customer never sees — the screen already says
 the ticket is being issued. ``ticket`` re-reads under a lock and leaves quietly
 if the order moved on, so a duplicate send costs nothing either way.
 
+``expire_unpaid`` is the third and stands apart: it is not driven by a
+schedule on a row but by a deadline that has simply passed, so it finds its own
+work every minute.
+
 **Everything here is idempotent by re-reading, not by remembering.** A worker
 that dies mid-ticketing leaves an order in ``ticketing`` with a schedule, and
 the next pass picks it up exactly as if nothing had happened.
@@ -32,11 +36,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import AppError
 from app.core.logging import get_logger
 from app.db.session import get_sessionmaker
+from app.modules.integrations import service as integrations_service
 from app.modules.orders import service as orders_service
 from app.modules.orders.models import Order, OrderRefund
 from app.modules.orders.states import OrderStatus
 from app.modules.payments import service as payments_service
-from app.modules.products import service as products_service
 from app.modules.settings import service as settings_service
 from app.providers.payments.base import PaymentProviderCode, RefundStatus
 from app.providers.products.base import registry
@@ -137,7 +141,7 @@ async def _ticket(order_id: uuid.UUID) -> None:
             )
             return
 
-        client = await products_service.gts_client(session)
+        client = await integrations_service.gts_client(session)
 
         try:
             quoted = await operations.reprice(client, number)
@@ -357,7 +361,7 @@ async def _release_reservation(session: AsyncSession, order: Order) -> None:
     if operations is None or order.provider_order_number is None:
         return
     try:
-        client = await products_service.gts_client(session)
+        client = await integrations_service.gts_client(session)
         await operations.cancel(client, {"order_number": order.provider_order_number})
     except (AppError, UnreadableAnswer) as failure:
         logger.warning(
@@ -393,6 +397,36 @@ async def _refund_again(
     )
 
 
+async def _expire_unpaid() -> None:
+    """Give back the seats nobody paid for.
+
+    Without this a hold simply lapses: the provider takes the seat back on its
+    own schedule and our order sits in ``booked`` for ever, telling the customer
+    a payment is still expected and telling a report that a sale is still open.
+
+    The reservation is released first and the order is closed either way. A
+    provider that refuses is logged and not waited for: the hold has already
+    lapsed on its clock and it reclaims the seat on its own (GTS.md §11), while
+    an order left open would keep telling a customer to pay for something they
+    can no longer have.
+    """
+    async with get_sessionmaker()() as session:
+        settings = await settings_service.get_order_settings(session)
+        expiring = await orders_service.due_for_expiry(session, settings, limit=_BATCH)
+        if not expiring:
+            return
+        for order in expiring:
+            await _release_reservation(session, order)
+            await orders_service.expire_booking(session, order)
+        logger.info("orders_expired", count=len(expiring))
+
+
+@celery_app.task(name="app.tasks.orders.expire_unpaid")
+def expire_unpaid() -> None:
+    """Release the holds whose payment window has closed."""
+    asyncio.run(_expire_unpaid())
+
+
 @celery_app.task(name="app.tasks.orders.refund")
 def refund(order_id: str) -> None:
     """Give one order's money back. Safe to send twice."""
@@ -411,4 +445,4 @@ def run_due() -> None:
     asyncio.run(_run_due())
 
 
-__all__ = ["refund", "run_due", "ticket"]
+__all__ = ["expire_unpaid", "refund", "run_due", "ticket"]

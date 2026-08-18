@@ -155,9 +155,21 @@ kontrakt testlari.
 > provayderdan pulni qaytaradi. 8 urinishdan keyin `needs_attention`.
 > **D3 va'dasi shu bilan bajariladi: pul jimgina yo'qolmaydi.**
 >
-> Keyingi ikkitasi: **S4b — Payme va Click adapterlari** (merchant hujjatlari va
-> sandbox kaliti kelganda; hozir portda faqat chegarasi bor) va
-> **S6b — mijoz so'rovi bo'yicha qaytarish, admin tasdig'i va `resolve/`**.
+> **S7a (bekor qilish va muddat) bajarildi 2026-08-18:**
+> `POST /public/orders/{id}/cancel/` qurildi va `POST /public/{product}/cancel/`
+> olib tashlandi (`FlowStep.CANCEL` bilan birga). `orders.expire_unpaid` beat
+> har daqiqada to'lanmagan bronlarni provayderga qaytaradi.
+>
+> **§8.15a (🔴) yopildi, va ildizi ko'rinardan chuqurroq edi:** muammo
+> `cancel` javobida emas, `gts/client.py` da — `_translate` **envelope
+> rejimida ham** `data` ni majburiy qilardi. GTS esa o'zi bilan izchil emas:
+> `booking` javobni `data` ga, `ticketing` va `cancel` `order` ga qo'yadi.
+> Endi envelope rejimi butun payload'ni qaytaradi va qaysi kalitda javob
+> borligini adapter hal qiladi.
+>
+> Qolgani: **S4b — Payme va Click adapterlari** · **S6b — mijoz so'rovi
+> bo'yicha qaytarish va admin tasdig'i** · **S7b — sinxronizatsiya, admin
+> yuzasi, kvitansiya, anonimlashtirish**.
 
 To'liq reja — [PHASES.md](PHASES.md).
 

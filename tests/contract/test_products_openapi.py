@@ -35,7 +35,6 @@ STEPS: dict[str, tuple[str, ...]] = {
     # what ``data`` holds, still whole, and the order inside it is checked
     # separately below.
     "booking": ("order", "payment", "data"),
-    "cancel": ("status",),
 }
 
 #: What the order itself must name, one level under booking's ``data``. These
@@ -155,14 +154,13 @@ def test_the_product_parameter_says_what_to_put_there(schema: dict[str, Any]) ->
     assert "flight" in product["description"]
 
 
-@pytest.mark.parametrize("step", ["booking", "cancel"])
-def test_the_unconfirmed_steps_say_so(schema: dict[str, Any], step: str) -> None:
-    """Booking and cancel were never run against live GTS (STATUS.md §8).
+def test_the_unconfirmed_step_says_so(schema: dict[str, Any]) -> None:
+    """Booking was never run against live GTS (STATUS.md §8).
 
-    Documenting them as settled would be the schema asserting something nobody
+    Documenting it as settled would be the schema asserting something nobody
     has checked.
     """
-    operation = _operation(schema, step)
+    operation = _operation(schema, "booking")
     request = _json(operation, "request")["schema"]["description"]
     # The hand-written schema is nested inside the envelope by now.
     response = _json(operation, "response")["schema"]["properties"]["data"][

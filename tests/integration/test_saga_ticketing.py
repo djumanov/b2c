@@ -121,7 +121,7 @@ def operations(connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch) -> 
     async def no_credential_needed(session: object) -> object:
         return object()
 
-    monkeypatch.setattr(tasks.products_service, "gts_client", no_credential_needed)
+    monkeypatch.setattr(tasks.integrations_service, "gts_client", no_credential_needed)
     yield fake
     registry.register(FlightAdapter())
 
@@ -452,3 +452,103 @@ async def test_an_order_that_vanished_is_not_an_error(
     await tasks._ticket(uuid.uuid4())
 
     assert operations.calls == []
+
+
+# --- holds nobody paid for -------------------------------------------------------
+
+
+async def _booked(session: AsyncSession, customer: Customer, **overrides: Any) -> Order:
+    return await _paid(
+        session,
+        customer,
+        status=OrderStatus.BOOKED.value,
+        amount_paid=Decimal(0),
+        paid_at=None,
+        **overrides,
+    )
+
+
+async def test_a_hold_whose_window_closed_gives_the_seat_back(
+    session: AsyncSession, customer: Customer, operations: FakeOperations
+) -> None:
+    """Without this the hold simply lapses: the provider takes the seat back on
+    its own schedule, and the order sits in ``booked`` telling the customer a
+    payment is still expected."""
+    order = await _booked(
+        session, customer, ticket_time_limit_at=datetime.now(UTC) + timedelta(minutes=5)
+    )
+
+    await tasks._expire_unpaid()
+
+    await session.refresh(order)
+    assert order.status == "cancelled"
+    assert order.cancellation_reason == "timelimit"
+    assert order.cancelled_at is not None
+    # The seat is handed back rather than left to lapse.
+    assert operations.calls == ["cancel"]
+    assert await _events(session, order) == ["booking.expired"]
+
+
+async def test_a_hold_still_inside_its_window_is_left_alone(
+    session: AsyncSession, customer: Customer, operations: FakeOperations
+) -> None:
+    """The margin is subtracted from the provider's deadline, not added: an
+    order with hours left is nobody's business yet."""
+    order = await _booked(session, customer)
+
+    await tasks._expire_unpaid()
+
+    await session.refresh(order)
+    assert order.status == "booked"
+    assert operations.calls == []
+
+
+async def test_a_hold_with_no_deadline_gets_one_of_ours(
+    session: AsyncSession, customer: Customer, operations: FakeOperations
+) -> None:
+    """A provider that named no deadline does not get to keep an order open for
+    ever. The bound is ``hold_fallback_minutes`` and it is ours to set."""
+    order = await _booked(
+        session,
+        customer,
+        ticket_time_limit_at=None,
+        created_at=datetime.now(UTC) - timedelta(hours=4),
+    )
+
+    await tasks._expire_unpaid()
+
+    await session.refresh(order)
+    assert order.status == "cancelled"
+
+
+async def test_a_paid_order_is_never_expired(
+    session: AsyncSession, customer: Customer, operations: FakeOperations
+) -> None:
+    """Money has moved. Whatever happens next, it is not a quiet cancellation."""
+    order = await _paid(
+        session, customer, ticket_time_limit_at=datetime.now(UTC) - timedelta(hours=1)
+    )
+
+    await tasks._expire_unpaid()
+
+    await session.refresh(order)
+    assert order.status == "paid"
+    assert operations.calls == []
+
+
+async def test_a_provider_that_will_not_release_does_not_hold_the_order_open(
+    session: AsyncSession, customer: Customer, operations: FakeOperations
+) -> None:
+    """The hold has already lapsed on the provider's clock and it reclaims the
+    seat on its own (GTS.md §11). An order left open would keep telling a
+    customer to pay for something they can no longer have, so the refusal is
+    logged and the order closes anyway."""
+    operations.cancel_fails = UpstreamError("the provider is unavailable")
+    order = await _booked(
+        session, customer, ticket_time_limit_at=datetime.now(UTC) + timedelta(minutes=5)
+    )
+
+    await tasks._expire_unpaid()
+
+    await session.refresh(order)
+    assert order.status == "cancelled"
