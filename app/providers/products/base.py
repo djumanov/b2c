@@ -21,7 +21,7 @@ is implemented in phase 2 (ARCHITECTURE.md §13.8).
 """
 
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 from app.providers.gts.base import GtsClient
 
@@ -57,6 +57,13 @@ class FlowStep(StrEnum):
     UPSELL = "upsell"
     #: transfer
     RECOMMENDED_TIME = "recommended-time"
+
+
+#: GTS's own word for "the providers are still answering" — the envelope status
+#: the search steps relay verbatim as ``search_status`` (API.md §20). Named here
+#: because it is no longer only relayed: an adapter that hides an upstream
+#: failure answers with it, and the client polls again (STATUS.md §4 no. 86).
+SEARCH_IN_PROCESS: Final = "In process"
 
 
 @runtime_checkable
@@ -132,6 +139,7 @@ registry = ProductRegistry()
 
 
 __all__ = [
+    "SEARCH_IN_PROCESS",
     "FlowStep",
     "ProductAdapter",
     "ProductCode",

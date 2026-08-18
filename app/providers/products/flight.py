@@ -37,10 +37,11 @@ import pydantic
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
+from app.core.logging import get_logger
 from app.core.money import Money, quantize, to_decimal
 from app.modules.orders.states import OrderStatus
 from app.providers.gts.base import GtsClient, GtsTimeouts
-from app.providers.products.base import FlowStep, ProductCode
+from app.providers.products.base import SEARCH_IN_PROCESS, FlowStep, ProductCode
 from app.providers.products.orders import (
     BookingResult,
     CancelResult,
@@ -50,6 +51,8 @@ from app.providers.products.orders import (
     TravelerRef,
     UnreadableAnswer,
 )
+
+logger = get_logger(__name__)
 
 #: IATA location code — city or airport.
 _IATA_PATTERN = r"^[A-Za-z]{3}$"
@@ -407,6 +410,24 @@ def _travelers(
     return ()
 
 
+def _hide_failure(step: str, failure: AppError) -> None:
+    """Record an upstream failure the client is about to be spared.
+
+    ``offers/`` and ``upsell/`` answer an empty page instead of a ``502``
+    (API.md §20), which means the only trace left of a broken provider — or a
+    broken GTS — is this line. The client logged *why* the call failed
+    (``gts_rejected``, ``gts_timeout``, ``gts_unreachable``); this logs that we
+    then chose to hide it, so a silent degradation is still a countable event
+    rather than a search that mysteriously returns nothing.
+    """
+    logger.warning(
+        "search_step_degraded",
+        step=step,
+        error=str(failure),
+        upstream=failure.meta.get("upstream") if failure.meta else None,
+    )
+
+
 class FlightAdapter:
     """``ProductAdapter`` and ``OrderOperations`` for ``flight``.
 
@@ -448,11 +469,37 @@ class FlightAdapter:
         ``data``), ``"success"`` when done. The envelope is ours to strip, so
         that one field rides on as ``search_status``, verbatim: the client
         polls until it says ``"success"``.
+
+        **A failure here is a page we could not fetch, not a failed search**
+        (API.md §20, decision of 2026-08-18). A search fans out across
+        providers and answers unevenly: one of them refuses and the whole
+        envelope comes back ``status: "error"``, while the next poll a second
+        later carries offers. Turning that into a ``502`` put an error screen
+        in front of a customer whose search was going fine. So every upstream
+        disappointment — GTS's own error, a ``5xx``, a timeout, an unreachable
+        host — becomes an **empty page that still reads ``In process``**, and
+        the client simply asks again.
+
+        The cursor is echoed back rather than dropped: the retry must ask for
+        the *same* page, because a failure that silently advanced the paging
+        would lose the offers it skipped. Our own ``422`` is untouched — the
+        shape check runs before the ``try``, and ``ValidationFailed`` is not
+        an upstream failure.
         """
         _validated(_FlightOffersIn, params)
-        payload = await client.post_envelope(
-            "/v1/content/offers/", json=params, timeout=GtsTimeouts.SEARCH_SECONDS
-        )
+        try:
+            payload = await client.post_envelope(
+                "/v1/content/offers/", json=params, timeout=GtsTimeouts.SEARCH_SECONDS
+            )
+        except (UpstreamError, UpstreamTimeout) as failure:
+            _hide_failure("offers", failure)
+            return {
+                "request_id": params.get("request_id"),
+                "next_token": params.get("next_token"),
+                "count": 0,
+                "offers": [],
+                "search_status": SEARCH_IN_PROCESS,
+            }
         data: dict[str, Any] = payload.get("data") or {}
         return {**data, "search_status": payload.get("status")}
 
@@ -467,11 +514,27 @@ class FlightAdapter:
         ``search_status`` relay, not a failure on anything short of
         ``"success"``. GTS's own ``status``/``code`` *inside* ``data`` ride
         through untouched.
+
+        It degrades like ``offers`` too, and for the same reason: branded fares
+        are still part of choosing, and a variant list that could not be
+        fetched is worth an empty list and another poll rather than an error
+        screen over an offer the customer can book as it stands (API.md §20).
+        ``verify`` deliberately does **not** follow — by then one offer has been
+        chosen, and answering "nothing here, keep asking" about it would be a
+        lie.
         """
         _validated(_FlightOfferRefIn, payload)
-        envelope = await client.post_envelope(
-            "/v1/content/upsell/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
-        )
+        try:
+            envelope = await client.post_envelope(
+                "/v1/content/upsell/", json=payload, timeout=GtsTimeouts.SEARCH_SECONDS
+            )
+        except (UpstreamError, UpstreamTimeout) as failure:
+            _hide_failure("upsell", failure)
+            return {
+                "request_id": payload.get("request_id"),
+                "offers": [],
+                "search_status": SEARCH_IN_PROCESS,
+            }
         data: dict[str, Any] = envelope.get("data") or {}
         return {**data, "search_status": envelope.get("status")}
 
