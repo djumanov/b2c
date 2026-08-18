@@ -821,10 +821,13 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "save_passenger": {
                 "type": "boolean",
                 "description": (
-                    "⚠ **Not implemented.** It travels to GTS and stops there; "
-                    "the traveller is **not** added to the customer's saved "
-                    "passengers (§19). Send it if you like, but do not rely on "
-                    "it — use `POST /public/profile/passengers/` to save one."
+                    "**Ours, not GTS's** (§19). `true` adds the travellers to "
+                    "the customer's saved passengers once the booking is "
+                    "confirmed — a refused, unanswered or unreadable booking "
+                    "saves nobody. Somebody already on the list is not added "
+                    "twice, a traveller with no birth date is skipped, and "
+                    "none of it can fail the booking. Strictly boolean: the "
+                    'string `"true"` is not a yes.'
                 ),
             },
         },
@@ -832,8 +835,6 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     # Recorded from the EASY_GATEWAY collection's ``/content/Booking`` — a
     # real call, not a composition. One adult, because that is the request
     # that was actually made; the passenger shape is the part worth copying.
-    # ``save_passenger`` is left out: documenting an example that promises
-    # something the code does not do is how the field got believed in.
     request_example={
         "request_id": _REQUEST_ID,
         "offer_id": _OFFER_ID,
@@ -856,6 +857,7 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                 "phone": {"phone_code": "998", "phone_number": "998328192"},
             }
         ],
+        "save_passenger": True,
     },
     response_schema={
         "type": "object",

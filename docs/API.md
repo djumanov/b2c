@@ -816,11 +816,23 @@ manzil bo'shaydi, ya'ni o'sha email bilan qaytadan ro'yxatdan o'tish mumkin.
 Bron qilishda qayta terishni oldini oladi. Resurs §8 dagi standart CRUD
 naqshida ishlaydi.
 
-> ⚠ **`save_passenger` hozircha ishlamaydi.** Bron so'rovidagi
-> `"save_passenger": true` GTS'ga uzatiladi va shu yerda tugaydi — yo'lovchi
-> bu ro'yxatga **tushmaydi**. Bugun yozuv faqat shu bo'limdagi `POST` bilan
-> qo'shiladi. Sabab va yopilish rejasi:
-> [`order-system/02-current-audit.md`](order-system/02-current-audit.md) A11.
+Ikki yo'l bilan to'ladi: shu bo'limdagi `POST` bilan qo'lda, yoki bron
+so'rovida `"save_passenger": true` berilsa — u holda **tasdiqlangan** bron
+yo'lovchilari avtomatik qo'shiladi (§20). Avtomatik yo'lda:
+
+* yo'lovchi **GTS javobidan** olinadi, so'rovdan emas — GTS ismni tuzatgan
+  bo'lsa, saqlanadigani tuzatilgani;
+* `citizenship` va `document_type` bron tanasida faqat **kod** (`UZ`, `PSP`),
+  bu yerda esa §26 dagi **to'liq obyekt** — kod bo'yicha katalogdan qidiriladi.
+  Katalogga yetib bo'lmasa `{"code": "UZ"}` yoziladi va qolganini mijoz o'zi
+  to'ldiradi;
+* **tug'ilgan sanasi yo'q** yo'lovchi o'tkazib yuboriladi — u baribir bron
+  paytida qayta terilardi (`birth_date` majburiy);
+* **takror yozilmaydi**: ism, familiya, tug'ilgan sana va hujjat raqami mos
+  kelsa yangi qator ochilmaydi. Hujjat **yangilangan** bo'lsa — bu boshqa
+  qator, chunki eski va yangi pasport ikkalasi ham kerak bo'ladi;
+* bu ish **bronni hech qachon yiqitmaydi**: o'rin allaqachon band, va bu
+  faqat qulaylik.
 
 ```json
 GET /public/profile/passengers/
@@ -1124,7 +1136,7 @@ Javobda **`X-Request-Id`** qaytadi — support suhbati shu qiymatdan boshlanadi
 | `request_id` | `string`, bo'sh emas | **✓** | **Biz.** Bo'lmasa `422`, `field: "request_id"` |
 | `offer_id` | `string`, bo'sh emas | **✓** | **Biz.** Bo'lmasa `422`, `field: "offer_id"` |
 | `passengers` | `array<object>` | GTS talab qiladi | **GTS.** Biz qaramaymiz ham |
-| `save_passenger` | `boolean` | — | **Hech kim** — pastdagi ogohlantirishga qarang |
+| `save_passenger` | `boolean` | — | **Biz.** `true` bo'lsa yo'lovchilar §19 ro'yxatiga qo'shiladi. Faqat `true` — `"true"` satri emas |
 | boshqa har qanday maydon | — | — | Tekshirilmaydi, GTS'ga **aynan** o'tadi |
 
 Ya'ni bizning tekshiruvimiz **ikki maydondan iborat**. Qolgani — jumladan
@@ -1133,11 +1145,11 @@ maydonlar kerakligini GTS bron kontrakti hal qiladi. Yo'lovchilar soni va turi
 qidiruvdagi `adt`/`chd`/`inf`/`ins` bilan mos kelishi shart — buni ham GTS
 tekshiradi va nomuvofiqlik `502` bo'lib qaytadi.
 
-> ⚠ **`save_passenger` hozircha hech narsa qilmaydi.** U GTS'ga uzatiladi va
-> shu yerda tugaydi: yo'lovchi §19 dagi saqlangan yo'lovchilar ro'yxatiga
-> **tushmaydi**. Klient uni yuborishi mumkin, lekin unga tayanmasin —
-> "keyingi safar avtomatik to'ladi" degan va'da bugun bajarilmaydi
-> ([order-system/02-current-audit.md](order-system/02-current-audit.md) A11).
+> **`save_passenger` — bizning maydonimiz, GTS uni e'tiborsiz qoldiradi.**
+> `true` bo'lsa va bron **tasdiqlansa**, yo'lovchilar mijozning saqlangan
+> yo'lovchilariga qo'shiladi (§19) — keyingi bronda ro'yxatdan tanlanadi.
+> Rad etilgan, javobsiz yoki o'qib bo'lmaydigan bron hech kimni saqlamaydi.
+> Takror yozilmaydi va bu ish bronni hech qachon yiqitmaydi; qoidalari §19 da.
 
 #### `passengers[]` elementi
 

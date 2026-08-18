@@ -13,6 +13,11 @@ order row is not an offer cache, so D2 is untouched (ARCHITECTURE.md §10);
 what it buys is that a customer can find their booking again, and that
 cancelling is limited to bookings they actually made.
 
+A booking that asked for ``save_passenger`` writes one more thing, through
+one more service: the travellers land on the customer's saved list
+(``customers.save_travelers``, API.md §19). It happens after the order is
+committed and cannot fail the booking.
+
 The flight search response gets one addition on its way out: ``fun_fact``, a
 random published fact from the cms module (through its service, never its
 models — ARCHITECTURE.md §4), for the client to show while polling
@@ -35,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import NotFound, UpstreamError, UpstreamTimeout
 from app.core.logging import get_logger
 from app.modules.cms import service as cms_service
+from app.modules.customers import service as customers_service
 from app.modules.integrations import service as integrations_service
 from app.modules.orders import service as orders_service
 from app.providers.products.base import ProductAdapter, ProductCode
@@ -83,6 +89,16 @@ async def verify(
     return await adapter.verify(await integrations_service.gts_client(session), payload)
 
 
+def _wants_saved_travelers(payload: dict[str, Any]) -> bool:
+    """``save_passenger`` — ours, not GTS's (API.md §19, §20).
+
+    A strict boolean. The field spent a release documented and unread, so the
+    fix is not to also start guessing at ``"true"``: the contract says boolean
+    and Swagger now says so too.
+    """
+    return payload.get("save_passenger") is True
+
+
 def _order_ops(adapter: ProductAdapter) -> OrderOperations:
     """The adapter's order half. Unreachable ``404`` — the gate got there first.
 
@@ -126,6 +142,10 @@ async def book(
     * **unreadable** — the provider agreed in words we cannot parse, so the
       order goes to ``needs_attention`` with the answer attached and the key is
       kept: a seat is probably held and a retry must not open a second one.
+
+    Only the confirmed ending saves passengers. A booking that failed, timed
+    out or came back unreadable has nothing worth putting on a profile — and
+    on the unreadable path there are no normalised travellers to put there.
     """
     ops = _order_ops(adapter)
     client = await integrations_service.gts_client(session)
@@ -157,7 +177,18 @@ async def book(
         raise
 
     order = await orders_service.confirm_booking(session, order, result)
-    return orders_service.booking_answer(order)
+    # The answer is built **before** the passengers are saved, not after. That
+    # path can roll the session back, which expires ``order`` and would turn a
+    # confirmed booking into a 500 while reading a row that is already
+    # committed. Settling the answer first makes the ordering the guarantee.
+    answer = orders_service.booking_answer(order)
+    if _wants_saved_travelers(payload):
+        # A saved passenger is a convenience; the booking is the transaction.
+        # ``save_travelers`` does not raise (API.md §19).
+        await customers_service.save_travelers(
+            session, customer_id=customer_id, travelers=order.travelers
+        )
+    return answer
 
 
 __all__ = [
