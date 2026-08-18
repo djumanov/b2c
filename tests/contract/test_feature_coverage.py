@@ -76,6 +76,15 @@ CORE_PREFIXES: tuple[str, ...] = (
     # purchases a customer already made, which is never a thing to offer
     # (API.md §21).
     f"{API_PREFIX}/public/orders/",
+    # Paying for what you bought, and the providers calling back about it.
+    # Same reasoning as the order history one line up: the switch that decides
+    # whether an installation sells at all is ``product_settings``, and a flag
+    # over payment would only be able to strand orders that already exist. Which
+    # methods are offered is a per-provider ``enabled`` row, not a section
+    # (API.md §22, §29).
+    f"{API_PREFIX}/public/payments/",
+    f"{API_PREFIX}/public/transactions/",
+    f"{API_PREFIX}/webhooks/",
     # Fun facts ride inside the flight search response; the off-switch is
     # publishing nothing — an empty table already removes the feature, so a
     # flag would be a second switch for the same wire (API.md §20, §30).

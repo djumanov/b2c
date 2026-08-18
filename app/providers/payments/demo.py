@@ -49,6 +49,9 @@ class DemoPaymentProvider:
     def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
         return True
 
+    def signature_rejected(self) -> CallbackResult:
+        return CallbackResult(body={"error": "bad signature"}, status_code=401)
+
     async def handle_callback(
         self, headers: Mapping[str, str], body: bytes
     ) -> CallbackResult:

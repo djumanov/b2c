@@ -31,11 +31,10 @@ STEPS: dict[str, tuple[str, ...]] = {
     "offers": ("search_status", "next_token", "count", "trip_type", "offers"),
     "upsell": ("search_status", "offers"),
     "verify": ("search_status", "verified"),
-    # Booking's answer is two layers deep — GTS's own wrapper, then the
-    # order. The wrapper is what ``data`` describes; the order beneath it is
-    # checked separately below.
-    "booking": ("message", "request_id", "data"),
-    "cancel": ("status",),
+    # Booking answers with our order beside GTS's answer; the answer itself is
+    # what ``data`` holds, still whole, and the order inside it is checked
+    # separately below.
+    "booking": ("order", "payment", "data"),
 }
 
 #: What the order itself must name, one level under booking's ``data``. These
@@ -110,7 +109,9 @@ def test_the_booking_order_itself_is_described(schema: dict[str, Any]) -> None:
     the ``orders`` module reads out of it must stay documented — that pair
     drifting apart is what made every ``gts_order_number`` NULL once."""
     success = _json(_operation(schema, "booking"), "response")["schema"]
-    order = success["properties"]["data"]["properties"]["data"]
+    # envelope ``data`` → our answer → GTS's wrapper → the order itself.
+    answer = success["properties"]["data"]["properties"]["data"]
+    order = answer["properties"]["data"]
 
     for field in BOOKING_ORDER_FIELDS:
         assert field in order["properties"], f"booking: `{field}` undocumented"
@@ -153,14 +154,13 @@ def test_the_product_parameter_says_what_to_put_there(schema: dict[str, Any]) ->
     assert "flight" in product["description"]
 
 
-@pytest.mark.parametrize("step", ["booking", "cancel"])
-def test_the_unconfirmed_steps_say_so(schema: dict[str, Any], step: str) -> None:
-    """Booking and cancel were never run against live GTS (STATUS.md §8).
+def test_the_unconfirmed_step_says_so(schema: dict[str, Any]) -> None:
+    """Booking was never run against live GTS (STATUS.md §8).
 
-    Documenting them as settled would be the schema asserting something nobody
+    Documenting it as settled would be the schema asserting something nobody
     has checked.
     """
-    operation = _operation(schema, step)
+    operation = _operation(schema, "booking")
     request = _json(operation, "request")["schema"]["description"]
     # The hand-written schema is nested inside the envelope by now.
     response = _json(operation, "response")["schema"]["properties"]["data"][

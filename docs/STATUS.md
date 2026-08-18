@@ -107,7 +107,69 @@ kontrakt testlari.
 ## 3. Keyingi ish
 
 > **Keyingi ish — buyurtma tizimi.** Reja va bo'laklar:
-> [`order-system/04-plan.md`](order-system/04-plan.md) (S1…S11).
+> [`order-system/04-plan.md`](order-system/04-plan.md) (S1…S7).
+> **S1 (holat mashinasi) bajarildi 2026-08-18:** `orders` jadvali qayta
+> yozildi, `order_events` qo'shildi, kanonik status enumi va 18 ta o'tishdan
+> iborat jadval `modules/orders/states.py` da, `service.transition()` —
+> `FOR UPDATE` ostida statusni o'zgartiradigan yagona yo'l. `modules/booking/`
+> o'chirildi (`O1`), `providers/gts/base.OrderStatus` olib tashlandi.
+> **S2 (adapter porti) bajarildi 2026-08-18:** `providers/products/orders.py`
+> — `OrderOperations`, `BookingResult`, `CancelResult`, `TravelerRef`,
+> `UnreadableAnswer`. `book`/`cancel` `ProductAdapter` dan chiqib shu portga
+> o'tdi va endi GTS `dict` i emas, bizning turlarimizni qaytaradi. Flight
+> adapteri narxni (`price + fee_amount`, `float` → `str` → `Decimal`),
+> `ticket_time_limit` ning uch xil formatini, marshrutni va yo'lovchilarni
+> normallashtiradi; yo'lovchilar endi `orders.travelers` da **bizning
+> shaklimizda** (§8.17 shu bilan yopilishga tayyor — tozalash S7 da).
+> **S3 (bron niyati) bajarildi 2026-08-18:** buyurtma qatori endi GTS
+> chaqiruvidan **oldin** yoziladi — A1 (yo'qoladigan bron) yopildi. `booking/`
+> `Idempotency-Key` talab qiladi va 10/daq to'lov chelagida — A2 yopildi;
+> haqiqiy qo'riqchi bazadagi `(customer_id, idempotency_key)` unique indeksi,
+> Redis esa tez yo'l. Javob `{order, payment, data}` shakliga o'tdi. Rad etilgan
+> bron kalitni bo'shatadi, javobsiz qolgani esa saqlaydi va `created` da
+> qoladi.
+> **S4a (to'lov yadrosi) bajarildi 2026-08-18:** `order_payments` jadvali,
+> `POST /public/orders/{id}/transactions/`, `GET /public/transactions/{id}/`,
+> `GET /public/payments/methods/` va `POST /webhooks/payments/{provider}/`.
+> Urinish provayder chaqiruvidan **oldin** yoziladi; takroriy callback
+> `(provider, provider_ref)` unique indeksi tufayli bir marta yechadi; imzo
+> yomon bo'lsa hech narsa o'zgarmaydi; summa mos kelmasa buyurtma
+> `needs_attention` ga tushadi. `payment_id` kontraktdan chiqdi — `API.md` §22
+> qayta yozildi.
+> **S5 (ticketing) bajarildi 2026-08-18:** `OrderOperations` porti `ticket`,
+> `reprice` va `classify` bilan to'ldi; `app/tasks/orders.py` da `ticket` va
+> `run_due` (har 30 soniyalik supurgich); `order_settings` singleton'i va
+> `/admin/settings/orders/`. Ticketing GTS javobini `post_envelope` bilan
+> o'qiydi — yozib olingan javob buyurtmani `data` emas, **`order`** ostiga
+> qo'yadi, ya'ni `client.post()` muvaffaqiyatli ticketingni `502` qilardi
+> (§8.15a ning ticketing yarmi shu bilan yopildi; `cancel` yarmi S7 da).
+> Xato sinflari ishlaydi: bo'sh deposit — qayta urinish va alert, tarif
+> yo'qolgani — pul qaytarish. Chipta chiqmasa buyurtma `refunding` da qoladi va
+> **qo'lda** hal qilinadi — avtomatik kompensatsiya S6 da.
+>
+> **S6a (avtomatik kompensatsiya) bajarildi 2026-08-18:** `order_refunds`
+> jadvali va `orders.refund` taski. Chipta chiqmasa buyurtma `refunding` ga
+> o'tadi va **o'sha tranzaksiyada** `auto` qaytarish qatori `approved` holatda
+> yoziladi — kompensatsiya hech kimning imzosini kutmaydi. Task avval bronni
+> bo'shatadi (best effort — muvaffaqiyatsizligi pulni ushlab turmaydi), keyin
+> provayderdan pulni qaytaradi. 8 urinishdan keyin `needs_attention`.
+> **D3 va'dasi shu bilan bajariladi: pul jimgina yo'qolmaydi.**
+>
+> **S7a (bekor qilish va muddat) bajarildi 2026-08-18:**
+> `POST /public/orders/{id}/cancel/` qurildi va `POST /public/{product}/cancel/`
+> olib tashlandi (`FlowStep.CANCEL` bilan birga). `orders.expire_unpaid` beat
+> har daqiqada to'lanmagan bronlarni provayderga qaytaradi.
+>
+> **§8.15a (🔴) yopildi, va ildizi ko'rinardan chuqurroq edi:** muammo
+> `cancel` javobida emas, `gts/client.py` da — `_translate` **envelope
+> rejimida ham** `data` ni majburiy qilardi. GTS esa o'zi bilan izchil emas:
+> `booking` javobni `data` ga, `ticketing` va `cancel` `order` ga qo'yadi.
+> Endi envelope rejimi butun payload'ni qaytaradi va qaysi kalitda javob
+> borligini adapter hal qiladi.
+>
+> Qolgani: **S4b — Payme va Click adapterlari** · **S6b — mijoz so'rovi
+> bo'yicha qaytarish va admin tasdig'i** · **S7b — sinxronizatsiya, admin
+> yuzasi, kvitansiya, anonimlashtirish**.
 
 To'liq reja — [PHASES.md](PHASES.md).
 
@@ -486,24 +548,22 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     `order_recorded_without_gts_number` ogohlantirishi ikkala qavatning
     maydon ro'yxati bilan log'ga tushadi.
 
-15a. 🔴 **Bekor qilish javobining shakli mos kelmayapti.** Kolleksiyada
-    saqlangan yagona `cancel` javobi eski shaklda — `{status, code, order}`,
-    ya'ni unda **`data` kaliti yo'q**. Bizning `providers/gts/client.py`
-    `_translate` esa envelope'siz rejimda `data` ni talab qiladi va bo'lmasa
-    `502 upstream_error` beradi. Agar jonli GTS ham shu shaklni qaytarsa,
-    **bekor qilish har doim 502 bo'ladi** — bron esa ishlaydi. Bu jonli
-    tekshiruvda **birinchi ko'riladigan narsa**. Tuzatish arzon (`cancel`
-    uchun `post_envelope` yoki alohida shakl), lekin qaysi biri kerakligini
-    haqiqiy javobsiz tanlab bo'lmaydi.
+15a. ✅ **Bekor qilish javobining shakli mos kelmasligi** — **yopildi.**
+    Kolleksiyadagi yagona `cancel` javobi eski shaklda (`{status, code,
+    order}`, `data` kalitisiz) va bare-`data` o'quvchisi uni rad etardi, ya'ni
+    bekor qilish jonli GTS'da har doim `502` bo'lardi. Endi `cancel` ham,
+    ticketing ham `post_envelope` ishlatadi — u butun payloadni qaytaradi va
+    javob `data` da ham, `order` da ham kelsa o'qiydi
+    (`providers/products/flight.py`, `providers/gts/client.py::_translate`).
 
-16. 🟠 **Bron yozilmay qolsa buyurtma yo'qoladi.** `booking/` da GTS javob
-    bergandan keyingi `INSERT` xato bersa, so'rov baribir `200` qaytaradi
-    (izohi API.md §20 da: `500` qaytarish mijozni qayta urinishga va
-    **ikkinchi bronga** olib borardi — haqiqiy o'rin). Oqibati: o'sha bron
-    bizda ko'rinmaydi va u orqali bekor qilib bo'lmaydi; mijoz qo'lida faqat
-    javobdagi `order_id`/`pnr` qoladi. To'g'ri yechimi — holat o'zgarishi
-    bilan bitta tranzaksiyadagi outbox (ARCHITECTURE.md §8), u **9-bo'lakda**.
-    Hozircha `order_not_recorded` log'i.
+16. ✅ **Bron yozilmay qolsa buyurtma yo'qolishi** — **yopildi.** Qator endi
+    GTS chaqiruvidan **oldin** yoziladi (`orders/service.py::start_order`),
+    ya'ni yozuv bajarilmasa GTS'ga umuman borilmaydi va yo'qoladigan bron
+    qolmaydi. Javob kelmasa qator `created` holatida turadi — bu "so'radik,
+    javobini bilmaymiz" degani, va uni topib bo'ladi
+    (`order-system/02-current-audit.md` A1).
+    ⚠ Qolgani: `created` ni avtomatik hal qiladigan solishtirish (`sync_open`)
+    hali qurilmagan — bugun bunday qatorni operator yopadi.
 
 17. 🔴 **Buyurtma anonimlashtirilmaydi, va endi bu tasdiqlangan.**
     Kolleksiyadagi bron javobida `data.passengers[]` bor va uning ichida

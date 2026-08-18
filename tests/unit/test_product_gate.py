@@ -110,13 +110,13 @@ async def test_an_undeclared_step_is_the_same_404(
     assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
 
 
-@pytest.mark.parametrize("step", ["booking", "cancel"])
 async def test_the_gate_answers_before_the_token_is_asked_for(
-    client: AsyncClient, step: str
+    client: AsyncClient,
 ) -> None:
-    """``booking/`` and ``cancel/`` are the two steps that demand a customer,
-    and the gate still runs first: an anonymous caller gets 404, not 401.
-    Otherwise the difference would say which verticals we sell (API.md §41)."""
+    """``booking/`` is the step that demands a customer, and the gate still runs
+    first: an anonymous caller gets 404, not 401. Otherwise the difference would
+    say which verticals we sell (API.md §41)."""
+    step = "booking"
     await _cache_products([{"code": "flight", "enabled": False}])
 
     response = await client.post(f"/api/v1/public/flight/{step}/", json={})
@@ -125,12 +125,12 @@ async def test_the_gate_answers_before_the_token_is_asked_for(
     assert response.json()["errors"][0]["message"] == NOT_AVAILABLE
 
 
-@pytest.mark.parametrize("step", ["booking", "cancel"])
 async def test_an_enabled_vertical_still_demands_a_customer(
-    client: AsyncClient, step: str
+    client: AsyncClient,
 ) -> None:
-    """Past the gate, the two writing steps refuse the anonymous (PROJECT.md
-    D4: no guest purchase). No GTS call can happen — auth fails first."""
+    """Past the gate, booking refuses the anonymous (PROJECT.md D4: no guest
+    purchase). No GTS call can happen — auth fails first."""
+    step = "booking"
     await _cache_products([{"code": "flight", "enabled": True}])
 
     response = await client.post(f"/api/v1/public/flight/{step}/", json={})

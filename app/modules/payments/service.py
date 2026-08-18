@@ -17,7 +17,9 @@ Two rules that shape the code below:
 """
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Final
 
 import structlog
@@ -26,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import NotFound, ValidationFailed
+from app.api.errors import NotFound, UpstreamError, ValidationFailed
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -37,9 +39,16 @@ from app.api.listing import (
     paginate,
 )
 from app.core.crypto import decrypt, encrypt
+from app.modules.integrations import service as integrations_service
 from app.modules.payments import repository
 from app.modules.payments.models import CustomerCard
 from app.modules.payments.schemas import CardCreateIn, CardOut
+from app.providers.payments.base import (
+    CallbackResult,
+    PaymentProvider,
+    PaymentProviderCode,
+    RefundResult,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -220,9 +229,94 @@ async def forget_cards(session: AsyncSession, customer_id: uuid.UUID) -> None:
         _forget(card)
 
 
+# --- the provider boundary (API.md §22, §40) -------------------------------------
+
+
+async def _adapter(session: AsyncSession, code: PaymentProviderCode) -> PaymentProvider:
+    """The configured adapter, or a ``502`` naming nothing.
+
+    ``payment_provider_adapter`` answers ``None`` for three different reasons —
+    no adapter written, provider switched off, no credentials entered — and
+    deliberately does not say which. All three mean the installation cannot
+    charge through it, and which one it is says something about the
+    installation a customer has no business learning.
+    """
+    adapter = await integrations_service.payment_provider_adapter(session, code)
+    if adapter is None:
+        raise UpstreamError("This payment method is not available")
+    return adapter
+
+
+async def charge(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    reference: str,
+    amount: Decimal,
+    currency: str,
+    return_url: str,
+) -> str:
+    """Start a hosted charge and return where to send the customer.
+
+    ``reference`` is what the provider will quote back in its callbacks, and it
+    is the **order's** id: both Payme's ``account`` and Click's
+    ``merchant_trans_id`` are the merchant's own order handle, and giving them
+    anything else would leave a settled charge pointing at nothing.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.create_payment(
+        order_id=reference, amount=amount, currency=currency, return_url=return_url
+    )
+
+
+async def refund(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    transaction_ref: str,
+    amount: Decimal | None = None,
+) -> RefundResult:
+    """Send money back through the provider that took it.
+
+    ``transaction_ref`` is the **provider's** id for the charge, not ours: a
+    refund is an operation on their receipt, and ours would mean nothing to
+    them. ``amount`` omitted means the whole charge.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.refund(transaction_ref=transaction_ref, amount=amount)
+
+
+async def callback(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    headers: Mapping[str, str],
+    body: bytes,
+) -> CallbackResult:
+    """Authenticate a provider callback and let it speak.
+
+    The signature is checked **before** anything else runs, and a failure ends
+    here: whatever the answer looks like, nothing changed (API.md §40). The
+    shape of that answer belongs to the provider — a plain ``401`` for most,
+    ``200`` with a JSON-RPC error for Payme, which reads ``401`` as a reason to
+    retry blindly.
+
+    The raw bytes go to the adapter untouched. Click signs the form body it
+    actually sent, and re-serialising a parsed dict would not reproduce it.
+    """
+    adapter = await _adapter(session, code)
+    if not adapter.verify_signature(headers, body):
+        logger.warning("payment_callback_signature_rejected", provider=code.value)
+        return adapter.signature_rejected()
+    return await adapter.handle_callback(headers, body)
+
+
 __all__ = [
     "CardSecret",
     "add_card",
+    "callback",
+    "charge",
+    "refund",
     "delete_card",
     "forget_cards",
     "get_card",

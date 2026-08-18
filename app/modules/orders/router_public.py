@@ -5,14 +5,13 @@ on the **router** rather than on each handler — the arrangement
 ``payments/router_cards.py`` uses, for the same reason: there is no endpoint
 here that could correctly be left off it.
 
-Read-only. Booking writes these rows from the product flow (§20) and there is
-no ``POST`` on this surface: ``orders/{id}/cancel/`` and ``receipt/`` arrive
-with the saga, and until then cancelling goes through
-``POST /public/{product}/cancel/``, which now checks ownership against exactly
-these rows.
+Booking still writes these rows from the product flow (§20), but everything
+done **to** an order afterwards lives here: paying for one, and releasing one.
+``refund/``, ``history/`` and ``receipt/`` arrive with the later slices.
 
-``?status=`` takes **GTS's** code (``BO``, ``TI``, ``CB``, …), not the
-canonical enum — see API.md §21 on why the map is deferred.
+``?status=`` takes **our** status now — ``booked``, ``ticketed``, ``cancelled``,
+… — because the vocabulary is ours (order-system/03-design.md §3.3). GTS's own
+code still travels beside it in ``provider_status``.
 """
 
 import uuid
@@ -20,16 +19,27 @@ from typing import Annotated
 
 from fastapi import Depends, Query
 
-from app.api.deps import CurrentCustomer, PaginationDep, current_customer
+from app.api.deps import CurrentCustomer, PaginationDep, RateLimit, current_customer
 from app.api.envelope import Page, enveloped_router
+from app.api.errors import UpstreamError
+from app.api.idempotency import IdempotencyKey
 from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.orders import service
-from app.modules.orders.schemas import OrderOut
+from app.modules.orders.schemas import OrderOut, TransactionOut, TransactionStartIn
 
 router = enveloped_router(
     prefix="/orders",
     tags=["orders"],
+    dependencies=[Depends(current_customer)],
+)
+
+#: ``/public/transactions/{id}/`` is a sibling of ``/public/orders/``, not a
+#: child: API.md §22 names it that way and a client polling a redirect has the
+#: transaction id and nothing else in hand.
+transactions_router = enveloped_router(
+    prefix="/transactions",
+    tags=["payments"],
     dependencies=[Depends(current_customer)],
 )
 
@@ -41,9 +51,10 @@ StatusParam = Annotated[
     str | None,
     Query(
         description=(
-            "GTS's own order status — `BO`, `PW`, `TI`, `TE`, `CB`, `VO`, "
-            "`RF`, `PRF` (GTS.md §4). Not the canonical enum: that arrives "
-            "with the saga (API.md §21)."
+            "Canonical order status — `created`, `booked`, `paid`, `ticketing`, "
+            "`ticketed`, `refunding`, `refunded`, `partially_refunded`, "
+            "`cancelled`, `voided`, `failed`, `needs_attention`. GTS's own code "
+            "is published beside it as `provider_status`."
         )
     ),
 ]
@@ -77,4 +88,85 @@ async def get_order(
     return await service.get_order(session, customer_id=customer.id, order_id=id)
 
 
-__all__ = ["router"]
+@router.post(
+    "/{id}/cancel/",
+    summary="Release a booking that has not been paid for",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def cancel_order(
+    id: uuid.UUID,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    idempotency: IdempotencyKey,
+) -> OrderOut:
+    """Give the seat back.
+
+    An operation on the **order**, which is what it always was: it needs the
+    order's state to decide whether it is allowed, and it used to live on the
+    product flow only because there was no local order to name (``O3``).
+
+    Refused before the provider is called if the state does not allow it — a
+    ticketed order answers ``409`` without a seat being released, which is the
+    one ordering of those two steps that does not cost money.
+    """
+    if idempotency.replayed is not None:
+        return OrderOut.model_validate(idempotency.replayed)
+    try:
+        answer = await service.cancel_order(
+            session, customer_id=customer.id, order_id=id
+        )
+    except UpstreamError:
+        await idempotency.release()
+        raise
+    await idempotency.store(answer.model_dump(mode="json"))
+    return answer
+
+
+@router.post(
+    "/{id}/transactions/",
+    summary="Start paying for an order",
+    status_code=201,
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def start_transaction(
+    id: uuid.UUID,
+    payload: TransactionStartIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    idempotency: IdempotencyKey,
+) -> TransactionOut:
+    """Open one attempt at paying, and say where to send the customer.
+
+    The attempt row is written **before** the provider is called, so a process
+    that dies mid-call leaves evidence rather than an unmatched charge
+    (ARCHITECTURE.md §8). If the provider then refuses to start, the row stays
+    as a failed attempt: what was tried is part of the record.
+
+    ``Idempotency-Key`` is mandatory here for the same reason as on booking — a
+    dropped response and a double-tapped button look identical, and one of them
+    must not become two charges (API.md §10).
+    """
+    if idempotency.replayed is not None:
+        return TransactionOut.model_validate(idempotency.replayed)
+    try:
+        answer = await service.start_transaction(
+            session, customer_id=customer.id, order_id=id, data=payload
+        )
+    except UpstreamError:
+        await idempotency.release()
+        raise
+    await idempotency.store(answer.model_dump(mode="json"))
+    return answer
+
+
+@transactions_router.get("/{id}/", summary="One payment attempt")
+async def get_transaction(
+    id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
+) -> TransactionOut:
+    """Someone else's attempt answers 404, the same as one that does not exist."""
+    return TransactionOut.from_attempt(
+        await service.owned_attempt(session, customer_id=customer.id, attempt_id=id)
+    )
+
+
+__all__ = ["router", "transactions_router"]

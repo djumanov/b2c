@@ -9,7 +9,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from httpx import AsyncClient
 
 from app.api.envelope import EnvelopeRoute
-from app.api.openapi import WEBHOOK_PATH_MARKER
+from app.api.openapi import IDEMPOTENCY_HEADER, WEBHOOK_PATH_MARKER
 from app.main import app
 
 API_PREFIX = "/api/v1"
@@ -109,3 +109,35 @@ async def test_openapi_documents_the_envelope(client: AsyncClient) -> None:
     assert set(success["required"]) == {"status", "data", "errors", "meta"}
     # The shared failures from API.md §3 are documented too.
     assert {"401", "403", "404", "422", "429", "500"} <= set(operation["responses"])
+
+
+async def test_a_mandatory_idempotency_key_is_published_as_mandatory(
+    client: AsyncClient,
+) -> None:
+    """The dependency declares the header ``str | None`` so that a missing one
+    becomes our own ``422`` rather than FastAPI's, which leaves the generated
+    schema calling it optional. It is not, and a client reads the schema.
+
+    Swept rather than pinned to one path: booking, paying and refunding all
+    carry it, and the next money endpoint must not be the one that forgets.
+    """
+    schema = (await client.get(f"{API_PREFIX}/openapi.json")).json()
+
+    headers = [
+        (path, method, parameter)
+        for path, operations in schema["paths"].items()
+        for method, operation in operations.items()
+        for parameter in operation.get("parameters") or []
+        if parameter.get("name") == IDEMPOTENCY_HEADER
+    ]
+
+    assert headers, "no endpoint documents an Idempotency-Key"
+    optional = [
+        f"{method.upper()} {path}"
+        for path, method, parameter in headers
+        if not parameter.get("required")
+    ]
+    assert optional == []
+    # ``str | None`` publishes an anyOf with a null branch; absent is a 422,
+    # not a null.
+    assert all("anyOf" not in parameter["schema"] for _, _, parameter in headers)

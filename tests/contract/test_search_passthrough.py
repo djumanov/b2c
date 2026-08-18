@@ -9,12 +9,17 @@ appear in **no key and no value**.
 A cache of ours would have to leave a trace here; this sweep is how it would
 be caught.
 
-Booking and cancel are in the round trip on purpose. They are the two steps
-that could plausibly want to remember something, and what they may remember is
-**the order, and only the order** (API.md §21): the customer's own purchase,
+Booking is in the round trip on purpose. It is the step that could plausibly
+want to remember something, and what it may remember is **the order, and only
+the order** (API.md §21): the customer's own purchase,
 never the search that led to it. ``ALLOWED_KEY`` below is the whole of what may
-survive them in Redis — when the saga lands and an idempotency record becomes
-legitimate, this regex is where that is declared.
+survive them in Redis, and the idempotency record joined it when booking became
+a money endpoint — a replay of *our own answer*, not a copy of GTS's offers.
+
+That record is the one place the search identifiers may legitimately appear in
+Redis: the answer it caches contains the order, and an order names the search it
+came from (API.md §21). So the sweep splits — no key of any kind may carry them,
+and no *value* except that record.
 
 D2 is about *offers*, not about orders: a completed purchase is a record we owe
 the customer, an offer is a cache we refuse to keep (ARCHITECTURE.md §10). So
@@ -55,7 +60,6 @@ OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
 BOOKING = "/api/v1/public/flight/booking/"
-CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
 ORDER_NUMBER = 61453
 REQUEST_ID = "6c62dcec-9334-11ee-8688-5169d0acfb81"
@@ -75,7 +79,24 @@ SEARCH_BODY: dict[str, Any] = {
 
 #: What the platform itself is allowed to keep in Redis on the search path
 #: (app/db/redis.py's own inventory).
-ALLOWED_KEY = re.compile(r"^(site-config$|ratelimit:|gts:session:)")
+ALLOWED_KEY = re.compile(r"^(site-config$|ratelimit:|gts:session:|idempotency:)")
+
+#: The one key whose *value* is our own answer replayed, rather than anything
+#: read from GTS (API.md §10).
+REPLAY_KEY = re.compile(r"^idempotency:")
+
+#: GTS's booking answer, complete enough for the adapter to read an order out
+#: of it — without a price it would refuse, and this suite would be exercising
+#: the wrong branch.
+GTS_BOOKING: dict[str, Any] = {
+    "message": "booked",
+    "request_id": REQUEST_ID,
+    "data": {
+        "order_number": ORDER_NUMBER,
+        "status": "BO",
+        "price_info": {"price": 100, "currency": "UZS"},
+    },
+}
 
 
 @pytest.fixture
@@ -113,29 +134,29 @@ async def gts_installation(
     # through ``orders.service`` — the documented door, patched here for the
     # same reason as the two above: this suite is about what reaches Redis,
     # and it refuses to need a database to find out.
-    async def no_record(
+    async def started(
         session: object,
         *,
         customer_id: uuid.UUID,
         product: str,
         payload: dict[str, Any],
-        response: dict[str, Any],
-    ) -> None:
-        return None
+        idempotency_key: str,
+    ) -> tuple[object, bool]:
+        return object(), True
 
-    async def any_order(
-        session: object, *, customer_id: uuid.UUID, gts_order_number: str
-    ) -> None:
-        return None
+    async def confirmed(session: object, order: object, result: Any) -> object:
+        return result
 
-    async def no_op(session: object, order: object, response: dict[str, Any]) -> None:
-        return None
+    def answered(order: Any) -> dict[str, Any]:
+        # Whatever the order module would render is its own suite's subject
+        # (``tests/integration/test_orders.py``). What matters here is that the
+        # provider's answer still travels whole and gains nothing of GTS's that
+        # we invented.
+        return {"order": {"status": "booked"}, "payment": None, "data": order.raw}
 
-    monkeypatch.setattr(products_service.orders_service, "record_booking", no_record)
-    monkeypatch.setattr(
-        products_service.orders_service, "owned_by_gts_number", any_order
-    )
-    monkeypatch.setattr(products_service.orders_service, "apply_cancel", no_op)
+    monkeypatch.setattr(products_service.orders_service, "start_order", started)
+    monkeypatch.setattr(products_service.orders_service, "confirm_booking", confirmed)
+    monkeypatch.setattr(products_service.orders_service, "booking_answer", answered)
 
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
     return credential
@@ -221,19 +242,7 @@ def _mock_gts() -> respx.Route:
     respx.post(f"{GTS}/v1/content/booking/").mock(
         return_value=httpx.Response(
             200,
-            json=_envelope(
-                {
-                    "message": "booked",
-                    "request_id": REQUEST_ID,
-                    "data": {"order_number": ORDER_NUMBER, "status": "BO"},
-                },
-            ),
-        )
-    )
-    respx.post(f"{GTS}/v1/content/cancel/").mock(
-        return_value=httpx.Response(
-            200,
-            json=_envelope({"data": {"order_number": ORDER_NUMBER, "status": "CB"}}),
+            json=_envelope(GTS_BOOKING),
         )
     )
     return search_route
@@ -261,8 +270,8 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     booking = await client.post(
         BOOKING,
         json={"request_id": REQUEST_ID, "offer_id": OFFER_ID, "passengers": []},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
-    cancel = await client.post(CANCEL, json={"order_number": ORDER_NUMBER})
 
     # Byte-for-byte passthrough on the way out — plus our one addition,
     # ``fun_fact`` (API.md §20), null here because nothing is published.
@@ -274,30 +283,24 @@ async def test_the_request_id_passes_through_and_is_stored_nowhere(
     assert upsell.json()["data"]["offers"] == [{"offer_id": "u-1"}]
     assert verify.status_code == 200
     assert verify.json()["data"]["verified"] is True
-    # Booking adds nothing of ours: no ``search_status``, no ``payment_id``,
-    # no order id we minted — GTS's ``data`` and only that. The order row it
-    # writes is read back through ``/public/orders/``, never bolted onto this
-    # response (API.md §21).
+    # Booking now answers with our order beside GTS's answer — but the answer
+    # itself is still relayed whole and gains no field we invented, which is the
+    # half of the old claim that survived the money path landing on this step
+    # (order-system/03-design.md §3.6).
     assert booking.status_code == 200
-    assert booking.json()["data"] == {
-        "message": "booked",
-        "request_id": REQUEST_ID,
-        "data": {"order_number": ORDER_NUMBER, "status": "BO"},
-    }
-    assert cancel.status_code == 200
-    assert cancel.json()["data"] == {
-        "data": {"order_number": ORDER_NUMBER, "status": "CB"}
-    }
-
-    # ...and no trace on the way down: only the platform's own keys exist,
-    # and neither GTS identifier is in any of them, key or value.
+    assert booking.json()["data"]["data"] == GTS_BOOKING
+    # ...and no trace on the way down: only the platform's own keys exist, and
+    # neither GTS identifier is in any of them. Values are held to the same rule
+    # apart from the idempotency record, which by definition holds a copy of the
+    # answer we just sent — including the booking's own ``request_id``. A cache
+    # of *offers* would still be caught: it would need a key of its own.
     keys = await fake_redis.keys("*")
     for key in keys:
         assert ALLOWED_KEY.match(key), f"unexpected Redis key after a search: {key}"
         assert REQUEST_ID not in key
         assert OFFER_ID not in key
         value = await fake_redis.get(key)
-        if value is not None:
+        if value is not None and not REPLAY_KEY.match(key):
             assert REQUEST_ID not in value
             assert OFFER_ID not in value
 

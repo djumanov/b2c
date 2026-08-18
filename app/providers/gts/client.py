@@ -287,6 +287,12 @@ def _translate(
     failure — any other status (``"success"``, ``"In process"``, whatever GTS
     invents next) is a state the caller wants to see; without it the caller
     gets the bare ``data`` and anything but ``"success"`` is refused.
+
+    The shape check follows the same split. Bare mode promises a ``data``
+    dictionary and refuses anything else, because that is all its callers get.
+    Envelope mode promises nothing beyond "GTS did not report an error": the
+    answer may sit under ``data`` or under ``order`` depending on the endpoint,
+    and only the adapter knows which.
     """
     if response.status_code != httpx.codes.OK:
         logger.warning("gts_http_error", path=path, status=response.status_code)
@@ -315,11 +321,19 @@ def _translate(
             upstream_message=upstream_message,
         )
 
+    if envelope:
+        # The whole payload, and **no shape demanded of it**. GTS is not
+        # consistent with itself about where the answer goes: ``booking`` nests
+        # it under ``data``, ``ticketing`` and ``cancel`` under ``order``, and
+        # requiring ``data`` here turned every successful cancellation into a
+        # 502 (STATUS.md §8.15a). Which key holds the answer is the vertical's
+        # knowledge, so the adapter is the one entitled to look.
+        return payload
+
     data = payload.get("data")
     if not isinstance(data, dict):
         raise UpstreamError("GTS returned an unexpected shape")
-
-    result: dict[str, Any] = payload if envelope else data
+    result: dict[str, Any] = data
     return result
 
 

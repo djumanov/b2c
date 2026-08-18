@@ -32,25 +32,19 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import UpstreamError, ValidationFailed
+from app.api.errors import NotFound, UpstreamError, UpstreamTimeout
 from app.core.logging import get_logger
 from app.modules.cms import service as cms_service
 from app.modules.integrations import service as integrations_service
 from app.modules.orders import service as orders_service
-from app.providers.gts.base import GtsClient
-from app.providers.gts.client import client_for
 from app.providers.products.base import ProductAdapter, ProductCode
+from app.providers.products.orders import (
+    OrderOperations,
+    UnreadableAnswer,
+    order_operations,
+)
 
 logger = get_logger(__name__)
-
-
-async def _client(session: AsyncSession) -> GtsClient:
-    credential = await integrations_service.active_credential(session)
-    if credential is None:
-        raise UpstreamError(
-            "GTS is not configured on this installation: no active credential"
-        )
-    return client_for(credential)
 
 
 async def search(
@@ -60,7 +54,7 @@ async def search(
     *,
     requested: str | None = None,
 ) -> dict[str, Any]:
-    data = await adapter.search(await _client(session), payload)
+    data = await adapter.search(await integrations_service.gts_client(session), payload)
     if adapter.code != ProductCode.FLIGHT:
         return data
     # Our one addition to the passthrough (API.md §20): a random published
@@ -74,19 +68,34 @@ async def search(
 async def offers(
     session: AsyncSession, adapter: ProductAdapter, params: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.offers(await _client(session), params)
+    return await adapter.offers(await integrations_service.gts_client(session), params)
 
 
 async def upsell(
     session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.upsell(await _client(session), payload)
+    return await adapter.upsell(await integrations_service.gts_client(session), payload)
 
 
 async def verify(
     session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.verify(await _client(session), payload)
+    return await adapter.verify(await integrations_service.gts_client(session), payload)
+
+
+def _order_ops(adapter: ProductAdapter) -> OrderOperations:
+    """The adapter's order half. Unreachable ``404`` — the gate got there first.
+
+    ``RequireProductStep`` already refused any vertical that does not declare
+    the step, so a registered adapter serving ``booking/`` implements this. The
+    check exists because a protocol narrowed by ``isinstance`` is the only thing
+    that makes the call type-safe, and answering with the gate's own words keeps
+    the two indistinguishable if it ever is reachable.
+    """
+    ops = order_operations(adapter)
+    if ops is None:
+        raise NotFound("This section is not available on this installation")
+    return ops
 
 
 async def book(
@@ -95,72 +104,66 @@ async def book(
     payload: dict[str, Any],
     *,
     customer_id: uuid.UUID,
+    idempotency_key: str,
 ) -> dict[str, Any]:
-    """Book, then file the answer under the customer (API.md §20, §21).
+    """Book, and never lose the booking (API.md §20, §21).
 
-    The passthrough is unchanged and still comes first — the response is GTS's
-    ``data`` and gains nothing. What follows it is the order row, which exists
-    so the customer can find this booking again and so ``cancel`` below has an
-    owner to check.
+    The order of the first three lines is the slice. Everything that can fail
+    *without* touching a seat happens first — the adapter is resolved, the
+    credential is read — and only then is the row written, **before** the
+    provider is asked. From that line on there is no outcome that leaves a
+    reservation nobody can find (02-current-audit.md A1).
 
-    **A failed write does not fail the booking.** GTS is already holding the
-    seat. Answering ``500`` would send the client into a retry and open a
-    *second* booking — a real seat, and later real money. The response carries
-    ``order_id`` and ``pnr``, so the customer still leaves with a handle even
-    when our row is missing; the loss is that they cannot cancel through us.
-    The real fix is an outbox row written in the same transaction as the
-    state change (ARCHITECTURE.md §8), and it belongs to the saga. Until then
-    this is a logged, known gap (STATUS.md §8).
+    Each ending is a different thing and is treated as one:
+
+    * **duplicate** — the key has been used, so the earlier order is returned
+      and GTS is not called again;
+    * **refused** — no seat was taken, the order is ``failed``, and the key is
+      released so the customer may try again with it;
+    * **no answer** — the row stays ``created``, which is precisely what that
+      status means: we do not know. Calling it failed would throw away a real
+      booking, so reconciliation resolves it later (slice S7);
+    * **unreadable** — the provider agreed in words we cannot parse, so the
+      order goes to ``needs_attention`` with the answer attached and the key is
+      kept: a seat is probably held and a retry must not open a second one.
     """
-    data = await adapter.book(await _client(session), payload)
-    try:
-        await orders_service.record_booking(
-            session,
-            customer_id=customer_id,
-            product=adapter.code,
-            payload=payload,
-            response=data,
-        )
-    except Exception:
-        logger.exception(
-            "order_not_recorded",
-            product=adapter.code,
-            customer_id=str(customer_id),
-        )
-    return data
-
-
-async def cancel(
-    session: AsyncSession,
-    adapter: ProductAdapter,
-    payload: dict[str, Any],
-    *,
-    customer_id: uuid.UUID,
-) -> dict[str, Any]:
-    """Release a booking — but only one this customer made (API.md §20).
-
-    ``order_number`` is the one field this step reads — GTS's own cancel body
-    is ``{"order_number": 61453}`` (EASY_GATEWAY collection,
-    ``/content/Cancel``) — and it is read rather than rewritten: the body
-    still reaches GTS exactly as it arrived, because which further fields name
-    a booking upstream is not ours to decide and a wrong guess costs a real
-    seat (``providers/products/flight.py``).
-
-    The lookup runs **before** the GTS call, so a booking that is not this
-    customer's is refused without touching the seat.
-    """
-    number = payload.get("order_number") if isinstance(payload, dict) else None
-    if not isinstance(number, str | int) or isinstance(number, bool):
-        raise ValidationFailed(
-            "Cancelling needs the order_number that booking returned",
-            field="order_number",
-        )
-    order = await orders_service.owned_by_gts_number(
-        session, customer_id=customer_id, gts_order_number=str(number).strip()
+    ops = _order_ops(adapter)
+    client = await integrations_service.gts_client(session)
+    order, is_new = await orders_service.start_order(
+        session,
+        customer_id=customer_id,
+        product=adapter.code,
+        payload=payload,
+        idempotency_key=idempotency_key,
     )
-    data = await adapter.cancel(await _client(session), payload)
-    await orders_service.apply_cancel(session, order, data)
-    return data
+    if not is_new:
+        return orders_service.booking_answer(order)
+
+    try:
+        result = await ops.book(client, payload)
+    except UnreadableAnswer as unreadable:
+        order = await orders_service.record_unreadable_booking(
+            session, order, unreadable.raw
+        )
+        return orders_service.booking_answer(order)
+    except UpstreamTimeout:
+        # Deliberately not marked. ``created`` *is* "we asked and do not know".
+        logger.warning(
+            "order_answer_missing", order_id=str(order.id), order_no=order.order_no
+        )
+        raise
+    except UpstreamError as refused:
+        await orders_service.fail_booking(session, order, reason=str(refused))
+        raise
+
+    order = await orders_service.confirm_booking(session, order, result)
+    return orders_service.booking_answer(order)
 
 
-__all__ = ["book", "cancel", "offers", "search", "upsell", "verify"]
+__all__ = [
+    "book",
+    "offers",
+    "search",
+    "upsell",
+    "verify",
+]

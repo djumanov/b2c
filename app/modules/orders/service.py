@@ -1,34 +1,41 @@
-"""Orders: keep what was bought, and answer "is this yours?" (API.md §21).
+"""Orders: the state machine, and the doors other modules use.
 
-The module holds one idea — **the local row is the source of ownership, GTS is
-the source of status and ticket** (ARCHITECTURE.md §5). Everything here serves
-that and nothing more. In particular this service does **not** interpret the
-booking answer: it lifts five values out of it for indexing and stores the rest
-as it arrived (``models.py`` explains which five and why).
+``transition`` is the whole point of this module. **It is the only way an
+order's status changes** — not because a convention says so, but because
+everything that keeps the money path honest happens inside it: the row is
+locked, the move is checked against ``states.TRANSITIONS``, the history line is
+written, and the next background step is scheduled, all in one transaction. A
+service that reaches past it and assigns ``order.status`` gets none of that and
+leaves no trace behind (order-system/03-design.md §3.3).
 
-The doors other modules may use are ``record_booking``, ``owned_by_gts_number``
-and ``apply_cancel`` — ``products`` calls all three around its passthrough.
-Nothing outside this package touches ``models`` or ``repository``
+The doors other modules may use are ``record_booking``, ``owned_by_provider_number``,
+``ensure_cancellable`` and ``apply_cancel``; ``products`` calls them around its
+passthrough. Nothing outside this package touches ``models`` or ``repository``
 (ARCHITECTURE.md §4).
 
-**Reading the GTS answer is deliberately forgiving.** The field names come from
-the EASY_GATEWAY collection's ``/content/Booking`` — a recorded call, not a
-guess — but they have still not been seen against this installation's live GTS
-(STATUS.md §8). So a value that is missing or is not a string becomes ``None``
-and the row is written anyway. A booking that really happened must leave a
-trace even if we could not read the shape of it; the alternative is losing the
-order to a rename.
+**Reading the provider's answer stays forgiving, but no longer silent.** The
+field names come from the EASY_GATEWAY collection — recorded calls, not guesses
+— yet they have still not been seen against this installation's live GTS
+(STATUS.md §8). So an answer we cannot read no longer produces a half-written
+row: the order lands in ``needs_attention`` with the whole answer attached to
+its first event, which is a thing a person can act on. The booking is never
+lost either way.
 """
 
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import NotFound
+from app.api.errors import AppError, Conflict, NotFound, ValidationFailed
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -38,141 +45,1003 @@ from app.api.listing import (
     paginate,
 )
 from app.core.logging import get_logger
+from app.core.money import Money
+from app.modules.integrations import service as integrations_service
 from app.modules.orders import repository
-from app.modules.orders.models import Order
-from app.modules.orders.schemas import OrderOut
+from app.modules.orders.models import (
+    ORDER_NO_SEQUENCE,
+    Order,
+    OrderEvent,
+    OrderPayment,
+    OrderRefund,
+)
+from app.modules.orders.schemas import (
+    OrderOut,
+    TransactionOut,
+    TransactionStartIn,
+)
+from app.modules.orders.states import (
+    INITIAL_STATUS,
+    STAMPED_AT,
+    Actor,
+    EventAction,
+    OrderStatus,
+    RefundKind,
+    RefundState,
+    can,
+)
+from app.modules.payments import service as payments_service
+from app.modules.settings import service as settings_service
+from app.modules.settings.schemas import OrderSettingsOut
+from app.providers.payments.base import (
+    PaymentProviderCode,
+    TransactionFlow,
+    TransactionStatus,
+)
+from app.providers.products.base import registry
+from app.providers.products.orders import (
+    BookingResult,
+    CancelResult,
+    OrderOperations,
+    TicketingResult,
+    order_operations,
+)
 
 logger = get_logger(__name__)
 
-#: ``created_at`` only. The other columns are GTS's values, and ordering by a
-#: vocabulary we do not own would publish it as part of our contract
-#: (``api/listing.py`` on why this is a whitelist).
+#: ``created_at`` only. Ordering by anything else would publish it as part of
+#: the contract (``api/listing.py`` on why this is a whitelist).
 _ORDER_ORDERING: OrderingMap = {"created_at": Order.created_at}
 
 
-def _text(source: dict[str, Any], key: str, *, limit: int) -> str | None:
-    """One field out of a GTS payload, or ``None`` if it is not usable.
+# --- the state machine ----------------------------------------------------------
 
-    Numbers are accepted and stringified: ``order_number`` really is an
-    integer upstream (``61453``), and an identifier is never arithmetic.
-    Anything longer than the column is refused rather than silently
-    truncated — a cut identifier would match the wrong order later, which is
-    worse than none.
+
+async def transition(
+    session: AsyncSession,
+    order_id: uuid.UUID,
+    *,
+    to: OrderStatus,
+    actor: Actor,
+    action: EventAction,
+    reason: str | None = None,
+    meta: dict[str, Any] | None = None,
+    fields: Mapping[str, Any] | None = None,
+    next_attempt_at: datetime | None = None,
+) -> Order:
+    """Move one order, or refuse. The only writer of ``orders.status``.
+
+    ``fields`` carries whatever else the move establishes — the provider's
+    identifiers on a confirmation, a reason on a cancellation. They are applied
+    inside the same transaction because a status that is true and a row that is
+    not is exactly the state nobody can recover from.
+
+    ``next_attempt_at`` schedules the next background step and defaults to
+    ``None``, which means *nothing is pending*. That default is the right one:
+    most moves end with the order waiting on the outside world, and a step that
+    really is due says so explicitly (``O13``).
+
+    ``attempts`` is bookkeeping, not an argument: a move to a **different**
+    status starts a new step and resets it, while the retry loop
+    (``ticketing → ticketing``) counts up.
+
+    A move that is not in the table raises ``Conflict`` — a ``409``, never a
+    silent no-op. It is nearly always one of two real problems: a race, or a
+    client acting on a screen that has gone stale.
     """
-    value = source.get(key)
-    if isinstance(value, bool) or not isinstance(value, str | int):
-        return None
-    text = str(value).strip()
-    if not text or len(text) > limit:
-        return None
-    return text
+    order = await repository.lock_order(session, order_id)
+    if order is None:
+        raise NotFound("No such order")
+
+    source = OrderStatus(order.status)
+    if not can(source, to):
+        raise Conflict(
+            f"An order that is {source.value} cannot become {to.value}",
+            meta={"from": source.value, "to": to.value},
+        )
+
+    order.attempts = order.attempts + 1 if source is to else 0
+    order.status = to.value
+    stamp = STAMPED_AT.get(to)
+    if stamp is not None and getattr(order, stamp) is None:
+        # First arrival only. Re-entering a status must not rewrite the moment
+        # it was first reached — the reports read these columns.
+        setattr(order, stamp, datetime.now(UTC))
+    for name, value in (fields or {}).items():
+        setattr(order, name, value)
+    order.next_attempt_at = next_attempt_at
+
+    session.add(
+        OrderEvent(
+            order_id=order.id,
+            from_status=source.value,
+            to_status=to.value,
+            action=action.value,
+            actor_type=actor.type.value,
+            actor_id=actor.id,
+            actor_label=actor.label,
+            reason=reason,
+            meta=meta,
+            attempt=order.attempts,
+        )
+    )
+    await session.commit()
+    await session.refresh(order)
+    logger.info(
+        "order_transition",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        product=order.product,
+        status_from=source.value,
+        status_to=to.value,
+        action=action.value,
+        actor=actor.type.value,
+        attempt=order.attempts,
+    )
+    return order
 
 
-def _order_body(response: dict[str, Any]) -> dict[str, Any]:
-    """The order itself, out of GTS's two-layer booking answer.
+async def _next_order_no(session: AsyncSession) -> str:
+    """``B2C-2608-000123`` — ours, readable, and unique without a lock.
 
-    Our client already strips GTS's envelope, so what arrives here is
-    ``{"message": "booked", "request_id": …, "data": {…the order…}}`` and the
-    order's own fields — ``order_number``, ``order_uid``, ``status`` — sit
-    under that inner ``data`` (EASY_GATEWAY collection, ``/content/Booking``).
-
-    Falling back to the response itself is not politeness: an older shape in
-    the same collection returns the order flat, and reading a flat answer
-    wrongly costs nothing while missing a nested one costs the ability to
-    cancel.
+    A sequence rather than a count: two bookings racing must not be handed the
+    same number, and ``nextval`` is the only thing that guarantees that. The
+    year and month are cosmetic, taken at allocation time; the number alone is
+    what is unique.
     """
-    inner = response.get("data")
-    return inner if isinstance(inner, dict) else response
+    number = await session.scalar(sql_text(f"SELECT nextval('{ORDER_NO_SEQUENCE}')"))
+    return f"B2C-{datetime.now(UTC):%y%m}-{int(number or 0):06d}"
 
 
 # --- the doors ``products`` uses ------------------------------------------------
 
 
-async def record_booking(
+def _reference(payload: Mapping[str, Any], key: str) -> str | None:
+    """One of our own request's identifiers, if it is usable.
+
+    Only ``request_id`` and ``offer_id`` are read here, and only from the
+    *request*: everything the provider said arrives already translated in a
+    ``BookingResult``. Reading GTS's dictionaries is the adapter's job and
+    stopped being this module's the moment that port existed
+    (``providers/products/orders.py``).
+    """
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, str | int):
+        return None
+    text = str(value).strip()
+    return text if text and len(text) <= 64 else None
+
+
+async def start_order(
     session: AsyncSession,
     *,
     customer_id: uuid.UUID,
     product: str,
-    payload: dict[str, Any],
-    response: dict[str, Any],
-) -> Order:
-    """File a confirmed booking under the customer who made it.
+    payload: Mapping[str, Any],
+    idempotency_key: str,
+) -> tuple[Order, bool]:
+    """Write the intent to book, **before** anybody asks the provider.
 
-    Called after GTS has answered, so the seat already exists. The caller
-    decides what a failure here means (``products.service.book`` explains why
-    it does not fail the request).
+    Returns the order and whether it is new. ``False`` means this key has been
+    seen before and the caller must not book again — the earlier attempt is
+    what the customer gets back.
+
+    This ordering is the whole point of the slice. Writing the row after the
+    provider answered meant a failed insert left a reservation nobody could
+    find, cancel, or refund: the seat was real, the money would follow, and the
+    only trace was a log line (02-current-audit.md A1). A row written first is
+    at worst an order stuck in ``created``, which reconciliation can resolve
+    because it knows what to look for.
+
+    The unique index is the guard that actually holds. ``api/idempotency.py``
+    claims the key in Redis first and answers most duplicates there, but Redis
+    is a cache: a flush, an eviction or a restart lets the second request
+    through, and on this path a second request is a second real seat (``O8``).
     """
-    body = _order_body(response)
     order = Order(
+        order_no=await _next_order_no(session),
         customer_id=customer_id,
         product=product,
-        gts_order_number=_text(body, "order_number", limit=64),
-        gts_order_uid=_text(body, "order_uid", limit=64),
-        status=_text(body, "status", limit=16),
-        request_id=_text(payload, "request_id", limit=64),
-        offer_id=_text(payload, "offer_id", limit=64),
-        # Verbatim, and the only place the answer lives. The passengers of the
-        # *request* are deliberately absent (models.py, PROJECT.md §13).
-        gts_response=response,
+        status=INITIAL_STATUS.value,
+        request_id=_reference(payload, "request_id"),
+        offer_id=_reference(payload, "offer_id"),
+        idempotency_key=idempotency_key,
     )
     session.add(order)
-    await session.commit()
-    await session.refresh(order)
-    if order.gts_order_number is None:
-        # Not an error — the row is written either way — but it means this
-        # order cannot be cancelled through us, so it must be visible. Both
-        # layers are logged because a shape change is the likely cause.
-        logger.warning(
-            "order_recorded_without_gts_number",
-            order_id=str(order.id),
-            product=product,
-            outer_fields=sorted(response),
-            inner_fields=sorted(body),
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        earlier = await repository.order_by_idempotency_key(
+            session, customer_id, idempotency_key
         )
-    else:
+        if earlier is None:
+            # Some other constraint, and guessing which would be worse than
+            # letting the 500 name it.
+            raise
         logger.info(
-            "order_recorded",
-            order_id=str(order.id),
-            product=product,
-            gts_order_number=order.gts_order_number,
-            status=order.status,
+            "order_idempotent_replay",
+            order_id=str(earlier.id),
+            order_no=earlier.order_no,
+            status=earlier.status,
         )
-    return order
+        return earlier, False
+    logger.info(
+        "order_created",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        product=product,
+        customer_id=str(customer_id),
+    )
+    return order, True
 
 
-async def owned_by_gts_number(
-    session: AsyncSession, *, customer_id: uuid.UUID, gts_order_number: str
+async def confirm_booking(
+    session: AsyncSession, order: Order, result: BookingResult
+) -> Order:
+    """The provider is holding a seat — T2."""
+    return await transition(
+        session,
+        order.id,
+        to=result.status,
+        actor=Actor.system("orders.booking"),
+        action=EventAction.BOOKING_CONFIRMED,
+        meta=result.raw,
+        fields={
+            "provider_order_number": result.provider_order_number,
+            "provider_order_uid": result.provider_order_uid,
+            "provider_pnr": result.provider_pnr,
+            "provider_status": result.provider_status,
+            "provider_response": result.raw,
+            "amount_total": result.total.amount,
+            "currency": result.total.currency,
+            "travelers": [person.as_dict() for person in result.travelers],
+            "ticket_time_limit_at": result.ticket_time_limit_at,
+            "travel_start_at": result.travel_start_at,
+            "route_summary": result.route_summary,
+        },
+    )
+
+
+async def record_unreadable_booking(
+    session: AsyncSession, order: Order, response: dict[str, Any]
+) -> Order:
+    """The provider agreed in words we cannot parse — T4.
+
+    Not a failure to report: a real seat is probably held. The key is **kept**,
+    so a retry cannot open a second one, and the whole answer goes onto the
+    event where a person can read it.
+    """
+    logger.warning(
+        "order_answer_unreadable",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        product=order.product,
+        fields=sorted(response),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.NEEDS_ATTENTION,
+        actor=Actor.system("orders.booking"),
+        action=EventAction.BOOKING_UNRESOLVED,
+        reason="The booking answer could not be read",
+        meta=response,
+        fields={
+            "provider_response": response,
+            "attention_reason": "unreadable_booking_answer",
+        },
+    )
+
+
+async def fail_booking(session: AsyncSession, order: Order, *, reason: str) -> Order:
+    """The provider refused — T3. No seat was taken and no money will move.
+
+    The idempotency key is **released** here and nowhere else. A refusal is the
+    one outcome where retrying is both safe and what the customer wants, and a
+    key still claimed by this row would make the retry replay the refusal
+    instead of trying again. Every other ending keeps its key, because every
+    other ending may be holding a seat.
+    """
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.FAILED,
+        actor=Actor.system("orders.booking"),
+        action=EventAction.BOOKING_REJECTED,
+        reason=reason,
+        fields={"failure_message": reason, "idempotency_key": None},
+    )
+
+
+def booking_answer(order: Order) -> dict[str, Any]:
+    """What ``booking/`` returns (order-system/03-design.md §3.6).
+
+    Three keys. ``data`` is the provider's answer, unchanged and complete,
+    because the route, the segments and the fare rules live only there and we
+    do not lift them out. ``order`` is ours, and ``payment`` says what is still
+    owed and until when.
+
+    ``payment`` is derived from the order rather than stored (``payment_state``).
+
+    ``data`` is ``null`` on an order that never got an answer — a duplicate
+    replayed while the first attempt is still in flight. That is honest: we
+    genuinely do not have one yet.
+    """
+    return {
+        "order": OrderOut.from_order(order).model_dump(mode="json"),
+        "payment": payment_state(order),
+        "data": order.provider_response,
+    }
+
+
+async def owned_by_provider_number(
+    session: AsyncSession, *, customer_id: uuid.UUID, provider_order_number: str
 ) -> Order:
     """The order behind GTS's ``order_number``, or ``404`` (API.md §20).
 
-    This is the whole of the cancel ownership check. Nothing reaches GTS
-    before it passes.
+    This is the whole of the cancel ownership check. Nothing reaches GTS before
+    it passes.
     """
-    order = await repository.order_by_gts_number(session, customer_id, gts_order_number)
+    order = await repository.order_by_provider_number(
+        session, customer_id, provider_order_number
+    )
     if order is None:
         raise NotFound("No such order")
     return order
 
 
-async def apply_cancel(
-    session: AsyncSession, order: Order, response: dict[str, Any]
-) -> None:
-    """Carry GTS's answer to a cancellation onto the row.
+def ensure_cancellable(order: Order) -> None:
+    """Refuse a cancellation the machine would refuse anyway — **before** GTS.
 
-    The status is copied, not translated — ``CB`` stays ``CB`` (API.md §21).
-    If the answer carries no status the stamp is still made: we know we asked
-    and GTS did not refuse, which is more than the row said a moment ago.
+    Without this the check happens after the provider has already released the
+    seat, and a ticketed order would be cancelled upstream and then rejected
+    here. The transition still runs afterwards and is still authoritative; this
+    only moves the "no" to the side of the call where it is free.
     """
-    status = _text(_order_body(response), "status", limit=16)
-    if status is not None:
-        order.status = status
-    order.cancelled_at = datetime.now(UTC)
+    if not can(OrderStatus(order.status), OrderStatus.CANCELLED):
+        raise Conflict(
+            f"An order that is {order.status} cannot be cancelled",
+            meta={"from": order.status},
+        )
+
+
+async def cancel_order(
+    session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> OrderOut:
+    """Release a reservation this customer made (API.md §21).
+
+    Three steps, and their order is the whole of it: the order is found by its
+    owner, the move is refused **before** the provider is called if the state
+    does not allow it, and only then is the seat given back. Checking afterwards
+    would release a real seat and then answer ``409``.
+
+    The provider is not asked to validate anything for us. Its own cancel body
+    is ``{"order_number": …}`` and that is what it gets — which field names a
+    booking upstream is not ours to decide, and a wrong guess costs a seat
+    (``providers/products/flight.py``).
+    """
+    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
+    ensure_cancellable(order)
+    if order.provider_order_number is None:
+        raise Conflict("This order has no reservation to release")
+
+    operations = _order_operations(order.product)
+    result = await operations.cancel(
+        await integrations_service.gts_client(session),
+        {"order_number": order.provider_order_number},
+    )
+    return OrderOut.from_order(await apply_cancel(session, order, result))
+
+
+def _order_operations(product: str) -> OrderOperations:
+    """The vertical's order half, or the gate's own ``404``.
+
+    Unreachable in practice — an order exists only because its vertical booked
+    it — but the narrowing is what makes the call type-safe, and answering with
+    the gate's words keeps the two indistinguishable if it ever is reached.
+    """
+    adapter = registry.get(product)
+    operations = None if adapter is None else order_operations(adapter)
+    if operations is None:
+        raise NotFound("This section is not available on this installation")
+    return operations
+
+
+async def apply_cancel(
+    session: AsyncSession, order: Order, result: CancelResult
+) -> Order:
+    """Carry the provider's answer to a cancellation onto the row.
+
+    Their code is kept beside ours rather than instead of it: ``CB`` is what
+    they call it, ``cancelled`` is what happened. Reaching here at all means the
+    seat is released — a refusal is an ``UpstreamError`` and never gets this
+    far — so the move does not depend on what, if anything, they named it.
+    """
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.CANCELLED,
+        actor=Actor.customer(order.customer_id),
+        action=EventAction.ORDER_CANCELLED,
+        reason="Cancelled by the customer",
+        meta=result.raw,
+        fields={
+            "cancellation_reason": "customer",
+            "provider_status": result.provider_status or order.provider_status,
+        },
+    )
+
+
+# --- paying for an order (API.md §22) --------------------------------------------
+
+
+def payment_state(order: Order) -> dict[str, Any]:
+    """What the customer still owes, and until when.
+
+    Derived, not stored. One order carries one amount and one currency, so a
+    payment *intent* would be a second copy of two columns that already exist
+    (``O12``); what is stored is the attempts.
+
+    ``pay_before`` is the provider's hold, unshortened. The ticketing margin
+    that will make it earlier arrives with the ticketing slice, and putting a
+    guess in front of it now would only have to be unlearned.
+    """
+    if order.amount_total is None or order.currency is None:
+        return {"status": "pending", "amount": None, "pay_before": None}
+    settled = order.amount_paid >= order.amount_total
+    return {
+        "status": "paid" if settled else "pending",
+        "amount": Money(amount=order.amount_total, currency=order.currency).model_dump(
+            mode="json"
+        ),
+        "pay_before": (
+            order.ticket_time_limit_at.isoformat()
+            if order.ticket_time_limit_at is not None
+            else None
+        ),
+    }
+
+
+async def start_attempt(
+    session: AsyncSession, order: Order, *, provider: str, flow: str
+) -> OrderPayment:
+    """Write the attempt, **then** let the caller talk to the provider.
+
+    The order matters as much as it does at booking. A charge that exists at a
+    provider and nowhere here is money nobody can match to an order; an attempt
+    row with no ``provider_ref`` is merely an attempt that has not been answered
+    yet, and reconciliation knows what to do with one (ARCHITECTURE.md §8).
+    """
+    if order.amount_total is None or order.currency is None:
+        raise Conflict("This order has no amount to pay yet")
+    if OrderStatus(order.status) is not OrderStatus.BOOKED:
+        raise Conflict(
+            f"An order that is {order.status} cannot be paid for",
+            meta={"status": order.status},
+        )
+    attempt = OrderPayment(
+        order_id=order.id,
+        provider=provider,
+        status=TransactionStatus.PENDING.value,
+        flow=flow,
+        amount=order.amount_total,
+        currency=order.currency,
+    )
+    session.add(attempt)
+    await session.commit()
+    await session.refresh(attempt)
+    logger.info(
+        "payment_attempt_started",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        attempt_id=str(attempt.id),
+        provider=provider,
+    )
+    return attempt
+
+
+async def attach_redirect(
+    session: AsyncSession, attempt: OrderPayment, *, redirect_url: str
+) -> OrderPayment:
+    """Where the customer was sent. Written after the provider answered."""
+    attempt.redirect_url = redirect_url
+    await session.commit()
+    await session.refresh(attempt)
+    return attempt
+
+
+async def abandon_attempt(
+    session: AsyncSession, attempt: OrderPayment, *, message: str
+) -> None:
+    """The provider would not start the charge. The row stays as evidence."""
+    attempt.status = TransactionStatus.FAILED.value
+    attempt.error_message = message
+    await session.commit()
+    logger.warning(
+        "payment_attempt_abandoned", attempt_id=str(attempt.id), reason=message
+    )
+
+
+async def settle_attempt(
+    session: AsyncSession,
+    *,
+    provider: str,
+    provider_ref: str,
+    order_id: uuid.UUID,
+    provider_state: dict[str, Any] | None = None,
+) -> Order:
+    """Money arrived — the door a provider callback comes through.
+
+    **Idempotent by construction, not by care.** A provider that has already
+    been answered still resends, so the second call finds an attempt that is
+    already ``paid`` and returns the order untouched; and if two callbacks race,
+    the unique index on ``(provider, provider_ref)`` decides which one wrote it
+    rather than whichever query ran first (X6).
+
+    The amount is checked before the order moves. Money that arrives for a
+    different sum is not a payment for this order in any sense worth
+    automating, so the order goes to ``needs_attention`` rather than to
+    ``paid``: something has to be understood before a ticket is bought with it.
+    """
+    order = await repository.lock_order(session, order_id)
+    if order is None:
+        raise NotFound("No such order")
+
+    attempt = await repository.attempt_by_provider_ref(session, provider, provider_ref)
+    if attempt is None:
+        # A hosted redirect hands us a URL and no reference; the provider names
+        # the charge when it first calls back, so the open attempt is bound to
+        # that name here.
+        attempt = await repository.unreferenced_attempt(session, order_id, provider)
+        if attempt is None:
+            raise NotFound("No such payment attempt")
+        attempt.provider_ref = provider_ref
+    locked = await repository.lock_attempt(session, attempt.id)
+    if locked is None or locked.order_id != order.id:
+        raise NotFound("No such payment attempt")
+    attempt = locked
+    attempt.provider_ref = provider_ref
+
+    if attempt.status == TransactionStatus.PAID.value:
+        logger.info("payment_already_settled", attempt_id=str(attempt.id))
+        return order
+
+    attempt.status = TransactionStatus.PAID.value
+    attempt.paid_at = datetime.now(UTC)
+    attempt.provider_state = provider_state
+    try:
+        await session.commit()
+    except IntegrityError as clash:
+        # Two references racing for one attempt. The unique index decided, and
+        # the loser is a caller that must not be told it settled anything.
+        await session.rollback()
+        raise Conflict("This payment reference belongs to another attempt") from clash
+
+    if order.amount_total is None or attempt.amount != order.amount_total:
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.NEEDS_ATTENTION,
+            actor=Actor.system("payments.callback"),
+            action=EventAction.PAYMENT_MISMATCHED,
+            reason="The settled amount is not the amount of this order",
+            meta=provider_state,
+            fields={
+                "amount_paid": attempt.amount,
+                "attention_reason": "payment_amount_mismatch",
+            },
+        )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.PAID,
+        actor=Actor.system("payments.callback"),
+        action=EventAction.PAYMENT_SETTLED,
+        reason=f"Settled at {provider}",
+        meta=provider_state,
+        fields={"amount_paid": attempt.amount},
+        # The ticketing step is due immediately; the poller is the safety net
+        # for the moment the task fails to reach the queue (``O13``).
+        next_attempt_at=datetime.now(UTC),
+    )
+
+
+async def start_transaction(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    data: TransactionStartIn,
+) -> TransactionOut:
+    """Open an attempt at paying and hand back where to send the customer.
+
+    Four checks before anything leaves the building, in the order that costs
+    least: the order is this customer's, the method is one this installation
+    offers, the return address is one of ours, and the order is in a state that
+    can be paid for.
+
+    **The return address is checked against the installation's own origins.**
+    A redirect target chosen by a request and handed to a payment provider is
+    an open redirect wearing our merchant account's name; the provider will
+    send the customer wherever it is told.
+    """
+    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
+    try:
+        code = PaymentProviderCode(data.method)
+    except ValueError as unknown:
+        raise ValidationFailed("No such payment method", field="method") from unknown
+    if not await _is_our_origin(data.return_url):
+        raise ValidationFailed(
+            "The return address is not one of this installation's own",
+            field="return_url",
+        )
+
+    attempt = await start_attempt(
+        session, order, provider=code.value, flow=TransactionFlow.REDIRECT.value
+    )
+    try:
+        redirect_url = await payments_service.charge(
+            session,
+            code,
+            reference=str(order.id),
+            amount=attempt.amount,
+            currency=attempt.currency,
+            return_url=data.return_url,
+        )
+    except AppError as refused:
+        # The row stays: what was tried is part of the record, and an attempt
+        # that failed to start is the cheapest kind of evidence there is.
+        await abandon_attempt(session, attempt, message=str(refused))
+        raise
+    attempt = await attach_redirect(session, attempt, redirect_url=redirect_url)
+    return TransactionOut.from_attempt(attempt)
+
+
+async def _is_our_origin(url: str) -> bool:
+    """Whether a return address belongs to this installation.
+
+    Reads the same list the browser is held to (``settings.cors_origins``), so
+    turning an origin off closes both doors at once. A wildcard entry means the
+    owner has deliberately opened the installation to any origin, and refusing
+    here would contradict them.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    allowed = await settings_service.cors_origins()
+    return "*" in allowed or origin in allowed
+
+
+async def owned_order(
+    session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> Order:
+    """The order, if it is this customer's — the check every write starts with."""
+    order = await repository.order_by_id(session, customer_id, order_id)
+    if order is None:
+        raise NotFound("No such order")
+    return order
+
+
+async def owned_attempt(
+    session: AsyncSession, *, customer_id: uuid.UUID, attempt_id: uuid.UUID
+) -> OrderPayment:
+    order_payment = await repository.attempt_by_id(session, customer_id, attempt_id)
+    if order_payment is None:
+        raise NotFound("No such transaction")
+    return order_payment
+
+
+# --- ticketing (order-system/03-design.md §3.7) ----------------------------------
+
+
+def ticket_deadline(order: Order, settings: OrderSettingsOut) -> datetime:
+    """The last moment ticketing may still be attempted.
+
+    Earlier than the provider's own deadline by the configured margin, because
+    a ticket bought a second before a hold lapses is a race nobody wins — and
+    the retries have to fit inside what is left.
+
+    A provider that named no deadline gets one of ours. That is not a guess at
+    *their* rule: it is a bound on how long an order may sit open here, which
+    is a thing we are entitled to decide (``hold_fallback_minutes``).
+    """
+    limit = order.ticket_time_limit_at
+    if limit is None:
+        started = order.paid_at or order.created_at
+        limit = started + timedelta(minutes=settings.hold_fallback_minutes)
+    return limit - timedelta(minutes=settings.ticket_margin_minutes)
+
+
+async def due_for_expiry(
+    session: AsyncSession, settings: OrderSettingsOut, *, limit: int
+) -> Sequence[Order]:
+    """Unpaid holds whose window has closed — a door for the sweep."""
+    now = datetime.now(UTC)
+    return await repository.expiring_orders(
+        session,
+        deadline=now + timedelta(minutes=settings.ticket_margin_minutes),
+        fallback_before=now - timedelta(minutes=settings.hold_fallback_minutes),
+        limit=limit,
+    )
+
+
+async def expire_booking(session: AsyncSession, order: Order) -> Order:
+    """T7 — the hold lapsed unpaid, so the seat goes back.
+
+    Distinct from a customer cancelling only by its reason, and that is the
+    whole reason ``cancellation_reason`` exists rather than a second status: the
+    two look identical to everything except a report (order-system §3.3).
+    """
+    logger.info(
+        "order_expired",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        ticket_time_limit_at=(
+            None
+            if order.ticket_time_limit_at is None
+            else order.ticket_time_limit_at.isoformat()
+        ),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.CANCELLED,
+        actor=Actor.system("orders.expire"),
+        action=EventAction.BOOKING_EXPIRED,
+        reason="The hold lapsed before the order was paid for",
+        fields={"cancellation_reason": "timelimit"},
+    )
+
+
+async def claim_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
+    """The order, locked, for a background step that is about to work on it.
+
+    A door rather than a peek at the repository: the ticketing task lives in
+    ``app/tasks`` and a module's repository is nobody else's to reach into
+    (ARCHITECTURE.md §4). ``None`` means the row is gone, which a task must
+    treat as "nothing to do" rather than as an error.
+    """
+    return await repository.lock_order(session, order_id)
+
+
+async def begin_ticketing(session: AsyncSession, order: Order) -> Order:
+    """T8. Only from ``paid`` — a run already under way just carries on."""
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_STARTED,
+    )
+
+
+async def retry_ticketing(
+    session: AsyncSession, order: Order, *, reason: str, when: datetime
+) -> Order:
+    """T9 — the retry loop, and the only self-transition in the machine.
+
+    ``attempts`` counts up rather than being passed in, so the schedule cannot
+    disagree with the history about which try this was.
+    """
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_RETRY,
+        reason=reason,
+        next_attempt_at=when,
+    )
+
+
+async def finish_ticketing(
+    session: AsyncSession, order: Order, result: TicketingResult
+) -> Order:
+    """T10, or T10x when only some of the tickets came out.
+
+    Ticket numbers are merged onto the travellers already stored rather than
+    replacing them: the booking answer carried document dates and contacts that
+    a ticketing answer has no reason to repeat, and overwriting the list would
+    quietly lose them.
+
+    **Every traveller or none.** A partial issue is not a smaller success — the
+    order has some tickets and some passengers without one, and nothing
+    automatic can put that right.
+    """
+    issued = {
+        traveler.position: traveler.ticket_number
+        for traveler in result.travelers
+        if traveler.ticket_number
+    }
+    travelers = [
+        {**person, "ticket_number": issued.get(index, person.get("ticket_number"))}
+        for index, person in enumerate(order.travelers, start=1)
+    ]
+    missing = [person for person in travelers if not person.get("ticket_number")]
+
+    if missing or not travelers:
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.NEEDS_ATTENTION,
+            actor=Actor.system("orders.ticket"),
+            action=EventAction.TICKETING_PARTIAL,
+            reason=f"{len(missing)} of {len(travelers)} travellers have no ticket",
+            meta=result.raw,
+            fields={
+                "travelers": travelers,
+                "provider_status": result.provider_status,
+                "provider_response": result.raw,
+                "attention_reason": "partial_ticketing",
+            },
+        )
+
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETED,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_SUCCEEDED,
+        meta=result.raw,
+        fields={
+            "travelers": travelers,
+            "provider_status": result.provider_status,
+            "provider_response": result.raw,
+        },
+    )
+
+
+async def send_to_refund(
+    session: AsyncSession, order: Order, *, reason: str, failure: str | None = None
+) -> Order:
+    """T11 — ticketing is not going to happen and the money must go back.
+
+    The refund row is written in the **same transaction** as the status change,
+    already approved: nobody has to agree that a customer who paid for nothing
+    should be repaid, and a compensation waiting for a signature is a
+    compensation that does not happen at three in the morning.
+
+    ``next_attempt_at`` is set to now, so the sweep picks it up on its next
+    pass exactly as it does a ticketing step.
+    """
+    attempt = await repository.paid_attempt(session, order.id)
+    session.add(
+        OrderRefund(
+            order_id=order.id,
+            payment_id=None if attempt is None else attempt.id,
+            kind=RefundKind.AUTO.value,
+            status=RefundState.APPROVED.value,
+            amount=order.amount_paid,
+            penalty_amount=Decimal("0"),
+            currency=order.currency or "UZS",
+            reason=reason,
+        )
+    )
+    logger.error(
+        "order_compensating",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        amount=str(order.amount_paid),
+        reason=reason,
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_FAILED,
+        reason=reason,
+        fields={"failure_message": failure or reason},
+        next_attempt_at=datetime.now(UTC),
+    )
+
+
+# --- giving the money back (order-system/03-design.md T15, T17) ------------------
+
+
+async def settled_attempt(session: AsyncSession, order: Order) -> OrderPayment | None:
+    """The attempt that actually took the money — a door, not a peek.
+
+    The refund task lives in ``app/tasks`` and a module's repository is nobody
+    else's to reach into (ARCHITECTURE.md §4).
+    """
+    return await repository.paid_attempt(session, order.id)
+
+
+async def claim_refund(session: AsyncSession, order: Order) -> OrderRefund | None:
+    """The refund still running on this order, locked and marked ``processing``.
+
+    ``None`` means there is nothing to do — the order says ``refunding`` and no
+    refund is open, which is a state only a bug or a hand-edit can produce, and
+    one the caller must not paper over by inventing a refund.
+    """
+    refund = await repository.open_refund(session, order.id)
+    if refund is None:
+        return None
+    if refund.status == RefundState.REQUESTED.value:
+        # Still waiting for a person. Nothing automatic may take it further.
+        return None
+    refund.status = RefundState.PROCESSING.value
+    await session.commit()
+    return refund
+
+
+async def settle_refund(
+    session: AsyncSession,
+    order: Order,
+    refund: OrderRefund,
+    *,
+    provider_ref: str | None,
+    order_action: str | None,
+) -> Order:
+    """T15 — the money is back with the customer."""
+    refund.status = RefundState.SUCCEEDED.value
+    refund.provider_refund_ref = provider_ref
+    refund.provider_order_action = order_action
     await session.commit()
     logger.info(
-        "order_cancelled",
+        "order_refunded",
         order_id=str(order.id),
-        gts_order_number=order.gts_order_number,
-        status=order.status,
+        order_no=order.order_no,
+        amount=str(refund.amount),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDED,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_SUCCEEDED,
+        reason=refund.reason,
+        fields={"amount_refunded": refund.amount},
+    )
+
+
+async def retry_refund(
+    session: AsyncSession, order: Order, *, reason: str, when: datetime
+) -> Order:
+    """T15x — try again. The self-transition that keeps the history honest."""
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDING,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_RETRY,
+        reason=reason,
+        next_attempt_at=when,
+    )
+
+
+async def abandon_refund(
+    session: AsyncSession, order: Order, refund: OrderRefund | None, *, reason: str
+) -> Order:
+    """T17 — the last automatic step failed, so a person takes over.
+
+    This is the state PROJECT.md D3 promises exists: money has moved, no ticket
+    came out of it, and the refund did not work either. It is loud on purpose —
+    the alternative is money quietly going nowhere, which is the one outcome
+    this whole design exists to prevent.
+    """
+    if refund is not None:
+        refund.status = RefundState.FAILED.value
+        refund.failure_message = reason
+        await session.commit()
+    logger.error(
+        "order_needs_attention",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        amount_paid=str(order.amount_paid),
+        reason=reason,
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.NEEDS_ATTENTION,
+        actor=Actor.system("orders.refund"),
+        action=EventAction.REFUND_FAILED,
+        reason=reason,
+        fields={"attention_reason": "refund_failed"},
     )
 
 
@@ -190,10 +1059,8 @@ async def list_orders(
 ) -> Page[OrderOut]:
     """This customer's orders, newest first (API.md §21).
 
-    No ``apply_search``: the only free text here lives inside the opaque
-    answer, and searching a blob we do not read is the beginning of reading
-    it. `?search=` over PNR and passenger name is an admin need and arrives
-    with the status map (API.md §31).
+    No ``apply_search`` yet: searching by PNR and passenger name is an admin
+    need and arrives with that surface (API.md §31).
     """
     stmt = repository.owned_orders(customer_id)
     if product is not None:
@@ -205,7 +1072,7 @@ async def list_orders(
         stmt, query, allowed=_ORDER_ORDERING, default="-created_at", tiebreak=Order.id
     )
     rows, total = await paginate(session, stmt, pagination)
-    return page([OrderOut.model_validate(row) for row in rows], pagination, total)
+    return page([OrderOut.from_order(row) for row in rows], pagination, total)
 
 
 async def get_order(
@@ -214,13 +1081,41 @@ async def get_order(
     order = await repository.order_by_id(session, customer_id, order_id)
     if order is None:
         raise NotFound("No such order")
-    return OrderOut.model_validate(order)
+    return OrderOut.from_order(order)
 
 
 __all__ = [
+    "abandon_attempt",
+    "abandon_refund",
     "apply_cancel",
+    "cancel_order",
+    "attach_redirect",
+    "begin_ticketing",
+    "booking_answer",
+    "claim_order",
+    "claim_refund",
+    "confirm_booking",
+    "due_for_expiry",
+    "ensure_cancellable",
+    "expire_booking",
+    "fail_booking",
+    "finish_ticketing",
     "get_order",
     "list_orders",
-    "owned_by_gts_number",
-    "record_booking",
+    "owned_attempt",
+    "owned_by_provider_number",
+    "owned_order",
+    "payment_state",
+    "record_unreadable_booking",
+    "retry_refund",
+    "retry_ticketing",
+    "send_to_refund",
+    "settle_attempt",
+    "settle_refund",
+    "settled_attempt",
+    "start_attempt",
+    "start_order",
+    "start_transaction",
+    "ticket_deadline",
+    "transition",
 ]

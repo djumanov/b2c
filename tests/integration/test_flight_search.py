@@ -11,6 +11,7 @@ speaks ASGI, which respx leaves alone.
 """
 
 import json as jsonlib
+import uuid
 from typing import Any
 
 import httpx
@@ -25,7 +26,6 @@ from app.db.base import Base
 from app.modules.cms.models import ContentStatus, FunFact
 from app.modules.customers.models import Customer
 from app.modules.integrations.models import GtsCredential
-from app.modules.orders.models import Order
 from app.modules.settings import cache as settings_cache
 from tests.integration.conftest import customer_headers_for
 
@@ -34,7 +34,6 @@ OFFERS = "/api/v1/public/flight/offers/"
 UPSELL = "/api/v1/public/flight/upsell/"
 VERIFY = "/api/v1/public/flight/verify/"
 BOOKING = "/api/v1/public/flight/booking/"
-CANCEL = "/api/v1/public/flight/cancel/"
 GTS = "https://gts.test"
 
 BOOKING_BODY: dict[str, Any] = {
@@ -318,69 +317,52 @@ async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
     assert garbage.status_code == 401
 
 
-# --- booking and cancel (API.md §20) -------------------------------------------------
+# --- booking (API.md §20) -------------------------------------------------
+
+
+def _booking_headers(customer: Customer) -> dict[str, str]:
+    """Booking is a money endpoint and refuses to run without a key (§10)."""
+    return {**customer_headers_for(customer), "Idempotency-Key": str(uuid.uuid4())}
 
 
 @respx.mock
-async def test_booking_passes_through_untouched(
+async def test_booking_relays_the_answer_beside_our_own_order(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
-    """Nothing of ours joins the answer: no ``search_status``, no order id we
-    minted, no ``payment_id`` (decision of 2026-08-14)."""
+    """GTS's answer is still published whole, under ``data`` — the route, the
+    segments and the fare rules live only there. What is new beside it is the
+    order and the payment placeholder (order-system/03-design.md §3.6)."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
-    gts_booking = {"order_id": "1250", "pnr": "ABCDEF", "status": "BO"}
+    gts_booking = {
+        "data": {
+            "order_number": 1250,
+            "gds_pnr": "ABCDEF",
+            "status": "BO",
+            "price_info": {"price": 100, "currency": "UZS"},
+        }
+    }
     route = respx.post(f"{GTS}/v1/content/booking/").mock(
         return_value=httpx.Response(200, json=_envelope(gts_booking))
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == gts_booking
+    answer = response.json()["data"]
+    assert answer["data"] == gts_booking
+    assert answer["order"]["provider_order_number"] == "1250"
+    assert answer["payment"]["status"] == "pending"
     assert route.call_count == 1
-    # Passengers and all, byte for byte.
+    # Passengers and all, byte for byte — the request is untouched.
     assert jsonlib.loads(route.calls.last.request.content) == BOOKING_BODY
 
 
 @respx.mock
-async def test_cancel_passes_through_untouched(
-    api: AsyncClient, session: AsyncSession, customer: Customer
-) -> None:
-    """The body still reaches GTS verbatim — the ownership check reads
-    ``order_id``, it does not rewrite the request (API.md §20)."""
-    await _activate_credential(session)
-    await _enable_flight()
-    _mock_signin()
-    session.add(
-        Order(
-            customer_id=customer.id,
-            product="flight",
-            gts_order_number="61453",
-            status="BO",
-            gts_response={"data": {"order_number": 61453, "status": "BO"}},
-        )
-    )
-    await session.commit()
-    gts_cancel = {"data": {"order_number": 61453, "status": "CB"}}
-    route = respx.post(f"{GTS}/v1/content/cancel/").mock(
-        return_value=httpx.Response(200, json=_envelope(gts_cancel))
-    )
-
-    body = {"order_number": 61453, "reason": "changed my mind"}
-    response = await api.post(CANCEL, json=body, headers=customer_headers_for(customer))
-
-    assert response.status_code == 200
-    assert response.json()["data"] == gts_cancel
-    assert route.call_count == 1
-    assert jsonlib.loads(route.calls.last.request.content) == body
-
-
-@respx.mock
-@pytest.mark.parametrize("path", [BOOKING, CANCEL])
+@pytest.mark.parametrize("path", [BOOKING])
 async def test_the_writing_steps_refuse_the_anonymous(
     api: AsyncClient, session: AsyncSession, path: str
 ) -> None:
@@ -411,7 +393,7 @@ async def test_a_booking_without_an_offer_id_is_422_before_a_session(
     response = await api.post(
         BOOKING,
         json={"request_id": "r-1", "passengers": []},
-        headers=customer_headers_for(customer),
+        headers=_booking_headers(customer),
     )
 
     assert response.status_code == 422
@@ -446,7 +428,7 @@ async def test_a_refused_booking_keeps_the_gts_reason(
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 502
@@ -468,7 +450,7 @@ async def test_a_booking_timeout_is_a_504(
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 504
@@ -479,16 +461,28 @@ async def test_a_booking_timeout_is_a_504(
 async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
-    """Booking writes exactly one thing: the order (API.md §21).
+    """Booking writes exactly one order, and its history line (API.md §21).
 
     Not a passenger row — not even the ``save_passenger`` the body asks for,
     which lands with the module that owns passengers — and nothing that
-    resembles a cache of the search (D2). One table moves, by one row."""
+    resembles a cache of the search (D2). Two tables move, and they are the
+    order and the record of how it got where it is."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
     respx.post(f"{GTS}/v1/content/booking/").mock(
-        return_value=httpx.Response(200, json=_envelope({"order_id": "1250"}))
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {
+                    "data": {
+                        "order_number": 1250,
+                        "status": "BO",
+                        "price_info": {"price": 100, "currency": "UZS"},
+                    }
+                }
+            ),
+        )
     )
 
     async def counts() -> dict[str, int]:
@@ -500,12 +494,16 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
 
     before = await counts()
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
     after = await counts()
 
     assert response.status_code == 200
-    assert after == {**before, "orders": before["orders"] + 1}
+    assert after == {
+        **before,
+        "orders": before["orders"] + 1,
+        "order_events": before["order_events"] + 1,
+    }
 
 
 # --- the fun fact (API.md §20) --------------------------------------------------------
@@ -734,7 +732,7 @@ async def test_the_thirty_first_search_in_a_minute_is_rate_limited(
     assert "Retry-After" in last.headers
 
 
-@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY, BOOKING, CANCEL])
+@pytest.mark.parametrize("path", [SEARCH, OFFERS, UPSELL, VERIFY, BOOKING])
 async def test_the_path_without_its_slash_is_404(api: AsyncClient, path: str) -> None:
     response = await api.post(path.rstrip("/"), json={})
 

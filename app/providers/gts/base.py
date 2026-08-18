@@ -7,7 +7,7 @@ GTS                                           us
 ============================================  =====================================
 ``{status, message, id, time, total, data}``  ``{status, data, errors, meta}``
 HTTP 200 even on failure, negative codes      correct HTTP status + error catalogue
-``BO/PW/TI/TE/CB/VO/RF/PRF``                  ``booked``/``pending``/``ticketed``/…
+``BO/PW/TI/TE/CB/VO/RF/PRF``                  ``booked``/``ticketed``/… (see below)
 cookie session that expires                   handled here, invisible above
 ============================================  =====================================
 
@@ -16,11 +16,15 @@ Two details that are easy to get wrong and expensive to get wrong:
 * **Re-login is taken under a lock.** Every worker notices the expired session
   at the same moment; without a lock they all re-authenticate at once, and GTS
   sees a burst of logins from one machine account.
+The canonical status vocabulary is **not** here: it is ours, not the
+boundary's, and it lives in ``modules/orders/states.py`` with the table of
+legal moves that gives it meaning. Each vertical's adapter maps GTS's codes
+onto it (order-system/03-design.md §3.5).
+
 * **Booking and payment are never retried** (API.md §12). A retried booking is
   a second booking. Only idempotent ``GET``s retry — twice, with backoff.
 """
 
-from enum import StrEnum
 from typing import Any, Protocol
 
 
@@ -29,27 +33,6 @@ class GtsTimeouts:
 
     SEARCH_SECONDS: float = 40.0
     DEFAULT_SECONDS: float = 15.0
-
-
-class OrderStatus(StrEnum):
-    """Our canonical statuses. The GTS→canonical map is per vertical.
-
-    We define this vocabulary ourselves: the documents conflict, GTS speaks
-    ``BO``/``TI``/… and the B2C contract speaks ``ticketed`` (PROJECT.md A2).
-    """
-
-    BOOKED = "booked"
-    PENDING = "pending"
-    TICKETED = "ticketed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    VOIDED = "voided"
-    REFUNDED = "refunded"
-    PARTIALLY_REFUNDED = "partially_refunded"
-    #: Paid, no ticket, and the automatic refund also failed. Terminal, shown
-    #: in the panel, resolved by a human. Money is never lost quietly
-    #: (ARCHITECTURE.md §8).
-    NEEDS_ATTENTION = "needs_attention"
 
 
 class GtsSession(Protocol):
@@ -96,4 +79,4 @@ class GtsClient(Protocol):
         ...
 
 
-__all__ = ["GtsClient", "GtsSession", "GtsTimeouts", "OrderStatus"]
+__all__ = ["GtsClient", "GtsSession", "GtsTimeouts"]

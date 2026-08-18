@@ -813,8 +813,14 @@ manzil bo'shaydi, ya'ni o'sha email bilan qaytadan ro'yxatdan o'tish mumkin.
 
 ### Saqlangan yo'lovchilar
 
-Bron qilishda qayta terishni oldini oladi. Bron so'rovida `"save_passenger": true`
-berilsa yangi yozuv qo'shiladi. Resurs §8 dagi standart CRUD naqshida ishlaydi.
+Bron qilishda qayta terishni oldini oladi. Resurs §8 dagi standart CRUD
+naqshida ishlaydi.
+
+> ⚠ **`save_passenger` hozircha ishlamaydi.** Bron so'rovidagi
+> `"save_passenger": true` GTS'ga uzatiladi va shu yerda tugaydi — yo'lovchi
+> bu ro'yxatga **tushmaydi**. Bugun yozuv faqat shu bo'limdagi `POST` bilan
+> qo'shiladi. Sabab va yopilish rejasi:
+> [`order-system/02-current-audit.md`](order-system/02-current-audit.md) A11.
 
 ```json
 GET /public/profile/passengers/
@@ -947,8 +953,10 @@ Barcha vertikallar **bir xil naqshda** ishlaydi. `{product}` o'rniga: `flight`, 
 ([PROJECT.md](PROJECT.md) §8).
 
 ```
-search  →  offers  →  verify  →  booking  →  payment  →  order
-                                         ↘  cancel
+search  →  offers  →  (upsell)  →  verify  →  booking  →  order
+                                                  ↓
+                          POST /public/orders/{id}/transactions/   (§22)
+                          POST /public/orders/{id}/cancel/         (§21)
 ```
 
 | Metod | Yo'l | Auth | Izoh |
@@ -957,15 +965,20 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
 | `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
-| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi |
-| `POST` | `/public/{product}/cancel/` | ✓ | Chipta chiqarilmagan bronni bekor qiladi |
+| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi. **`Idempotency-Key` majburiy** (§10), limit 10/daq (§14) |
+| ~~`POST`~~ | ~~`/public/{product}/cancel/`~~ | — | **Olib tashlandi.** Bekor qilish buyurtma resursida: `POST /public/orders/{id}/cancel/` (§21) |
 
-> **Zanjirning `payment` qismi hali qurilmagan.** `booking/` bugun
-> **`payment_id` qaytarmaydi** va to'lov saga'si yo'q. Lokal buyurtma yozuvi
-> esa **bor** (2026-08-17 qarori, §21): bron muvaffaqiyatli o'tsa GTS javobi
-> mijozning nomiga saqlanadi. Javobga baribir **bitta ham maydon
-> qo'shilmaydi** — passthrough shakli o'zgarmaydi, yozuv `GET /public/orders/`
-> orqali ko'rinadi. To'lov va saga keyinroq shu endpoint **ustiga** quriladi.
+> **`booking/` — pul endpointi.** U buyurtma yaratadi va haqiqiy o'rin band
+> qiladi, shuning uchun `Idempotency-Key` majburiy (§10) va 10/daq to'lov
+> chelagida (§14). Javob **uchta kalitdan** iborat: `order` (bizniki),
+> `payment` (nima qarz va qachongacha) va `data` — GTS javobi
+> **o'zgarmasdan, to'liq**. Qolgan to'rt qadam avvalgidek sof passthrough
+> bo'lib qoladi. To'liq kontrakt quyida:
+> [`POST /public/{product}/booking/`](#post-publicproductbooking--toliq-kontrakt).
+>
+> **Buyurtma qatori GTS chaqiruvidan oldin yoziladi.** Shu sababdan bron
+> hech qachon yo'qolmaydi: yozuv bajarilmasa GTS'ga umuman borilmaydi, javob
+> kelmasa esa qator `created` holatida qoladi va topilishi mumkin.
 
 **Vertikalga xos qo'shimcha qadamlar:**
 
@@ -1037,130 +1050,6 @@ POST /public/flight/verify/
 tekshirish; so'rov shakli `upsell/`niki bilan bir xil, javob GTS'niki aynan
 (`verified` bayrog'i bilan).
 
-```json
-POST /public/flight/booking/
-{ "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
-  "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
-  "passengers": [
-    { "type": "ADT",
-      "gender": "M",
-      "first_name": "Azimjon", "last_name": "Yusufov",
-      "middle_name": "Kamoliddin",
-      "birth_date": "2002-12-20",
-      "citizenship": "UZ",
-      "document": { "type": "PSP", "number": "FA2145157",
-                    "issue_date": "2019-05-30", "expire_date": "2029-05-29" },
-      "email": "yusufovazimjon@gmail.com",
-      "phone": { "phone_code": "998", "phone_number": "998328192" } }
-  ],
-  "save_passenger": true }
-
-→ { "status": "success",
-    "data": {
-      "message": "booked",
-      "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
-      "data": { "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "order_number": 61453,
-                "status": "BO",
-                "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
-                "trip_type": "OW", "refundable": false,
-                "ticket_time_limit": 288000,
-                "routes": [ … ], "price_info": { … },
-                "passengers": [ … ] } } }
-```
-
-**Manba:** GTS gateway kolleksiyasi (`EASY_GATEWAY`), `/content/Booking`.
-Yuqoridagi tana va javob o'sha yerdan olingan — taxmin emas.
-
-**Diqqat, yo'lovchi shakli §19 dan farq qiladi.** Mijozning saqlangan
-yo'lovchisi (§19) bilan GTS bron kontrakti bir xil emas, ya'ni klient
-ko'chirmaydi — **o'giradi**:
-
-| §19 (bizda saqlanadi) | GTS bron tanasida |
-|---|---|
-| `citizenship` — §26 dagi **to'liq obyekt** | `"citizenship": "UZ"` — faqat **ISO kodi**, satr |
-| `document_type` — §26 dagi **to'liq obyekt** | `document.type` — faqat **kodi** (`PSP`, `NP`, `FA`) |
-| `document_number` | `document.number` |
-| `document_expiry_date` | `document.expire_date` |
-| — | `document.issue_date` — **bizda yo'q** |
-| — | `gender` (`M`/`F`) — **bizda yo'q** |
-| — | `email`, `phone` — **har bir yo'lovchida alohida** |
-| — | `type` — `ADT`/`CHD`/`INF`/`INS` |
-
-Oxirgi uchtasi ([PROJECT.md](PROJECT.md) §13 da yo'q maydonlar) bugun
-profilda saqlanmaydi, ya'ni klient ularni bron shaklida so'raydi. Ular
-saqlanadigan bo'lsa — **avval §13** tahrirlanadi, keyin kod.
-
-Bunga bitta istisno bor: **buyurtmachining o'z telefoni** §19 da aynan shu
-`{phone_code, phone_number}` shaklida saqlanadi, shuning uchun bron shaklidagi
-**aloqa** telefonini profildan oldindan to'ldirsa bo'ladi. **Yo'lovchining**
-telefoni esa hamon saqlanmaydi — saqlangan yo'lovchida bunday maydon yo'q.
-
-Server **faqat `request_id` va `offer_id`** borligini tekshiradi; qolgan
-hamma narsa, jumladan yo'lovchilar, **tekshirilmasdan** GTS'ga o'tadi.
-Yo'lovchilar soni va turi qidiruvdagi `adt`/`chd`/`inf`/`ins` bilan mos
-kelishi kerak — buni GTS tekshiradi. `save_passenger` — **bizning**
-maydonimiz (§19), GTS uni e'tiborsiz qoldiradi.
-
-**Javob ikki qavatli.** Biz GTS envelope'ining `data` sini beramiz, uning
-ichida yana `data` bor — buyurtmaning o'zi. Ya'ni buyurtma raqami
-`data.data.order_number`, statusi `data.data.status`. Biz bu ikkitasini
-o'sha yerdan o'qiymiz (§21), qolgan hamma narsani tegmasdan o'tkazamiz.
-
-```json
-POST /public/flight/cancel/
-{ "order_number": 61453 }
-
-→ { "status": "success",
-    "data": { … GTS'ning javobi aynan … } }
-```
-
-`order_number` — `booking/` javobidagi `data.data.order_number`, ya'ni
-**butun son** (bizning `GET /public/orders/` dagi `gts_order_number`; `id`
-emas, u bizning UUID). U **yagona majburiy maydon** va faqat egalikni
-tekshirish uchun o'qiladi; tana GTS'ga **qayta qurilmasdan** uzatiladi.
-Kolleksiyada bekor qilish tanasi aynan shu bitta maydondan iborat.
-
-⚠ Kolleksiyadagi bekor qilish **javobi** eski shaklda (`{status, code,
-order}`) — unda `data` kaliti yo'q, bizning klient esa `data` kutadi
-([STATUS.md](STATUS.md) §8). Jonli tekshiruvda birinchi ko'riladigan narsa
-shu.
-
-`booking/` — `verify/` tozalagan **aynan o'sha `offer_id`** bron qilinadi.
-Server faqat `request_id` va `offer_id` borligini tekshiradi; yo'lovchilar va
-qolgan barcha maydonlar **tekshirilmasdan** GTS'ga o'tadi, chunki qaysi
-maydonlar kerakligini GTS bron kontrakti hal qiladi (yo'lovchi maydonlari —
-§19). Javobga **bitta ham maydon qo'shilmaydi**: `search_status` bu yerda yo'q,
-chunki bron oqimida "In process" holati yo'q.
-
-GTS javob bergandan **keyin** bron mijozning nomiga saqlanadi — javob
-kelganicha, JSON sifatida (§21). Yozuv javobni o'zgartirmaydi va uni
-kechiktirmaydi. **Yozuv xatosi bronni yiqitmaydi:** GTS o'rinni allaqachon
-ushlab turibdi, `500` qaytarilsa mijoz qayta urinib ikkinchi bron ochardi —
-u haqiqiy o'rin. Bunday holda xato log'ga yoziladi va GTS javobi (`order_id`,
-`pnr` bilan) baribir qaytadi, ya'ni handle mijoz qo'lida qoladi. To'g'ri
-yechimi — holat o'zgarishi bilan bitta tranzaksiyadagi outbox
-([ARCHITECTURE.md](ARCHITECTURE.md) §8), u saga bilan keladi.
-
-`cancel/` — GTS hali ushlab turgan bronni bo'shatadi (chipta chiqarilgandan
-keyingi `void`/`refund` hali qurilmagan). So'rov tanasida **`order_id`
-majburiy** — u bo'lmasa `422`, maydon nomi bilan. Bu yagona tekshiruv:
-qolgan maydonlar tegilmasdan GTS'ga o'tadi va tana **qayta qurilmaydi**,
-chunki GTS bronni yana qaysi maydonlar bilan nomlashi bizda qat'iy
-belgilanmagan, noto'g'ri taxmin esa haqiqiy bekor qilishni GTS ko'rmasdan rad
-etardi.
-
-> **Bekor qilish faqat o'z buyurtmasi ustida.** `order_id` bo'yicha shu
-> mijozning buyurtma yozuvi qidiriladi; topilmasa **`404`** qaytadi va
-> **GTS'ga umuman borilmaydi**. "Bunday buyurtma yo'q" va "bu sizniki emas"
-> — tashqaridan bir xil javob (§18). Bu 2026-08-14 dagi ochiq egalik
-> tuynugini yopadi ([ARCHITECTURE.md](ARCHITECTURE.md) §14 A1).
->
-> ⚠ `order_id` maydon nomi **jonli GTS'da hali tasdiqlanmagan**. Bekor qilish
-> qattiq bo'lgani uchun, agar jonli javobda bron boshqacha atalgan bo'lsa
-> bekor qilish umuman ishlamaydi — ishlab chiqarishga chiqishdan oldin bitta
-> jonli bron qilinib javob shakli ko'rilishi shart ([STATUS.md](STATUS.md) §8).
-
 Bitta qo'shimcha maydon bor: **`search_status`** — GTS envelope'idagi `status`
 qiymati aynan (`"In process"` → qidiruv hali ketmoqda, `data`da qisman natijalar;
 `"success"` → tugadi). U `offers/`, `upsell/` va `verify/`da yuradi. Klient
@@ -1195,11 +1084,318 @@ relay qilinadi. Katalogdagi `409 offer_expired` hozircha **ishlatilmaydi** —
 passthrough'da mapping yo'q; u saga bilan birga, GTS kodlari xaritasi
 qurilganda joriy etiladi.
 
-> `booking/` va `cancel/` **auth talab qiladi** — mehmon sifatida xarid yo'q
-> ([PROJECT.md](PROJECT.md) D4). Qolgan qadamlardan farqli, bu ikkisida
-> `Authorization` majburiy.
+### `POST /public/{product}/booking/` — to'liq kontrakt
 
-**Swagger'da.** Oltala qadamning so'rov va javob sxemasi hamda to'ldirilgan
+Bu — oqimdagi **birinchi pul endpointi**: u haqiqiy o'rinni band qiladi va
+bizda buyurtma yozuvini ochadi. Shu sababdan qolgan to'rt qadamdan uchta narsa
+bilan farq qiladi — token majburiy, `Idempotency-Key` majburiy, va javob sof
+passthrough emas.
+
+#### Undan oldin nima bo'lishi kerak
+
+```
+search/   →  request_id
+offers/   →  offer_id            (sahifalab; search_status "success" bo'lguncha)
+upsell/   →  yangi offer_id      (ixtiyoriy — branded fare tanlansa)
+verify/   →  narx va o'rin hali bormi
+booking/  →  shu yerda
+```
+
+`booking/` ga **`verify/` tozalagan aynan o'sha `offer_id`** beriladi.
+`upsell/` ishlatilgan bo'lsa — `upsell/` qaytargan **yangi** `offer_id`, eskisi
+emas. `request_id` esa har doim `search/` bergani.
+
+#### Sarlavhalar
+
+| Sarlavha | Majburiy | Qiymat |
+|---|---|---|
+| `Authorization` | **✓** | `Bearer <access_token>`, `aud: public` (§4). Mehmon xaridi yo'q ([PROJECT.md](PROJECT.md) D4). Admin tokeni bilan — `403`, `401` emas |
+| `Idempotency-Key` | **✓** | Har bir bron urinishi uchun **yangi UUIDv4**. Bo'lmasa yoki bo'sh bo'lsa — `422`, `field: "Idempotency-Key"`. Qoidalari — quyidagi *`Idempotency-Key` — qoidalar* bo'limida |
+| `Content-Type` | **✓** | `application/json` |
+| `Accept-Language` | — | Xato matnlari tili (§7). Bron javobiga ta'sir qilmaydi |
+
+Javobda **`X-Request-Id`** qaytadi — support suhbati shu qiymatdan boshlanadi
+(§13). Bron muammosini yozganda uni ilashtiring.
+
+#### So'rov tanasi
+
+| Maydon | Tur | Majburiy | Kim tekshiradi |
+|---|---|---|---|
+| `request_id` | `string`, bo'sh emas | **✓** | **Biz.** Bo'lmasa `422`, `field: "request_id"` |
+| `offer_id` | `string`, bo'sh emas | **✓** | **Biz.** Bo'lmasa `422`, `field: "offer_id"` |
+| `passengers` | `array<object>` | GTS talab qiladi | **GTS.** Biz qaramaymiz ham |
+| `save_passenger` | `boolean` | — | **Hech kim** — pastdagi ogohlantirishga qarang |
+| boshqa har qanday maydon | — | — | Tekshirilmaydi, GTS'ga **aynan** o'tadi |
+
+Ya'ni bizning tekshiruvimiz **ikki maydondan iborat**. Qolgani — jumladan
+butun `passengers` bloki — o'zgartirilmasdan GTS'ga uzatiladi, chunki qaysi
+maydonlar kerakligini GTS bron kontrakti hal qiladi. Yo'lovchilar soni va turi
+qidiruvdagi `adt`/`chd`/`inf`/`ins` bilan mos kelishi shart — buni ham GTS
+tekshiradi va nomuvofiqlik `502` bo'lib qaytadi.
+
+> ⚠ **`save_passenger` hozircha hech narsa qilmaydi.** U GTS'ga uzatiladi va
+> shu yerda tugaydi: yo'lovchi §19 dagi saqlangan yo'lovchilar ro'yxatiga
+> **tushmaydi**. Klient uni yuborishi mumkin, lekin unga tayanmasin —
+> "keyingi safar avtomatik to'ladi" degan va'da bugun bajarilmaydi
+> ([order-system/02-current-audit.md](order-system/02-current-audit.md) A11).
+
+#### `passengers[]` elementi
+
+Bu **GTS'ning shakli**, bizniki emas. §19 dagi saqlangan yo'lovchi bilan bir
+xil emas — klient **ko'chirmaydi, o'giradi**:
+
+| Maydon | Tur | Izoh |
+|---|---|---|
+| `type` | `string` | `ADT` · `CHD` · `INF` · `INS` |
+| `gender` | `string` | `M` · `F`. **§19 da yo'q** — shakl so'raydi |
+| `first_name` | `string` | Hujjatdagidek, lotin harflarida |
+| `last_name` | `string` | Hujjatdagidek |
+| `middle_name` | `string` | Ixtiyoriy — chet el pasportida ko'pincha yo'q |
+| `birth_date` | `string` | `YYYY-MM-DD` |
+| `citizenship` | `string` | ISO 3166-1 alpha-2 **kodi**: `"UZ"`. §26 `countries/` dagi obyektning `code` kaliti, obyektning o'zi emas |
+| `document.type` | `string` | Hujjat turi **kodi**: `PSP`, `NP`, `FA`. §26 `document-types/` dagi obyektning `type` kaliti |
+| `document.number` | `string` | §19 dagi `document_number` |
+| `document.issue_date` | `string` | `YYYY-MM-DD`. **§19 da yo'q** — shakl so'raydi |
+| `document.expire_date` | `string` | §19 dagi `document_expiry_date`, boshqa nom bilan |
+| `email` | `string` | **Har bir yo'lovchida alohida**, buyurtmada bitta emas |
+| `phone` | `object` | `{"phone_code": "998", "phone_number": "901234567"}` — **ikki bo'lak**, bitta satr emas |
+
+§19 → GTS o'girish jadvali:
+
+| §19 (bizda saqlanadi) | GTS bron tanasida |
+|---|---|
+| `citizenship` — §26 dagi **to'liq obyekt** | `citizenship` — faqat **ISO kodi**, satr |
+| `document_type` — §26 dagi **to'liq obyekt** | `document.type` — faqat **kodi** |
+| `document_number` | `document.number` |
+| `document_expiry_date` | `document.expire_date` |
+| — | `document.issue_date`, `gender`, `email`, `phone`, `type` — **bizda yo'q** |
+
+Oxirgi qatordagilar ([PROJECT.md](PROJECT.md) §13 da yo'q maydonlar) profilda
+saqlanmaydi, ya'ni klient ularni bron shaklida so'raydi. Ular saqlanadigan
+bo'lsa — **avval §13** tahrirlanadi, keyin kod.
+
+Bitta istisno: **buyurtmachining o'z telefoni** §19 da aynan shu
+`{phone_code, phone_number}` shaklida saqlanadi, shuning uchun **aloqa**
+telefonini profildan oldindan to'ldirsa bo'ladi. **Yo'lovchining** telefoni
+esa saqlanmaydi.
+
+#### To'liq misol
+
+```bash
+curl -X POST 'https://api.example.uz/api/v1/public/flight/booking/' \
+  -H 'Authorization: Bearer eyJhbGciOi…' \
+  -H 'Idempotency-Key: 4f9a1c2e-7b1d-4d2a-9c33-8b7e5f0a1d64' \
+  -H 'Content-Type: application/json' \
+  -d @booking.json
+```
+
+```json
+POST /public/flight/booking/
+{ "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+  "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+  "passengers": [
+    { "type": "ADT",
+      "gender": "M",
+      "first_name": "Azimjon", "last_name": "Yusufov",
+      "middle_name": "Kamoliddin",
+      "birth_date": "2002-12-20",
+      "citizenship": "UZ",
+      "document": { "type": "PSP", "number": "FA2145157",
+                    "issue_date": "2019-05-30", "expire_date": "2029-05-29" },
+      "email": "yusufovazimjon@gmail.com",
+      "phone": { "phone_code": "998", "phone_number": "998328192" } }
+  ] }
+```
+
+**Manba:** GTS gateway kolleksiyasi (`EASY_GATEWAY`), `/content/Booking` —
+yozib olingan haqiqiy chaqiruv, taxmin emas.
+
+#### Javob `200`
+
+Envelope ichidagi `data` — **uchta kalit**:
+
+```json
+{ "status": "success",
+  "data": {
+    "order": {
+      "id": "3f1c5f6e-2c0a-4f5e-9a7d-1b2c3d4e5f60",
+      "order_no": "B2C-2608-000123",
+      "product": "flight",
+      "status": "booked",
+      "provider_status": "BO",
+      "provider_order_number": "61453",
+      "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+      "provider_pnr": "UBPLKW",
+      "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+      "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+      "amount": { "amount": "52.39", "currency": "EUR" },
+      "travelers": [
+        { "position": 1, "type": "ADT",
+          "first_name": "Azimjon", "last_name": "Yusufov",
+          "middle_name": "Kamoliddin", "birth_date": "2002-12-20",
+          "gender": "M", "citizenship": "UZ",
+          "document": { "type": "PSP", "number": "FA2145157",
+                        "issue_date": "2019-05-30", "expire_date": "2029-05-29" },
+          "email": "yusufovazimjon@gmail.com", "phone": "998998328192",
+          "provider_traveler_id": "1", "ticket_number": null,
+          "anonymized_at": null }
+      ],
+      "travel_start_at": "2026-09-14T05:40:00Z",
+      "route_summary": "TAS → IST",
+      "ticket_time_limit_at": "2026-08-21T09:14:22Z",
+      "cancellation_reason": null,
+      "created_at": "2026-08-18T09:14:20Z",
+      "updated_at": "2026-08-18T09:14:22Z",
+      "booked_at": "2026-08-18T09:14:22Z",
+      "paid_at": null, "ticketed_at": null, "cancelled_at": null,
+      "data": { "…": "GTS javobi — pastdagi `data` ning nusxasi" }
+    },
+    "payment": {
+      "status": "pending",
+      "amount": { "amount": "52.39", "currency": "EUR" },
+      "pay_before": "2026-08-21T09:14:22Z"
+    },
+    "data": {
+      "message": "booked",
+      "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+      "data": { "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+                "order_number": 61453,
+                "status": "BO",
+                "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
+                "trip_type": "OW", "refundable": false,
+                "ticket_time_limit": 288000,
+                "routes": [ … ], "price_info": { … },
+                "passengers": [ … ] } } } }
+```
+
+**`order` — bizniki**, va `GET /public/orders/{id}/` bilan **bir xil shakl**
+(§21). Klient shuni saqlaydi: `id` — keyingi barcha amallarning manzili.
+
+| Maydon | Izoh |
+|---|---|
+| `id` | **Bizning UUID.** To'lov, bekor qilish, holat so'rash — hammasi shu bilan |
+| `order_no` | Odam o'qiydigan raqam: `B2C-2608-000123`. Support shuni so'raydi |
+| `status` | **Kanonik, bizniki**: `created` · `booked` · `paid` · `ticketing` · `ticketed` · `refunding` · `refunded` · `partially_refunded` · `cancelled` · `voided` · `failed` · `needs_attention`. Bronda odatda **`booked`** |
+| `provider_status` | GTS kodi **o'zgarmasdan**: `BO`, `PW`, `TI`, `CB`… Ma'lumot uchun; qaror `status` bo'yicha qabul qilinadi |
+| `provider_order_number` | GTS buyurtma raqami — **satr** (upstream'da butun son). §21 da shu nom bilan; eski `gts_order_number` **yo'q** |
+| `provider_order_uid` | GTS ichki kaliti. Bizda hech narsa uni olmaydi; GTS supporti so'raydi |
+| `provider_pnr` | Aviakompaniya PNR'i (`gds_pnr`) |
+| `amount` | To'lanadigan summa: `{"amount": "52.39", "currency": "EUR"}`, miqdor **satr** (§1) |
+| `travelers` | Yo'lovchilar **bizning shaklda** — pastga qarang |
+| `ticket_time_limit_at` | GTS o'rinni shu vaqtgacha ushlab turadi (ISO, UTC). **To'lov shundan oldin tugashi kerak**; keyin bron o'zi bekor bo'ladi |
+| `travel_start_at`, `route_summary` | Ro'yxatda ko'rsatish uchun; kosmetik |
+| `data` | GTS javobi — pastdagi `data` ning **nusxasi**. Bir xil buyurtma ikkala joyda; bittasini o'qing |
+
+`travelers[]` elementi — `position` (1 dan), `type`, `first_name`, `last_name`,
+`middle_name`, `birth_date`, `gender`, `citizenship`,
+`document {type, number, issue_date, expire_date}`, `email`,
+**`phone` — bitta satr** (so'rovdagi `phone_code` + `phone_number` qo'shilgan),
+`provider_traveler_id`, `ticket_number` (chipta chiqqach to'ladi),
+`anonymized_at`. Barcha maydonlar `null` bo'lishi mumkin — GTS bermagan
+maydon yo'qolgan yo'lovchiga aylanmaydi.
+
+**`payment` — nima qarz va qachongacha.** Saqlanmaydi, buyurtmadan hisoblanadi:
+
+| Maydon | Izoh |
+|---|---|
+| `status` | `pending` — hali to'lanmagan · `paid` — to'liq to'langan |
+| `amount` | `order.amount` bilan bir xil. Narx hali yo'q bo'lsa `null` |
+| `pay_before` | `ticket_time_limit_at` aynan. `null` bo'lishi mumkin — GTS muddat bermagan bo'lsa |
+
+**`data` — GTS javobi, aynan va to'liq.** Marshrut, segmentlar, tarif qoidalari
+va bagaj **faqat shu yerda** — biz ularni ustunga chiqarmaymiz. **Ikki qavatli:**
+biz GTS envelope'ining ichini beramiz, uning ichida yana `data` bor —
+buyurtmaning o'zi. Ya'ni buyurtma raqami `data.data.order_number`, statusi
+`data.data.status`. Biz shu ikkitasini o'qiymiz, qolganini tegmasdan
+o'tkazamiz. `search_status` bu yerda **yo'q**: bron oqimida "In process"
+holati yo'q.
+
+> **`status: "needs_attention"` bo'lsa nima qilish kerak.** GTS javob berdi,
+> lekin biz undan buyurtma raqami yoki narxni o'qiy olmadik. O'rin **band
+> bo'lishi ehtimoli yuqori**, shuning uchun klient **qayta bron qilmasin** —
+> ikkinchi o'rin band bo'ladi. Javob `200` qaytadi, `amount` `null` bo'ladi,
+> buyurtma esa operator ro'yxatiga tushadi. Klient foydalanuvchiga
+> "buyurtmangiz tekshirilmoqda" deb ko'rsatadi va `GET /public/orders/{id}/`
+> ni kuzatadi.
+
+#### Xatolar
+
+| HTTP | `code` | Qachon | Klient nima qiladi |
+|---|---|---|---|
+| `401` | `unauthorized` | Token yo'q, yaroqsiz yoki muddati tugagan | Refresh, keyin **o'sha kalit bilan** qayta yuboradi |
+| `403` | `forbidden` | Admin tokeni (`aud: admin`) bilan kelingan | Mijoz tokeni bilan kiradi |
+| `404` | `not_found` | Bunday vertikal yo'q yoki bu o'rnatmada sotilmaydi | Qayta urinmaydi |
+| `409` | `conflict` | Aynan shu so'rov **hozir bajarilmoqda** (`Idempotency-Key` band) | 1–2 soniyadan keyin **o'sha kalit bilan** qayta so'raydi |
+| `422` | `validation` | `Idempotency-Key` yo'q · `request_id`/`offer_id` yo'q · kalit boshqa tana bilan ishlatilgan | Tanani tuzatadi va **yangi kalit** bilan yuboradi |
+| `429` | `rate_limited` | 10/daq to'lov chelagi to'ldi (§14) | `Retry-After` sarlavhasini kutadi |
+| `502` | `upstream_error` | GTS rad etdi: taklif muddati o'tgan, o'rin qolmagan, yo'lovchi maydoni noto'g'ri, balans yetmagan | GTS matni `message` da, asl kodi `meta.upstream` da. **O'rin band bo'lmagan** — qayta urinish xavfsiz |
+| `504` | `upstream_timeout` | GTS javob bermadi | **Qayta bron qilmasin** — quyidagi kalit qoidalariga qarang |
+| `500` | `internal` | Kutilmagan xato | `X-Request-Id` bilan support'ga |
+
+> **Muddati o'tgan taklif bugun `502`.** Katalogdagi `409 offer_expired`
+> hozircha ishlatilmaydi — passthrough'da mapping yo'q, GTS xatosi aynan
+> relay qilinadi (2026-08-13 qarori). Klient bu holda **qidiruvni qaytadan
+> boshlaydi**: yangi `search/` → yangi `request_id` → yangi `offer_id`.
+
+#### `Idempotency-Key` — qoidalar
+
+Bron qilishda tarmoq javobni yo'qotishi mumkin, foydalanuvchi esa tugmani ikki
+marta bosadi. Ikkalasi ham serverda bir xil ko'rinadi, va ikkinchi o'rin band
+qilish — pul. Kalit shuni to'sadi.
+
+| Holat | Nima bo'ladi |
+|---|---|
+| **Bir xil kalit, bir xil tana** | Birinchi javob **aynan** qaytadi, GTS'ga borilmaydi. 24 soat davomida |
+| **Bir xil kalit, boshqa tana** | `422` — "already used for a different request". Bu klient xatosi va u yashirilmaydi |
+| **Ikki so'rov bir vaqtda** | Birinchisi kalitni egallaydi, ikkinchisi `409` oladi. Ikkinchi o'rin band bo'lmaydi |
+| **Bron rad etilgan (`502`)** | Kalit **bo'shatiladi** — o'rin band bo'lmagan, o'sha kalit bilan qayta urinish xavfsiz |
+| **Javob kelmagan (`504`)** | Kalit **saqlanadi** — o'rin haqiqiy bo'lishi mumkin. Birinchi daqiqada o'sha kalit `409` beradi (da'vo hali ochiq), keyin bizdagi buyurtma qaytadi |
+| **Tana noto'g'ri (`422`)** | Kalit **60 soniya band** bo'lib qoladi. Tuzatilgan so'rov **yangi kalit** bilan yuboriladi |
+
+Amaliy qoidalar:
+
+1. Kalit — **UUIDv4**. U global bo'shliqda yashaydi, ya'ni "order-1" kabi
+   taxmin qilinadigan qiymat boshqa mijozning so'rovi bilan to'qnashadi.
+2. Kalit **bron urinishiga** beriladi, so'rovga emas: qayta urinishlarda
+   **o'sha kalit** yuboriladi. Yangi kalit = yangi bron = ikkinchi o'rin.
+3. Foydalanuvchi shaklni o'zgartirsa (yo'lovchi tuzatildi, boshqa taklif
+   tanlandi) — **yangi kalit**, chunki bu boshqa bron.
+4. Javob kelmasa yoki `504` bo'lsa: **qayta bron qilmang.** O'sha kalit bilan
+   so'rovni takrorlang — **60 soniyadan keyin**, undan oldin `409` keladi,
+   chunki birinchi urinishning da'vosi hali ochiq. Javobda buyurtma `created`
+   holatida kelishi mumkin va `data` `null` bo'ladi: bu "so'radik, javobini
+   bilmaymiz" degani. Klient `GET /public/orders/{id}/` ni kuzatadi.
+   ⚠ **`created` ni bugun avtomatik hal qiladigan narsa yo'q** — solishtirish
+   (`sync_open`) hali qurilmagan, shuning uchun bunday buyurtmani operator
+   yopadi.
+
+**Buyurtma qatori GTS chaqiruvidan oldin yoziladi.** Shu sababdan bron hech
+qachon yo'qolmaydi: yozuv bajarilmasa GTS'ga umuman borilmaydi, javob
+kelmasa esa qator `created` holatida qoladi — ya'ni "so'radik, javobini
+bilmaymiz", va uni topib bo'ladi
+([order-system/03-design.md](order-system/03-design.md) §3.8).
+
+#### Keyingi qadam
+
+Bron o'zi hech narsani to'lamaydi. `booking/` dan keyin klient **darhol**
+to'lovga o'tadi — `ticket_time_limit_at` o'tsa bron o'zi bekor bo'ladi:
+
+```
+POST /public/orders/{id}/transactions/   → redirect_url  (§22)
+GET  /public/transactions/{id}/          → holat
+GET  /public/orders/{id}/                → buyurtma holati
+POST /public/orders/{id}/cancel/         → to'lanmagan bronni bo'shatish (§21)
+```
+
+`{id}` — bron javobidagi **`order.id`**, `provider_order_number` emas.
+
+> **Bekor qilish bu yerda emas.** `POST /public/{product}/cancel/` **olib
+> tashlandi**; o'rniga `POST /public/orders/{id}/cancel/` (§21). Bekor qilish
+> buyurtma ustidagi amal: u ruxsat berilganini aniqlash uchun buyurtma
+> holatini biladi, va chipta chiqarilgan buyurtma GTS'ga umuman
+> borilmasdan `409` oladi.
+
+**Swagger'da.** Beshala qadamning so'rov va javob sxemasi hamda to'ldirilgan
 misollari `/api/v1/docs` da ham bor. Ular shu bo'limdan qo'lda ko'chirilgan —
 handler'lar `dict` qabul qilib `dict` qaytargani uchun (passthrough) FastAPI
 ularni o'zi chiqara olmaydi. Sxemalar **faqat hujjat**: hech narsani
@@ -1212,24 +1408,30 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 ## 21. Buyurtmalar
 
 > **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
-> bo'ysunadi.** U yerda kanonik status enumi, `available_actions`,
-> `history/`, `cancel/`, `refund/` va `receipt/` belgilangan. Quyidagi tavsif
-> passthrough davridagi holatni aks ettiradi.
+> bo'ysunadi.** Kanonik status enumi va o'tishlar jadvali u yerda; `history/`,
+> `cancel/`, `refund/`, `receipt/` va `available_actions` esa hali qurilmagan
+> va bo'laklar bo'yicha keladi.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
 | `GET` | `/public/orders/{id}/` | ✓ | Tafsilot |
 | `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) — **hali qurilmagan** |
-| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bekor qilish — **hali qurilmagan**, §20 dagi `cancel/` orqali |
+| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bronni bo'shatish. **`Idempotency-Key` majburiy**, limit 10/daq |
 
-**Buyurtma yozuvi — egalikning manbai.** `booking/` muvaffaqiyatli o'tganda
-GTS javobi mijozning nomiga saqlanadi (§20). Biz javobning **ichini
-o'girmaymiz**: u `data` maydonida GTS qanday bergan bo'lsa shundayligicha
-qaytadi. Yozuvning o'zi bilan birga javobning ichki `data` sidan
-`order_number`, `order_uid` va `status`, so'rovdan esa `request_id` va
-`offer_id` alohida maydonga ajratiladi — ular egalik tekshiruvi, filtr va
-saralash uchun kerak, boshqa hech narsa uchun emas.
+**Buyurtma yozuvi — egalikning manbai va holat mashinasining o'zi.**
+`booking/` muvaffaqiyatli o'tganda buyurtma mijozning nomiga yoziladi (§20).
+Provayder javobining o'zi `data` maydonida **o'girilmasdan** qaytadi, lekin
+buyurtmaning holati, puli va identifikatorlari alohida ustunlarda turadi va
+ular **bizniki**.
+
+**`status` — kanonik**, GTS kodi emas:
+`created` · `booked` · `paid` · `ticketing` · `ticketed` · `refunding` ·
+`refunded` · `partially_refunded` · `cancelled` · `voided` · `failed` ·
+`needs_attention`. `?status=` filtri ham shu qiymatlarni oladi. GTS'ning o'z
+kodi (`BO`, `TI`, `CB`, …) yonida **`provider_status`** da qoladi — u
+diagnostika uchun, filtr uchun emas. O'tishlar jadvali va har bir statusning
+ma'nosi: [`order-system/03-design.md`](order-system/03-design.md) §3.3.
 
 **Ro'yxat ham, tafsilot ham buyurtmaning butun yozuvini qaytaradi** — ikkalasi
 bir xil shaklda, qisqartirilgan ro'yxat varianti yo'q. Sabab: `data` baribir
@@ -1238,18 +1440,30 @@ olib tashlash hech narsani tejamaydi, faqat klientni har bir element uchun
 `{id}/` ga borishga majbur qilardi.
 
 ```json
-GET /public/orders/?product=flight&status=BO&page=1&page_size=20
+GET /public/orders/?product=flight&status=booked&page=1&page_size=20
 
 → { "status": "success",
     "data": [ { "id": "3f1c…",                     ← bizning UUID
+                "order_no": "B2C-2608-000123",     ← inson o'qiydigan raqamimiz
                 "product": "flight",
-                "gts_order_number": "61453",       ← GTS'niki, bekor qilish uchun
-                "gts_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "status": "BO",
+                "status": "booked",                ← kanonik, bizniki
+                "provider_status": "BO",           ← GTS'niki, kelganicha
+                "provider_order_number": "61453",  ← bekor qilish shuni oladi
+                "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+                "provider_pnr": "UBPLKW",
                 "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
                 "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
+                "amount": { "amount": "52.39", "currency": "EUR" },
+                "travelers": [ … ],
+                "travel_start_at": null,
+                "route_summary": null,
+                "ticket_time_limit_at": null,
+                "cancellation_reason": null,
                 "created_at": "2026-08-17T09:14:22Z",
                 "updated_at": "2026-08-17T09:14:22Z",
+                "booked_at": "2026-08-17T09:14:22Z",
+                "paid_at": null,
+                "ticketed_at": null,
                 "cancelled_at": null,
                 "data": { … GTS'ning bron javobi aynan … } } ],
     "meta": { "page": 1, "page_size": 20, "total": 1, "total_pages": 1 } }
@@ -1261,119 +1475,129 @@ bizning UUID.
 | Maydon | Nima |
 |---|---|
 | `id` | Bizning UUID — `/public/orders/{id}/` shuni oladi |
+| `order_no` | Inson o'qiydigan raqamimiz. **Har bir buyurtmada bor**, hatto GTS javob bermaganida ham — support uchun yagona tutqich |
 | `product` | Vertikal kodi |
-| `gts_order_number` | GTS raqami — **`cancel/` shuni oladi** (§20). GTS'da butun son, bizda satr (§1) |
-| `gts_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
-| `status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `status` | **Kanonik** status (yuqoridagi ro'yxat) |
+| `provider_status` | GTS kodi kelganicha (`BO`, `TI`, `CB`, …) |
+| `provider_order_number` | GTS raqami — **bekor qilish shuni oladi**. GTS'da butun son, bizda satr (§1) |
+| `provider_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
+| `provider_pnr` | Aviakompaniya lokatori (`gds_pnr`) |
 | `request_id`, `offer_id` | Buyurtmani kelib chiqqan qidiruv va taklifga bog'laydi |
+| `amount` | Mijoz to'laydigan summa — `{amount, currency}`, summa **satr** (§1). Provayder narxlamaguncha `null` |
+| `travelers` | Yo'lovchilar **bizning shaklimizda**, chipta chiqqach har birida `ticket_number` bilan |
+| `travel_start_at`, `route_summary` | Sayohat sanasi va qisqa marshrut — ro'yxatni `data` ni ochmasdan ko'rsatish uchun |
+| `ticket_time_limit_at` | Provayder o'rinni ushlab turadigan muddat |
+| `cancellation_reason` | `customer` · `admin` · `timelimit` · `payment_failed` |
 | `created_at`, `updated_at` | Bizning yozuv vaqtlari |
-| `cancelled_at` | Biz `cancel/` ni muvaffaqiyatli chaqirgan payt. `status` GTS nima deganini, bu esa **qachon so'raganimizni** aytadi |
-| `data` | **GTS'ning bron javobi to'liq**, ichi o'girilmasdan (§20) |
+| `booked_at`, `paid_at`, `ticketed_at`, `cancelled_at` | Har bir muhim o'tish qachon sodir bo'lgani |
+| `data` | **Provayderning oxirgi javobi to'liq**, ichi o'girilmasdan (§20) |
 
-`gts_order_number` yoki `status` `null` bo'lishi mumkin — GTS javobidan
-o'qib bo'lmagan holat ([STATUS.md](STATUS.md) §8); yozuvning o'zi baribir
-saqlanadi va butun javob `data` da qoladi.
+Provayder javobini o'qib bo'lmasa buyurtma **`needs_attention`** holatida
+yoziladi: `provider_order_number` va `amount` `null` bo'ladi, javobning o'zi
+esa buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin
+"bron qilindi" deb ham ko'rsatilmaydi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
-> **Status bugun GTS'niki, kanonik emas.** Qiymat GTS kodi kelganicha:
-> `BO` · `PW` · `TI` · `TE` · `CB` · `VO` · `RF` · `PRF`
-> ([GTS.md](GTS.md) §4). `?status=` filtri ham shu kodlar bilan ishlaydi.
->
-> Kanonik enum (`booked` · `pending` · `ticketed` · `failed` · `cancelled` ·
-> `voided` · `refunded` · `partially_refunded` · `needs_attention`) bekor
-> qilinmadi — u `available_actions` bilan birga **saga**ga suriladi
-> ([PHASES.md](PHASES.md) 2-faza, 9-bo'lak). Sabab: xarita har vertikal uchun
-> alohida yoziladi va uning birinchi haqiqiy iste'molchisi — bekor
-> qilish/qaytarish qoidalari, ular esa saga bilan keladi. Bugun xarita
-> qurilsa u iste'molchisiz taxmin bo'lardi. O'girish nuqtasi belgilangan:
-> [ARCHITECTURE.md](ARCHITECTURE.md) §7.
+**Bekor qilish** — `POST /public/orders/{id}/cancel/`. Tanasi yo'q: buyurtma
+`{id}` bilan nomlanadi va provayderga uning o'z tutqichi (`order_number`)
+uzatiladi. Holat ruxsat bermasa GTS'ga **umuman borilmaydi** — chiptalangan
+buyurtma `409 conflict` qaytaradi, o'rin esa bo'shatilmaydi. Javob —
+yangilangan buyurtma (§21 shakli).
 
-> **Hali qurilmagani.** `receipt/` — kvitansiya buyurtma ichidagi narx va
-> yo'lovchini bilishni talab qiladi, biz esa blobni ochmaymiz. `{id}/cancel/`
-> — bekor qilish hozircha §20 dagi `POST /public/{product}/cancel/` orqali,
-> u endi egalikni tekshiradi. Ikkalasi ham saga bilan keladi. `payment_id`,
-> `available_actions` va admin yuzasi (§31) ham hali yo'q.
+Bron muddati to'lovsiz o'tsa buyurtmani **tizim o'zi** yopadi: o'rin
+provayderga qaytariladi, `status` `cancelled` va `cancellation_reason`
+`timelimit` bo'ladi.
+
+> **Hali qurilmagani.** `receipt/`, `{id}/history/`, `{id}/refund/` va
+> `available_actions` — bo'laklar bo'yicha keladi
+> ([`order-system/04-plan.md`](order-system/04-plan.md)).
 
 ---
 
 ## 22. To'lov
 
-> **To'lovning buyurtma bilan bog'lanishi va saga oqimi** —
-> [`order-system/03-design.md`](order-system/03-design.md) §3.4, §3.7.
-> Quyidagi endpoint ro'yxati o'z kuchida qoladi.
+> **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
+> bo'ysunadi va 2026-08-18 da qayta yozildi.** Sabab: modelda `payment`
+> degan alohida obyekt yo'q. Bir buyurtmaga bitta summa va bitta valyuta
+> to'g'ri keladi, ular esa buyurtmaning o'z ustunlarida (`O12`) — demak
+> `payment_id` hech narsani nomlamaydi. Saqlanadigan narsa — **urinishlar**.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
-| `GET` | `/public/payments/{payment_id}/` | ✓ | To'lov holati va summasi |
 | `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
-| `POST` | `/public/payments/{payment_id}/transactions/` | ✓ | Tranzaksiya boshlash (`method`, ixtiyoriy `card_id`) |
-| `GET` | `/public/transactions/{id}/` | ✓ | Tranzaksiya holati |
-| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish |
-| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTP bilan tasdiqlash |
-| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish |
+| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini boshlaydi. **`Idempotency-Key` majburiy**, limit 10/daq |
+| `GET` | `/public/transactions/{id}/` | ✓ | Urinish holati |
+| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **hali qurilmagan** |
+| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTB bilan tasdiqlash — **hali qurilmagan** |
+| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish — **hali qurilmagan** |
 
-Tranzaksiya **ikkita oqimdan** birida ketadi. Qaysi biri — javobdagi `flow` aytadi, va
-klient boshqa hech narsaga qarab qaror qilmasligi kerak:
+To'lanishi kerak bo'lgan summa buyurtmadan o'qiladi — `booking/` javobidagi
+`payment` bloki va `GET /public/orders/{id}/` shuni ko'rsatadi:
+
+```json
+"payment": { "status": "pending",
+             "amount": { "amount": "1250000.00", "currency": "UZS" },
+             "pay_before": "2026-08-20T09:14:22Z" }
+```
+
+`pay_before` — provayder o'rinni ushlab turadigan muddat. Ticketing uchun
+qoldiriladigan zaxira vaqt keyingi bo'lakda undan ayriladi.
+
+**Urinishni boshlash:**
+
+```json
+POST /public/orders/3f1c…/transactions/
+Idempotency-Key: 6d1f…
+{ "method": "payme",
+  "return_url": "https://brand.uz/checkout/done" }
+
+→ 201 { "status": "success",
+        "data": { "id": "9a2e…",
+                  "order_id": "3f1c…",
+                  "provider": "payme",
+                  "status": "pending",
+                  "flow": "redirect",
+                  "amount": { "amount": "1250000.00", "currency": "UZS" },
+                  "redirect_url": "https://checkout.paycom.uz/…",
+                  "paid_at": null,
+                  "error_message": null,
+                  "created_at": "…", "updated_at": "…" } }
+```
+
+`method` — `GET /public/payments/methods/` bergan kodlardan biri.
+`return_url` — **o'rnatmaning o'z domeni** bo'lishi shart (§17 dagi `domain`
+dan olinadi): so'rov tanlagan manzilni to'lov provayderiga uzatish —
+o'rnatmaning merchant akkaunti nomi bilan qilingan ochiq redirect.
 
 | `flow` | Qachon | Keyin nima bo'ladi |
 |---|---|---|
-| `redirect` | Usul hosted | `redirect_url` ga o'tiladi; yakun webhook orqali keladi |
-| `card` | Karta bilan to'lash (yangi yoki saqlangan) | `card/` → `confirm/` qadamlari shu tranzaksiya ustida bajariladi |
+| `redirect` | Hosted usul | `redirect_url` ga o'tiladi; yakun webhook orqali keladi (§40) |
+| `card` | Karta bilan to'lash — **hali qurilmagan** | `card/` → `confirm/` qadamlari shu urinish ustida bajariladi |
 
-**Redirect** — hosted usul, karta/OTP qadamlari o'tkazib yuboriladi:
+**Bir buyurtmaga bir nechta urinish bo'lishi mumkin.** Payme rad etsa mijoz
+Click bilan qayta urinadi — bu ikkita urinish va bitta buyurtma. Har biri
+alohida yozuv bo'lib qoladi: nima sinab ko'rilgani ham yozuvning bir qismi.
 
-```json
-POST /public/payments/{payment_id}/transactions/
-{ "method": "payme" }
-Idempotency-Key: …
+**Urinish provayder chaqiruvidan oldin yoziladi.** Jarayon o'rtada o'lsa,
+`provider_ref` siz qolgan urinish solishtirish uchun dalil bo'ladi; hech nima
+yozilmasa, hech kim topa olmaydigan to'lov qoladi
+([ARCHITECTURE.md](ARCHITECTURE.md) §8).
 
-→ { "status": "success",
-    "data": { "transaction_id": "…", "flow": "redirect", "redirect_url": "https://…" } }
-```
+**To'lov o'tgach** buyurtma `paid` holatiga o'tadi va chipta chiqarish navbatga
+tushadi. Summa buyurtmanikiga **mos kelmasa** buyurtma `paid` emas,
+`needs_attention` holatiga tushadi: pul harakatlangan, lekin u bu buyurtmaning
+puli emas ([`order-system/03-design.md`](order-system/03-design.md) T5).
 
-**Saqlangan karta** — `card_id` berilganda karta qadamini **server o'zi to'ldiradi**:
-saqlangan yozuvning shifrlangan raqami ochilib provayderga uzatiladi (§19), klient
-raqamni qayta termaydi. Qadamlarning aniq shakli (OTP qadami provayderga bog'liq)
-to'lov moduli bilan birga belgilanadi. Karta boshqa mijozniki bo'lsa yoki umuman
-bo'lmasa — `404` (§19 dagi qoida). Provayder rad etsa — `400 payment_failed`, to'lov
-esa `pending` holida qoladi va boshqa usul bilan qayta urinish mumkin.
+**Bo'lib to'lash** (`installment/…`) — §41, birinchi relizga kirmaydi.
 
-**Yangi karta bilan, saqlamasdan** — uch qadam, `flow: card`:
+> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Karta yo'li
+> qurilganda raqam so'rov tanasidan adapterga, adapterdan provayderga o'tadi va
+> shu yerda tugaydi; saqlangan kartada esa bazadagi **AES-GCM shifrlangan**
+> nusxadan ochilib uzatiladi ([PROJECT.md](PROJECT.md) §13, D7). **CVV umuman
+> so'ralmaydi.**
 
-```json
-POST /public/transactions/{id}/card/
-{ "number": "8600…", "expire": "0329", "save": false }
-Idempotency-Key: …
-
-→ { "data": { "transaction_id": "…", "flow": "card", "status": "awaiting_otp",
-              "otp_sent_to": "+9989**1234", "otp_expires_at": "…" } }
-
-POST /public/transactions/{id}/confirm/   { "code": "123456" }
-→ { "data": { "transaction_id": "…", "status": "paid", … } }
-```
-
-`save: true` bo'lsa muvaffaqiyatli to'lovdan keyin karta profilga ham qo'shiladi (§19).
-
-**Bo'lib to'lash** (`type: installment`) uchun qo'shimcha qadamlar:
-
-| Metod | Yo'l | Izoh |
-|---|---|---|
-| `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash — **§41** |
-| `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish — **§41** |
-
-> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Yangi karta bilan
-> to'lovda raqam so'rov tanasidan adapterga, adapterdan provayderga o'tadi va shu yerda
-> tugaydi. Saqlangan kartada esa raqam bazadagi **AES-GCM shifrlangan** nusxadan ochilib
-> provayderga uzatiladi ([PROJECT.md](PROJECT.md) §13, D7) — klientga hech qachon
-> qaytmaydi. **CVV umuman so'ralmaydi.** Javobda karta hech qachon to'liq ko'rinmaydi:
-> faqat `masked_pan` va oxirgi to'rt raqam.
-
-> **Valyuta.** Karta yo'li (`card`) faqat **UZS** ni qabul qiladi — ikkala provayder ham
-> karta API'sida boshqa valyuta bermaydi. Boshqa valyutadagi to'lovga `card_id` berilsa
-> `422 validation` qaytadi va klient redirect oqimiga tushadi.
-
-To'lovdan keyingi oqim (chipta chiqarish, xato bo'lsa avtomatik qaytarish) —
-[ARCHITECTURE.md](ARCHITECTURE.md) §8.
+> **Valyuta.** Karta yo'li (`card`) faqat **UZS** ni qabul qiladi — ikkala
+> provayder ham karta API'sida boshqa valyuta bermaydi.
 
 ---
 
@@ -1570,6 +1794,7 @@ bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish reji
 | `GET` `PATCH` | `/admin/settings/currencies/` | `admin` | Asosiy valyuta va ko'rsatiladigan valyutalar |
 | CRUD | `/admin/settings/menu/` | `admin` | Menyu elementlari (ierarxik) — **§41** |
 | `GET` `PATCH` | `/admin/settings/features/` | `GET` `admin` · `PATCH` **`owner`** | Bo'limlarni yoqish/o'chirish (blog, sharhlar, …) |
+| `GET` `PATCH` | `/admin/settings/orders/` | `admin` | Chipta chiqarish sozlamalari — zaxira vaqt, qayta narxlash tolerantligi |
 | `GET` | `/admin/settings/products/` | — | Yoqilgan mahsulot vertikallari — **faqat o'qish** |
 | `POST` | `/admin/settings/cache/purge/` | `admin` | `site-config` keshini tozalash |
 
@@ -1579,6 +1804,24 @@ PATCH /admin/settings/branding/
 ```
 
 O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
+
+```json
+GET /admin/settings/orders/
+→ { "data": { "ticket_margin_minutes": 30,
+              "reprice_tolerance": "0.00",
+              "hold_fallback_minutes": 180 } }
+```
+
+| Maydon | Nima |
+|---|---|
+| `ticket_margin_minutes` | Provayderning muddatidan qancha oldin chipta chiqarish tugagan bo'lishi kerak. Qayta urinishlar shu chegaraga qadar davom etadi, muddatning o'ziga qadar emas |
+| `reprice_tolerance` | To'lov bilan chipta orasida tarif qanchagacha qimmatlashsa ham chipta chiqariladi. `0` — har qanday oshish chiptani to'xtatadi va pul qaytariladi |
+| `hold_fallback_minutes` | Provayder muddat aytmagan bo'lsa, to'lanmagan buyurtma qancha ochiq turadi. Bu ularning qoidasi haqidagi taxmin emas — **bizning** chegaramiz |
+
+Uchalasi ham `PROJECT.md` §7 ning "ikki client turli qiymat xohlashi mumkinmi?"
+savoliga ha deb javob beradi: uzoq yo'nalish sotadigan agentlik keng zaxira
+vaqt xohlaydi, kichik tarif tebranishini o'z marjasidan yopadigan agentlik esa
+noldan katta tolerantlik.
 
 > `settings/products/` faqat o'qish uchun: qaysi vertikallar sotilishi GTS shartnomasi bilan
 > belgilanadi. Panel ularni ko'rsatadi, o'zgartira olmaydi — sabab

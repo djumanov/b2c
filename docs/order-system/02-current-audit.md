@@ -238,7 +238,7 @@ Bu — auditning eng muhim qismi: poydevorning katta qismi **tayyor va sifatli**
 | Ro'yxat yordamchilari | `app/api/listing.py` | `apply_search`, `apply_created_range`, `apply_ordering`, `paginate`, `page` |
 | Auth/RBAC/limit | `app/api/deps.py` | `CurrentCustomer`, `CurrentStaff`, `require_owner`, `RateLimit`, `Pagination` |
 | Pul turi | `app/core/money.py` | `Money`, `money_column`, `currency_column` — `NUMERIC(18,2)` + `CHAR(3)` |
-| Model asoslari | `app/db/mixins.py` | UUID PK **ilova tomonda** (`:30-32`) — outbox qatorini bitta tranzaksiyada yozish uchun ataylab shunday |
+| Model asoslari | `app/db/mixins.py` | UUID PK **ilova tomonda** (`:30-32`) — id insertdan oldin ma'lum bo'lsin uchun ataylab shunday, saga aynan shuni talab qiladi |
 | GTS klienti | `app/providers/gts/client.py` | Sessiya menejeri (Redis + qulf), xato xaritasi, `X-Request-Id` uzatish |
 | Mahsulot porti | `app/providers/products/base.py` | `ProductCode`, `FlowStep`, `ProductAdapter`, registry |
 | To'lov porti | `app/providers/payments/base.py` | `PaymentProvider`, natija dataclass'lari, **factory** registry |
@@ -261,5 +261,5 @@ Bular kutilgan o'zgarishlar — hujjatga ro'yxatga olinadi, "singan test" emas.
 | `tests/contract/test_search_passthrough.py` (~`:280`) | "Booking adds nothing of ours: no `payment_id`, no order id" | Endi `{order, payment, data}` qaytaradi. Testning o'z docstring'i bu paytni oldindan aytgan |
 | `tests/integration/test_orders.py` | `POST /public/flight/cancel/` keyslari | Bekor qilish `POST /public/orders/{id}/cancel/` ga ko'chadi |
 | `tests/unit/test_flight_adapter.py` | `cancel` tanasini ko'rmasdan uzatadi | Adapter endi normallashtirilgan natija qaytaradi |
-| `tests/integration/test_flight_search.py` | "bir bron aynan bitta qator yozadi" | Endi order + travelers + snapshot + payment |
+| `tests/integration/test_flight_search.py` | "bir bron aynan bitta qator yozadi" | Endi buyurtma qatori va uning birinchi hodisasi |
 | `tests/contract/test_products_openapi.py` | `FLIGHT_CANCEL` bloki | Blok o'chiriladi |

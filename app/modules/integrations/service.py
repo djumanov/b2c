@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import Conflict, NotFound, ValidationFailed
+from app.api.errors import Conflict, NotFound, UpstreamError, ValidationFailed
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt, mask_secret, needs_reencryption
 from app.core.logging import get_logger
@@ -51,6 +51,7 @@ from app.modules.integrations.schemas import (
 from app.modules.uploads import service as uploads_service
 from app.providers import notifications, social
 from app.providers import payments as payments_provider
+from app.providers.gts.base import GtsClient
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
@@ -401,6 +402,38 @@ async def update_smtp(session: AsyncSession, data: SmtpIn) -> SmtpOut:
 def _is_usable(row: SmtpSettings) -> bool:
     """Enough filled in to have a chance of delivering a message."""
     return bool(row.host and row.from_address)
+
+
+async def gts_client(session: AsyncSession) -> GtsClient:
+    """A ready GTS client, built from the active credential.
+
+    The counterpart of ``payment_provider_adapter``, and here for the same
+    reason: the credential is a settings question and settings belong to a
+    module. It lives in ``integrations`` rather than in ``products`` because
+    both the search flow and the order steps need one, and putting it in either
+    of them would make the other import it — a cycle for a two-line function.
+
+    **No active credential is a 502, not a 404.** The product *is* enabled on
+    this installation, so pretending the resource does not exist would lie; the
+    thing behind us cannot serve, which is exactly what ``upstream_error``
+    means. A ``CryptoError`` from decryption propagates to the generic 500
+    instead — that is our misconfiguration, not GTS's, and the message must not
+    describe the key ring.
+
+    ``client_for`` is imported here rather than at the top, and that is a knot
+    rather than a style choice: ``providers/gts/client.py`` reads
+    ``ActiveGtsCredential`` out of this very module, so importing it at module
+    level would close a cycle. The alternative — a module that exists only to
+    hold these two lines — costs more than the import does.
+    """
+    from app.providers.gts.client import client_for
+
+    credential = await active_credential(session)
+    if credential is None:
+        raise UpstreamError(
+            "GTS is not configured on this installation: no active credential"
+        )
+    return client_for(credential)
 
 
 async def notifier(session: AsyncSession) -> Notifier:
@@ -904,15 +937,16 @@ __all__ = [
     "ConfiguredPaymentProvider",
     "activate_credential",
     "active_credential",
-    "create_credential",
-    "delete_credential",
     "any_payment_provider_ready",
     "bootstrap_smtp",
+    "create_credential",
+    "delete_credential",
     "enabled_payment_methods",
     "get_credential",
     "get_payment_provider",
     "get_smtp",
     "gts_base_url",
+    "gts_client",
     "list_credentials",
     "list_payment_providers",
     "list_social_credentials",
@@ -920,8 +954,8 @@ __all__ = [
     "payment_providers",
     "social_verifier",
     "test_smtp",
-    "update_social_credential",
     "update_credential",
     "update_payment_provider",
     "update_smtp",
+    "update_social_credential",
 ]

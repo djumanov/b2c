@@ -32,13 +32,21 @@ class RecordingClient:
     """A ``GtsClient`` that remembers the one call made through it.
 
     ``post`` answers with the bare data (like the real client); a caller of
-    ``post_envelope`` gets the same data wrapped in a GTS envelope whose
-    status is ``self.status``.
+    ``post_envelope`` gets the same data wrapped in a GTS envelope whose status
+    is ``self.status``.
+
+    ``envelope=False`` turns that wrapping off, for the recorded answers that
+    **are** the envelope — ticketing puts the order under ``order`` beside its
+    own ``status``, and wrapping one of those again would test a shape GTS
+    never sends.
     """
 
-    def __init__(self, data: dict[str, Any], *, status: str = "success") -> None:
+    def __init__(
+        self, data: dict[str, Any], *, status: str = "success", envelope: bool = True
+    ) -> None:
         self.data = data
         self.status = status
+        self.envelope = envelope
         self.calls: list[tuple[str, dict[str, Any], float | None]] = []
 
     async def get(
@@ -60,6 +68,8 @@ class RecordingClient:
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:
         self.calls.append((path, json, timeout))
+        if not self.envelope:
+            return self.data
         return {"status": self.status, "message": "…", "code": 0, "data": self.data}
 
 
@@ -73,7 +83,6 @@ def test_the_adapter_satisfies_the_port() -> None:
         FlowStep.UPSELL,
         FlowStep.VERIFY,
         FlowStep.BOOKING,
-        FlowStep.CANCEL,
     }
 
 
@@ -333,17 +342,23 @@ async def test_verify_junk_fails_before_a_session_is_spent(
 # --- booking -------------------------------------------------------------------------
 
 
-async def test_booking_is_passed_through_untouched() -> None:
-    """Nothing is added on the way back — no ``search_status``, no order, no
-    ``payment_id``. Booking has no "In process" state to report (API.md §20,
-    decision of 2026-08-14), so the bare ``data`` is the answer."""
-    gts_answer = {
-        "order_id": "1250",
-        "pnr": "ABCDEF",
+#: The least an answer needs before it is an order: something to cancel by and
+#: something to charge. What the adapter makes of a full one is
+#: ``test_flight_order_ops.py``'s subject.
+BOOKED_ANSWER: dict[str, Any] = {
+    "data": {
+        "order_number": 1250,
         "status": "BO",
-        "total": {"amount": "221.86", "currency": "USD"},
+        "price_info": {"price": 221.86, "currency": "USD"},
     }
-    client = RecordingClient(gts_answer)
+}
+
+
+async def test_booking_sends_the_body_untouched_and_keeps_the_answer_whole() -> None:
+    """The request is still forwarded object-for-object, and the provider's
+    answer still travels whole — now beside our reading of it rather than
+    instead of it (order-system/03-design.md ``O4``)."""
+    client = RecordingClient(BOOKED_ANSWER)
     payload = {
         "request_id": "r-1",
         "offer_id": "o-1",
@@ -357,12 +372,13 @@ async def test_booking_is_passed_through_untouched() -> None:
     assert path == "/v1/content/booking/"
     assert sent is payload  # the same object — passengers and all
     assert timeout == GtsTimeouts.DEFAULT_SECONDS
-    assert result == gts_answer
+    assert result.raw == BOOKED_ANSWER
+    assert result.provider_order_number == "1250"
 
 
 async def test_booking_does_not_borrow_the_search_timeout() -> None:
     """API.md §12: 40 s is for a fan-out search, 15 s for everything else."""
-    client = RecordingClient({"order_id": "1"})
+    client = RecordingClient(BOOKED_ANSWER)
 
     await FlightAdapter().book(client, {"request_id": "r-1", "offer_id": "o-1"})
 
@@ -373,7 +389,7 @@ async def test_booking_does_not_borrow_the_search_timeout() -> None:
 async def test_passenger_fields_are_not_second_guessed() -> None:
     """Which passenger fields GTS insists on is GTS's contract to state, not
     ours to guess (STATUS.md, 2-faza kuzatuvi) — an empty list still goes."""
-    client = RecordingClient({"order_id": "1"})
+    client = RecordingClient(BOOKED_ANSWER)
 
     await FlightAdapter().book(
         client, {"request_id": "r-1", "offer_id": "o-1", "passengers": []}
@@ -406,9 +422,12 @@ async def test_booking_junk_fails_before_a_session_is_spent(
 # --- cancel --------------------------------------------------------------------------
 
 
-async def test_cancel_is_passed_through_untouched() -> None:
-    gts_answer = {"order_id": "1250", "status": "CB"}
-    client = RecordingClient(gts_answer)
+async def test_cancel_sends_the_body_untouched_and_keeps_the_answer_whole() -> None:
+    # ``envelope=False``: the recorded cancel answer *is* the envelope — it puts
+    # the order under ``order`` beside its own ``status`` and has no ``data``
+    # key at all, which is why the adapter reads the whole payload.
+    gts_answer = {"status": "success", "code": 100, "order": {"status": "CB"}}
+    client = RecordingClient(gts_answer, envelope=False)
     payload = {"order_id": "1250"}
 
     result = await FlightAdapter().cancel(client, payload)
@@ -417,7 +436,10 @@ async def test_cancel_is_passed_through_untouched() -> None:
     assert path == "/v1/content/cancel/"
     assert sent is payload
     assert timeout == GtsTimeouts.DEFAULT_SECONDS
-    assert result == gts_answer
+    assert result.raw == gts_answer
+    # Their code is read but not obeyed: reaching here means the seat is
+    # released, so the order goes to ``cancelled`` either way.
+    assert result.provider_status == "CB"
 
 
 @pytest.mark.parametrize(

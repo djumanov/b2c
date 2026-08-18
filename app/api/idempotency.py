@@ -102,9 +102,23 @@ def _answer_from(key: str, current: str, stored: str | bytes) -> IdempotencyCont
     return IdempotencyContext(key=key, fingerprint=current, replayed=record["response"])
 
 
+#: Declared optional so a missing key becomes *our* 422 with *our* message
+#: rather than FastAPI's generic one. ``api/openapi.py`` marks it required in
+#: the published schema, which is where a client reads the rule.
+_HEADER_DESCRIPTION: Final = (
+    "**Required.** A fresh UUIDv4 per attempt. The same key replays the first "
+    "outcome for 24 hours instead of acting again; the same key with a "
+    "different body is a `422`, and a duplicate arriving while the first is "
+    "still running is a `409` (API.md §10)."
+)
+
+
 async def idempotency_key(
     request: Request,
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", description=_HEADER_DESCRIPTION),
+    ] = None,
 ) -> IdempotencyContext:
     if not idempotency_key or not idempotency_key.strip():
         raise ValidationFailed(
