@@ -72,6 +72,14 @@ class ProductAdapter(Protocol):
     the request's own DB session, which an adapter must not know about. An
     adapter validates the request lightly and forwards it in GTS's own shape
     (API.md §20).
+
+    **This protocol is the search flow only.** ``book`` and ``cancel`` used to
+    be here as passthroughs; they moved to ``OrderOperations`` in
+    ``products/orders.py`` when they started answering in our own types, which
+    is the whole difference between a pipe and an anti-corruption layer
+    (order-system/03-design.md ``O4``). ``FlowStep.BOOKING`` still belongs to
+    ``supports()`` — the router's gate is about which paths exist, not about
+    which protocol serves them.
     """
 
     code: ProductCode
@@ -100,21 +108,6 @@ class ProductAdapter(Protocol):
         self, client: GtsClient, payload: dict[str, Any]
     ) -> dict[str, Any]:
         """Re-check price and availability before booking."""
-        ...
-
-    async def book(self, client: GtsClient, payload: dict[str, Any]) -> dict[str, Any]:
-        """Hold the booking on the GTS side — a passthrough like the rest.
-
-        Nothing of ours is written: no order row, no payment, no saga yet
-        (API.md §20, decision of 2026-08-14). Those are built *on top of* this
-        step later, and the request shape does not change when they are.
-        """
-        ...
-
-    async def cancel(
-        self, client: GtsClient, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Release a booking GTS still holds. Nothing of ours is undone."""
         ...
 
 

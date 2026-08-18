@@ -74,15 +74,20 @@ birinchi: uni to'liq test qilish uchun na GTS, na to'lov provayderi kerak.
 
 **Quriladi**
 
-* `app/providers/products/orders.py` — port va natija dataclass'lari
-  (`BookingResult`, `TicketingResult`, `CancelResult`, `RetrieveResult`,
-  `RepriceResult`, `RefundQuote`, `RefundCommitResult`, `TravelerRef`,
-  `FailureClass`);
-* `providers/products/flight.py` — port amalga oshiriladi: GTS javobini
-  normallashtirish, `travelers` massivini **bizning shaklga** o'girish,
-  `status_map()`, `classify()`, `available_actions()`;
+* `app/providers/products/orders.py` — port va **shu bo'lakda iste'molchisi
+  bor** metodlar: `book`, `cancel`, `status_map`. Natija turlari:
+  `BookingResult`, `CancelResult`, `TravelerRef`, `UnreadableAnswer`.
+  Qolgani (`ticket`, `reprice`, `classify`, `refund_*`) o'z bo'laklari bilan —
+  `runtime_checkable` protokol metod **borligini** tekshiradi, ya'ni
+  yozilmagan metodni e'lon qilish `isinstance` ni yiqitadi;
+* `book`/`cancel` `ProductAdapter` dan **chiqariladi** — u qidiruv oqimining
+  porti bo'lib qoladi;
+* `providers/products/flight.py` — port amalga oshiriladi: narx
+  (`price + fee_amount`), `travelers` massivini **bizning shaklga** o'girish,
+  marshrut va uchish vaqti, `status_map()`;
 * `float` → `Decimal` (`str()` orqali) va `ticket_time_limit` ning uch xil
-  formatini o'qish (§3.5).
+  formatini o'qish (§3.5). O'qib bo'lmaydigan javob — `UnreadableAnswer`,
+  ya'ni buyurtma `needs_attention` ga tushadi, `failed` ga emas.
 
 **Tashqi chaqiruv yo'q:** testlar yozib olingan haqiqiy GTS javoblarini fixture
 sifatida ishlatadi (`EASY_GATEWAY` kolleksiyasi, `drct-error*.json`).

@@ -17,7 +17,6 @@ The state machine itself is ``test_order_transitions.py``'s subject; what is
 checked here is that the two write paths go through it.
 """
 
-import json as jsonlib
 import uuid
 from typing import Any
 
@@ -297,27 +296,51 @@ async def test_a_booking_leaves_its_first_history_line(
 
 
 @respx.mock
-async def test_the_passengers_of_the_request_are_not_stored(
+async def test_the_travellers_are_stored_in_our_own_shape(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
-    """PROJECT.md §13: an order must be anonymisable, so the passport numbers
-    of the booking request never enter the row. Checked against the raw row —
-    a schema that happens not to expose them would prove nothing."""
+    """PROJECT.md §13 promises an order can be anonymised, and that is exactly
+    why the travellers are now stored rather than left in the provider blob:
+    a structure we define can be scrubbed field by field, one whose shape GTS
+    owns cannot (order-system/03-design.md ``O10``, closing A8).
+
+    This answer carries no ``passengers``, so they come from the request — the
+    fallback that keeps a receipt printable when the provider does not echo
+    them back."""
     await _installation(session)
     _mock_signin()
     _mock_booking()
 
     await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
 
-    rows = (await session.execute(text("SELECT * FROM orders"))).mappings().all()
-    assert len(rows) == 1
-    stored = jsonlib.dumps(dict(rows[0]), default=str)
-    assert "FA2145157" not in stored
-    assert "Yusufov" not in stored
-    assert "2002-12-20" not in stored
+    (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    assert order["travelers"] == [
+        {
+            "position": 1,
+            "type": "ADT",
+            "first_name": "Azimjon",
+            "last_name": "Yusufov",
+            "middle_name": None,
+            "birth_date": "2002-12-20",
+            "gender": "M",
+            "citizenship": "UZ",
+            "document": {
+                "type": "PSP",
+                "number": "FA2145157",
+                "issue_date": "2019-05-30",
+                "expire_date": "2029-05-29",
+            },
+            "email": "yusufovazimjon@gmail.com",
+            "phone": "998998328192",
+            "provider_traveler_id": None,
+            # Booking holds a seat; the ticket number arrives with ticketing.
+            "ticket_number": None,
+            "anonymized_at": None,
+        }
+    ]
 
 
 @respx.mock

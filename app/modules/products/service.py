@@ -32,7 +32,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import UpstreamError, ValidationFailed
+from app.api.errors import NotFound, UpstreamError, ValidationFailed
 from app.core.logging import get_logger
 from app.modules.cms import service as cms_service
 from app.modules.integrations import service as integrations_service
@@ -40,6 +40,12 @@ from app.modules.orders import service as orders_service
 from app.providers.gts.base import GtsClient
 from app.providers.gts.client import client_for
 from app.providers.products.base import ProductAdapter, ProductCode
+from app.providers.products.orders import (
+    BookingResult,
+    OrderOperations,
+    UnreadableAnswer,
+    order_operations,
+)
 
 logger = get_logger(__name__)
 
@@ -89,6 +95,21 @@ async def verify(
     return await adapter.verify(await _client(session), payload)
 
 
+def _order_ops(adapter: ProductAdapter) -> OrderOperations:
+    """The adapter's order half. Unreachable ``404`` — the gate got there first.
+
+    ``RequireProductStep`` already refused any vertical that does not declare
+    the step, so a registered adapter serving ``booking/`` implements this. The
+    check exists because a protocol narrowed by ``isinstance`` is the only thing
+    that makes the call type-safe, and answering with the gate's own words keeps
+    the two indistinguishable if it ever is reachable.
+    """
+    ops = order_operations(adapter)
+    if ops is None:
+        raise NotFound("This section is not available on this installation")
+    return ops
+
+
 async def book(
     session: AsyncSession,
     adapter: ProductAdapter,
@@ -98,36 +119,74 @@ async def book(
 ) -> dict[str, Any]:
     """Book, then file the answer under the customer (API.md §20, §21).
 
-    The passthrough is unchanged and still comes first — the response is GTS's
-    ``data`` and gains nothing. What follows it is the order row, which exists
-    so the customer can find this booking again and so ``cancel`` below has an
-    owner to check.
+    The wire is unchanged: what goes back is the provider's own answer, byte for
+    byte. What changed underneath is that the adapter now *reads* that answer
+    into a ``BookingResult`` before this module sees it, so the order row is
+    built from our own types rather than from GTS's dictionaries
+    (``providers/products/orders.py``).
 
-    **A failed write does not fail the booking.** GTS is already holding the
-    seat. Answering ``500`` would send the client into a retry and open a
-    *second* booking — a real seat, and later real money. The response carries
-    ``order_id`` and ``pnr``, so the customer still leaves with a handle even
-    when our row is missing; the loss is that they cannot cancel through us.
-    The real fix is an outbox row written in the same transaction as the
-    state change (ARCHITECTURE.md §8), and it belongs to the saga. Until then
-    this is a logged, known gap (STATUS.md §8).
+    ``UnreadableAnswer`` is not a failure: the provider agreed in words we
+    cannot parse, so the seat is probably real. The row is written anyway and
+    lands in ``needs_attention``; the customer still gets the answer that names
+    their booking.
+
+    **A failed write still does not fail the booking.** GTS is already holding
+    the seat, and answering ``500`` would send the client into a retry that
+    opens a *second* one — a real seat, and later real money. The response
+    carries the provider's identifiers either way, so the customer leaves with a
+    handle even when our row is missing; the loss is that they cannot cancel
+    through us. Slice S3 removes the need for this by writing the row before the
+    call (order-system/04-plan.md).
     """
-    data = await adapter.book(await _client(session), payload)
+    ops = _order_ops(adapter)
+    client = await _client(session)
     try:
-        await orders_service.record_booking(
+        result = await ops.book(client, payload)
+    except UnreadableAnswer as unreadable:
+        await _record(
             session,
             customer_id=customer_id,
             product=adapter.code,
             payload=payload,
-            response=data,
+            result=None,
+            response=unreadable.raw,
+        )
+        return unreadable.raw
+
+    await _record(
+        session,
+        customer_id=customer_id,
+        product=adapter.code,
+        payload=payload,
+        result=result,
+        response=result.raw,
+    )
+    return result.raw
+
+
+async def _record(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    product: str,
+    payload: dict[str, Any],
+    result: BookingResult | None,
+    response: dict[str, Any],
+) -> None:
+    """Write the order, and swallow a write that fails — see ``book``."""
+    try:
+        await orders_service.record_booking(
+            session,
+            customer_id=customer_id,
+            product=product,
+            payload=payload,
+            result=result,
+            response=response,
         )
     except Exception:
         logger.exception(
-            "order_not_recorded",
-            product=adapter.code,
-            customer_id=str(customer_id),
+            "order_not_recorded", product=product, customer_id=str(customer_id)
         )
-    return data
 
 
 async def cancel(
@@ -139,12 +198,12 @@ async def cancel(
 ) -> dict[str, Any]:
     """Release a booking — but only one this customer made (API.md §20).
 
-    ``order_number`` is the one field this step reads — GTS's own cancel body
-    is ``{"order_number": 61453}`` (EASY_GATEWAY collection,
-    ``/content/Cancel``) — and it is read rather than rewritten: the body
-    still reaches GTS exactly as it arrived, because which further fields name
-    a booking upstream is not ours to decide and a wrong guess costs a real
-    seat (``providers/products/flight.py``).
+    ``order_number`` is the one field this step reads — GTS's own cancel body is
+    ``{"order_number": 61453}`` (EASY_GATEWAY collection, ``/content/Cancel``) —
+    and it is read rather than rewritten: the body still reaches GTS exactly as
+    it arrived, because which further fields name a booking upstream is not ours
+    to decide and a wrong guess costs a real seat
+    (``providers/products/flight.py``).
 
     The lookup runs **before** the GTS call, so a booking that is not this
     customer's is refused without touching the seat — and so is one whose state
@@ -156,6 +215,7 @@ async def cancel(
             "Cancelling needs the order_number that booking returned",
             field="order_number",
         )
+    ops = _order_ops(adapter)
     order = await orders_service.owned_by_provider_number(
         session, customer_id=customer_id, provider_order_number=str(number).strip()
     )
@@ -163,9 +223,9 @@ async def cancel(
     # call would release a real seat and then answer 409 — the one ordering of
     # these two steps that costs money.
     orders_service.ensure_cancellable(order)
-    data = await adapter.cancel(await _client(session), payload)
-    await orders_service.apply_cancel(session, order, data)
-    return data
+    result = await ops.cancel(await _client(session), payload)
+    await orders_service.apply_cancel(session, order, result)
+    return result.raw
 
 
 __all__ = ["book", "cancel", "offers", "search", "upsell", "verify"]

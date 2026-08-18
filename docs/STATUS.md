@@ -113,7 +113,15 @@ kontrakt testlari.
 > iborat jadval `modules/orders/states.py` da, `service.transition()` —
 > `FOR UPDATE` ostida statusni o'zgartiradigan yagona yo'l. `modules/booking/`
 > o'chirildi (`O1`), `providers/gts/base.OrderStatus` olib tashlandi.
-> Keyingisi — S2, `OrderOperations` porti.
+> **S2 (adapter porti) bajarildi 2026-08-18:** `providers/products/orders.py`
+> — `OrderOperations`, `BookingResult`, `CancelResult`, `TravelerRef`,
+> `UnreadableAnswer`. `book`/`cancel` `ProductAdapter` dan chiqib shu portga
+> o'tdi va endi GTS `dict` i emas, bizning turlarimizni qaytaradi. Flight
+> adapteri narxni (`price + fee_amount`, `float` → `str` → `Decimal`),
+> `ticket_time_limit` ning uch xil formatini, marshrutni va yo'lovchilarni
+> normallashtiradi; yo'lovchilar endi `orders.travelers` da **bizning
+> shaklimizda** (§8.17 shu bilan yopilishga tayyor — tozalash S7 da).
+> Keyingisi — S3, bron niyati va `Idempotency-Key`.
 
 To'liq reja — [PHASES.md](PHASES.md).
 

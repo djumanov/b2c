@@ -25,7 +25,6 @@ lost either way.
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import text as sql_text
@@ -43,7 +42,6 @@ from app.api.listing import (
     paginate,
 )
 from app.core.logging import get_logger
-from app.core.money import quantize, to_decimal
 from app.modules.orders import repository
 from app.modules.orders.models import ORDER_NO_SEQUENCE, Order, OrderEvent
 from app.modules.orders.schemas import OrderOut
@@ -55,6 +53,7 @@ from app.modules.orders.states import (
     OrderStatus,
     can,
 )
+from app.providers.products.orders import BookingResult, CancelResult
 
 logger = get_logger(__name__)
 
@@ -162,74 +161,23 @@ async def _next_order_no(session: AsyncSession) -> str:
     return f"B2C-{datetime.now(UTC):%y%m}-{int(number or 0):06d}"
 
 
-# --- reading the provider's answer ----------------------------------------------
+# --- the doors ``products`` uses ------------------------------------------------
 
 
-def _text(source: Mapping[str, Any], key: str, *, limit: int) -> str | None:
-    """One field out of a provider payload, or ``None`` if it is not usable.
+def _reference(payload: Mapping[str, Any], key: str) -> str | None:
+    """One of our own request's identifiers, if it is usable.
 
-    Numbers are accepted and stringified: ``order_number`` really is an integer
-    upstream (``61453``), and an identifier is never arithmetic. Anything
-    longer than the column is refused rather than silently truncated — a cut
-    identifier would match the wrong order later, which is worse than none.
+    Only ``request_id`` and ``offer_id`` are read here, and only from the
+    *request*: everything the provider said arrives already translated in a
+    ``BookingResult``. Reading GTS's dictionaries is the adapter's job and
+    stopped being this module's the moment that port existed
+    (``providers/products/orders.py``).
     """
-    value = source.get(key)
+    value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, str | int):
         return None
     text = str(value).strip()
-    if not text or len(text) > limit:
-        return None
-    return text
-
-
-def _order_body(response: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The order itself, out of GTS's two-layer booking answer.
-
-    Our client already strips GTS's envelope, so what arrives here is
-    ``{"message": "booked", "request_id": …, "data": {…the order…}}`` and the
-    order's own fields sit under that inner ``data`` (EASY_GATEWAY collection,
-    ``/content/Booking``).
-
-    Falling back to the response itself is not politeness: an older shape in
-    the same collection returns the order flat, and reading a flat answer
-    wrongly costs nothing while missing a nested one costs the ability to
-    cancel.
-    """
-    inner = response.get("data")
-    return inner if isinstance(inner, dict) else response
-
-
-def _total(body: Mapping[str, Any]) -> tuple[Decimal, str] | None:
-    """What the customer owes, from ``price_info``.
-
-    ``price`` is fare plus taxes and **excludes** the agency fee, which sits
-    beside it: in the recorded booking, ``46.89 + 5.50`` is exactly the
-    ``payable_amount`` of the only passenger. So the sum of the two is the
-    figure to charge.
-
-    Amounts arrive as JSON floats and ``core.money.to_decimal`` refuses floats
-    on purpose — binary fractions are not money. They go through ``str`` first,
-    which is the one conversion that keeps the digits that were sent.
-
-    This rule lives here only until the adapter owns it (slice S2): reading a
-    vertical's price shape is an adapter's job, and hotels will not have a
-    ``price_info``.
-    """
-    info = body.get("price_info")
-    if not isinstance(info, dict):
-        return None
-    currency = _text(info, "currency", limit=3)
-    if currency is None:
-        return None
-    try:
-        amount = to_decimal(str(info["price"]))
-        fee = to_decimal(str(info.get("fee_amount", 0) or 0))
-    except (KeyError, TypeError, ValueError, InvalidOperation):
-        return None
-    return quantize(amount + fee), currency.upper()
-
-
-# --- the doors ``products`` uses ------------------------------------------------
+    return text if text and len(text) <= 64 else None
 
 
 async def record_booking(
@@ -238,43 +186,44 @@ async def record_booking(
     customer_id: uuid.UUID,
     product: str,
     payload: Mapping[str, Any],
+    result: BookingResult | None,
     response: dict[str, Any],
 ) -> Order:
-    """File a confirmed booking under the customer who made it.
+    """File a booking under the customer who made it.
 
     Two writes, and the order of them is the point. The row is inserted first,
     in ``created`` — so it exists no matter what the answer turns out to look
-    like — and only then moved to ``booked`` by the machine, which is what puts
-    the first line in its history.
+    like — and only then moved by the machine, which is what puts the first
+    line in its history.
 
-    Slice S3 moves that insert to **before** the provider call, which is what
-    finally closes the lost-booking gap (02-current-audit.md A1). Nothing in
-    the shape below changes when it does.
+    ``result`` is ``None`` when the adapter could not make an order out of the
+    answer. That is not a failure to report: GTS very probably booked something
+    and we cannot name it, so the row goes to ``needs_attention`` with the whole
+    answer on its first event, which is a thing a person can act on. Neither
+    guessing nor discarding is acceptable when a real seat may be held.
+
+    Slice S3 moves the insert to **before** the provider call, which is what
+    finally closes the lost-booking gap (02-current-audit.md A1). Nothing in the
+    shape below changes when it does.
     """
     order = Order(
         order_no=await _next_order_no(session),
         customer_id=customer_id,
         product=product,
         status=INITIAL_STATUS.value,
-        request_id=_text(payload, "request_id", limit=64),
-        offer_id=_text(payload, "offer_id", limit=64),
+        request_id=_reference(payload, "request_id"),
+        offer_id=_reference(payload, "offer_id"),
     )
     session.add(order)
     await session.commit()
 
-    body = _order_body(response)
-    number = _text(body, "order_number", limit=64)
-    total = _total(body)
-    if number is None or total is None:
-        # The booking happened — GTS answered — but we cannot say which one it
-        # is or what it costs. Neither guessing nor discarding is acceptable, so
-        # it goes to the queue a person watches, with the whole answer attached.
+    if result is None:
         logger.warning(
             "order_answer_unreadable",
             order_id=str(order.id),
+            order_no=order.order_no,
             product=product,
-            outer_fields=sorted(response),
-            inner_fields=sorted(body),
+            fields=sorted(response),
         )
         return await transition(
             session,
@@ -290,22 +239,25 @@ async def record_booking(
             },
         )
 
-    amount, currency = total
     return await transition(
         session,
         order.id,
-        to=OrderStatus.BOOKED,
+        to=result.status,
         actor=Actor.system("orders.booking"),
         action=EventAction.BOOKING_CONFIRMED,
-        meta=response,
+        meta=result.raw,
         fields={
-            "provider_order_number": number,
-            "provider_order_uid": _text(body, "order_uid", limit=64),
-            "provider_pnr": _text(body, "gds_pnr", limit=32),
-            "provider_status": _text(body, "status", limit=16),
-            "provider_response": response,
-            "amount_total": amount,
-            "currency": currency,
+            "provider_order_number": result.provider_order_number,
+            "provider_order_uid": result.provider_order_uid,
+            "provider_pnr": result.provider_pnr,
+            "provider_status": result.provider_status,
+            "provider_response": result.raw,
+            "amount_total": result.total.amount,
+            "currency": result.total.currency,
+            "travelers": [person.as_dict() for person in result.travelers],
+            "ticket_time_limit_at": result.ticket_time_limit_at,
+            "travel_start_at": result.travel_start_at,
+            "route_summary": result.route_summary,
         },
     )
 
@@ -342,12 +294,14 @@ def ensure_cancellable(order: Order) -> None:
 
 
 async def apply_cancel(
-    session: AsyncSession, order: Order, response: Mapping[str, Any]
+    session: AsyncSession, order: Order, result: CancelResult
 ) -> Order:
     """Carry the provider's answer to a cancellation onto the row.
 
-    The provider's own code is kept beside ours rather than instead of it:
-    ``CB`` is what they call it, ``cancelled`` is what we do.
+    Their code is kept beside ours rather than instead of it: ``CB`` is what
+    they call it, ``cancelled`` is what happened. Reaching here at all means the
+    seat is released — a refusal is an ``UpstreamError`` and never gets this
+    far — so the move does not depend on what, if anything, they named it.
     """
     return await transition(
         session,
@@ -356,11 +310,10 @@ async def apply_cancel(
         actor=Actor.customer(order.customer_id),
         action=EventAction.ORDER_CANCELLED,
         reason="Cancelled by the customer",
-        meta=dict(response),
+        meta=result.raw,
         fields={
             "cancellation_reason": "customer",
-            "provider_status": _text(_order_body(response), "status", limit=16)
-            or order.provider_status,
+            "provider_status": result.provider_status or order.provider_status,
         },
     )
 
