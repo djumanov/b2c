@@ -18,7 +18,8 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repository import live
-from app.modules.orders.models import Order, OrderEvent
+from app.modules.orders.models import Order, OrderEvent, OrderPayment
+from app.providers.payments.base import TransactionStatus
 
 
 def owned_orders(customer_id: uuid.UUID) -> Select[tuple[Order]]:
@@ -86,6 +87,84 @@ async def lock_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None
     return row
 
 
+async def attempt_by_id(
+    session: AsyncSession, customer_id: uuid.UUID, attempt_id: uuid.UUID
+) -> OrderPayment | None:
+    """One payment attempt of one customer, or nothing.
+
+    Scoped through the order it belongs to rather than by a copy of the owner:
+    an attempt is only ever reachable via its order, and duplicating
+    ``customer_id`` here would be a second answer to the same question.
+    """
+    row: OrderPayment | None = await session.scalar(
+        select(OrderPayment)
+        .join(Order, Order.id == OrderPayment.order_id)
+        .where(OrderPayment.id == attempt_id, Order.customer_id == customer_id)
+    )
+    return row
+
+
+async def attempt_by_provider_ref(
+    session: AsyncSession, provider: str, provider_ref: str
+) -> OrderPayment | None:
+    """The attempt a callback is talking about.
+
+    Not owner-scoped, and cannot be: a provider calling back has no session and
+    knows nothing about our customers. The unique index on the same two columns
+    is what keeps this from ever matching more than one row.
+    """
+    row: OrderPayment | None = await session.scalar(
+        select(OrderPayment).where(
+            OrderPayment.provider == provider,
+            OrderPayment.provider_ref == provider_ref,
+        )
+    )
+    return row
+
+
+async def unreferenced_attempt(
+    session: AsyncSession, order_id: uuid.UUID, provider: str
+) -> OrderPayment | None:
+    """The attempt still waiting to be named by its provider.
+
+    A hosted redirect gives us a URL and nothing else; the provider's own
+    reference arrives with its first callback. So settlement looks for the
+    reference first and falls back to the one open attempt at that provider —
+    newest, because a customer who started twice is finishing the later one.
+    """
+    row: OrderPayment | None = await session.scalar(
+        select(OrderPayment)
+        .where(
+            OrderPayment.order_id == order_id,
+            OrderPayment.provider == provider,
+            OrderPayment.provider_ref.is_(None),
+            OrderPayment.status == TransactionStatus.PENDING.value,
+        )
+        .order_by(OrderPayment.created_at.desc())
+        .limit(1)
+    )
+    return row
+
+
+async def lock_attempt(
+    session: AsyncSession, attempt_id: uuid.UUID
+) -> OrderPayment | None:
+    """The attempt, held until the transaction ends — settlement serialises."""
+    row: OrderPayment | None = await session.scalar(
+        select(OrderPayment).where(OrderPayment.id == attempt_id).with_for_update()
+    )
+    return row
+
+
+def attempts_of(order_id: uuid.UUID) -> Select[tuple[OrderPayment]]:
+    """One order's attempts, newest last."""
+    return (
+        select(OrderPayment)
+        .where(OrderPayment.order_id == order_id)
+        .order_by(OrderPayment.created_at.asc(), OrderPayment.id.asc())
+    )
+
+
 def events_of(order_id: uuid.UUID) -> Select[tuple[OrderEvent]]:
     """One order's history, oldest first — the way a timeline reads."""
     return (
@@ -96,7 +175,12 @@ def events_of(order_id: uuid.UUID) -> Select[tuple[OrderEvent]]:
 
 
 __all__ = [
+    "attempt_by_id",
+    "attempt_by_provider_ref",
+    "attempts_of",
     "events_of",
+    "lock_attempt",
+    "unreferenced_attempt",
     "lock_order",
     "order_by_idempotency_key",
     "order_by_id",

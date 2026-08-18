@@ -38,11 +38,13 @@ EXPECTED_MOVES: set[tuple[OrderStatus, OrderStatus]] = {
     (OrderStatus.CREATED, OrderStatus.NEEDS_ATTENTION),
     (OrderStatus.BOOKED, OrderStatus.PAID),
     (OrderStatus.BOOKED, OrderStatus.CANCELLED),
+    (OrderStatus.BOOKED, OrderStatus.NEEDS_ATTENTION),
     (OrderStatus.PAID, OrderStatus.TICKETING),
     (OrderStatus.PAID, OrderStatus.REFUNDING),
     (OrderStatus.TICKETING, OrderStatus.TICKETING),
     (OrderStatus.TICKETING, OrderStatus.TICKETED),
     (OrderStatus.TICKETING, OrderStatus.REFUNDING),
+    (OrderStatus.TICKETING, OrderStatus.NEEDS_ATTENTION),
     (OrderStatus.TICKETED, OrderStatus.REFUNDING),
     (OrderStatus.TICKETED, OrderStatus.VOIDED),
     (OrderStatus.REFUNDING, OrderStatus.REFUNDED),
@@ -64,7 +66,7 @@ def test_the_table_is_the_table_in_the_document() -> None:
 def test_every_pair_is_allowed_only_if_the_table_says_so(
     source: OrderStatus, target: OrderStatus
 ) -> None:
-    """The sweep. 144 pairs, and 18 of them are legal."""
+    """The sweep. 144 pairs, and 20 of them are legal."""
     assert can(source, target) is ((source, target) in EXPECTED_MOVES)
 
 

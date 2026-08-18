@@ -357,7 +357,7 @@ async def test_booking_relays_the_answer_beside_our_own_order(
     answer = response.json()["data"]
     assert answer["data"] == gts_booking
     assert answer["order"]["provider_order_number"] == "1250"
-    assert answer["payment"] is None
+    assert answer["payment"]["status"] == "pending"
     assert route.call_count == 1
     # Passengers and all, byte for byte — the request is untouched.
     assert jsonlib.loads(route.calls.last.request.content) == BOOKING_BODY

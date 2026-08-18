@@ -525,13 +525,22 @@ yo'l oxiridagi slash, `snake_case`, pul — satr.
 | `GET` | `/public/orders/{id}/` | — | To'liq tafsilot |
 | `GET` | `/public/orders/{id}/history/` | — | Status tarixi |
 | `POST` | `/public/orders/{id}/cancel/` | ✔ | To'lanmagan bronni bo'shatish |
+| `POST` | `/public/orders/{id}/transactions/` | ✔ | To'lov urinishini boshlaydi (§22) |
+| `GET` | `/public/transactions/{id}/` | — | Urinish holati |
+| `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari, auth'siz |
 | `POST` | `/public/orders/{id}/refund/quote/` | — | Faqat o'qish: jarima va qaytariladigan summa |
 | `POST` | `/public/orders/{id}/refund/` | ✔ | Qaytarish so'rovi (admin tasdig'ini kutadi) |
 | `GET` | `/public/orders/{id}/receipt/` | — | Kvitansiya |
 
 `Idempotency-Key` ustun ✔ bo'lgan joyda **majburiy** — yo'q bo'lsa `422`
-(`API.md` §10). Bu uchala yo'l ham `RateLimit("payment")` (10/daq) chelagiga
-o'tadi.
+(`API.md` §10). Bu yo'llarning barchasi `RateLimit("payment")` (10/daq)
+chelagiga o'tadi.
+
+> **`payment_id` yo'q.** `API.md` §22 dastlab `/public/payments/{payment_id}/…`
+> deb yozilgan edi; `O12` dan keyin bunday resurs qolmadi — bir buyurtmada
+> bitta summa bor va u `orders` da. To'lov endi buyurtmaning ostida boshlanadi,
+> urinishlar esa o'z id'si bilan `/public/transactions/{id}/` da o'qiladi
+> (2026-08-18 qarori).
 
 **`POST /{product}/booking/` javobi:**
 

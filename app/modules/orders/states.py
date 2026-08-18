@@ -121,12 +121,17 @@ class EventAction(StrEnum):
     BOOKING_UNRESOLVED = "booking.unresolved"
     BOOKING_EXPIRED = "booking.expired"
     PAYMENT_SETTLED = "payment.settled"
+    #: Money arrived, but not the money this order is for.
+    PAYMENT_MISMATCHED = "payment.mismatched"
     ORDER_CANCELLED = "order.cancelled"
     ORDER_VOIDED = "order.voided"
     TICKETING_STARTED = "ticketing.started"
     TICKETING_RETRY = "ticketing.retry"
     TICKETING_SUCCEEDED = "ticketing.succeeded"
     TICKETING_FAILED = "ticketing.failed"
+    #: Some travellers have tickets and some do not — nothing automatic can
+    #: put that right.
+    TICKETING_PARTIAL = "ticketing.partial"
     REFUND_STARTED = "refund.started"
     REFUND_SUCCEEDED = "refund.succeeded"
     REFUND_PARTIAL = "refund.partial"
@@ -201,6 +206,16 @@ TRANSITIONS: Final[tuple[Transition, ...]] = (
         EventAction.BOOKING_UNRESOLVED,
     ),
     Transition("T5", OrderStatus.BOOKED, OrderStatus.PAID, EventAction.PAYMENT_SETTLED),
+    # The guard-violation edges. A move whose precondition fails is not always a
+    # refusal: when money has already moved, there is nowhere safe to stand and
+    # the order goes to the queue a person works through
+    # (order-system/03-design.md §3.3, the "Guard buzilsa" column).
+    Transition(
+        "T5x",
+        OrderStatus.BOOKED,
+        OrderStatus.NEEDS_ATTENTION,
+        EventAction.PAYMENT_MISMATCHED,
+    ),
     Transition(
         "T6", OrderStatus.BOOKED, OrderStatus.CANCELLED, EventAction.ORDER_CANCELLED
     ),
@@ -218,6 +233,12 @@ TRANSITIONS: Final[tuple[Transition, ...]] = (
         OrderStatus.TICKETING,
         OrderStatus.TICKETED,
         EventAction.TICKETING_SUCCEEDED,
+    ),
+    Transition(
+        "T10x",
+        OrderStatus.TICKETING,
+        OrderStatus.NEEDS_ATTENTION,
+        EventAction.TICKETING_PARTIAL,
     ),
     Transition(
         "T11",

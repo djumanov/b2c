@@ -236,8 +236,13 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     # GTS's answer byte for byte (order-system/03-design.md §3.6).
     assert set(answer) == {"order", "payment", "data"}
     assert answer["data"] == GTS_BOOKING
-    assert answer["payment"] is None
     assert answer["order"]["status"] == "booked"
+    # What is still owed, derived from the order rather than stored (``O12``).
+    assert answer["payment"] == {
+        "status": "pending",
+        "amount": {"amount": EXPECTED_TOTAL, "currency": "EUR"},
+        "pay_before": None,
+    }
 
     listed = await api.get(ORDERS, headers=headers)
     assert listed.status_code == 200

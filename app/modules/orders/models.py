@@ -53,8 +53,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.money import currency_column, money_column
 from app.db.base import Base, Entity
-from app.db.mixins import UUIDPrimaryKeyMixin
+from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 from app.modules.orders.states import ActorType, EventAction, OrderStatus
+from app.providers.payments.base import (
+    PaymentProviderCode,
+    TransactionFlow,
+    TransactionStatus,
+)
 from app.providers.products.base import ProductCode
 
 #: Feeds ``order_no``. A sequence rather than a count of rows: two concurrent
@@ -296,4 +301,71 @@ class OrderEvent(Base, UUIDPrimaryKeyMixin):
     attempt: Mapped[int | None] = mapped_column(Integer)
 
 
-__all__ = ["ORDER_NO_SEQUENCE", "Order", "OrderEvent"]
+class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One **attempt** at paying for an order.
+
+    Not a payment intent: the amount and the currency the customer owes live on
+    the order, because one order carries one of each. What varies is the trying
+    — a card refused at Payme and then a redirect completed at Click is two
+    rows here and one order there (``O12``).
+
+    No soft delete. An attempt is evidence of a conversation with a payment
+    provider, and evidence that can be deleted is not evidence — the same
+    reasoning ``order_events`` and ``audit_log`` state.
+
+    **The row is committed before the provider is called.** If the process dies
+    mid-call, an attempt with no ``provider_ref`` is what tells reconciliation
+    where to look; with nothing written, a charge could exist that nobody could
+    connect to an order (ARCHITECTURE.md §8).
+    """
+
+    __tablename__ = "order_payments"
+    __table_args__ = (
+        _in_values("provider", PaymentProviderCode, name="provider"),
+        _in_values("status", TransactionStatus, name="status"),
+        _in_values("flow", TransactionFlow, name="flow"),
+        CheckConstraint("amount > 0", name="amount"),
+        # **This index is why a repeated callback cannot settle twice.** Not the
+        # handler's logic — logic can be raced, a unique index cannot (X6).
+        # Partial because the reference arrives with the provider's first
+        # callback, and until then there is nothing to be unique about.
+        Index(
+            "uq_order_payments_provider_ref",
+            "provider",
+            "provider_ref",
+            unique=True,
+            postgresql_where=text("provider_ref IS NOT NULL"),
+        ),
+        Index("ix_order_payments_order_created", "order_id", "created_at"),
+    )
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: The provider's own id for this attempt — Payme's receipt ``_id``, Click's
+    #: ``payment_id``. ``NULL`` until the provider names it, which for a hosted
+    #: redirect is the first callback rather than the call that starts it.
+    provider_ref: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: ``redirect`` today. The card flow fills the rest of the vocabulary.
+    flow: Mapped[str] = mapped_column(String(8), nullable=False)
+
+    #: Copied from the order rather than referenced, because it is what was
+    #: *asked for* — an order repriced afterwards must not silently rewrite the
+    #: history of what a customer was charged.
+    amount: Mapped[Decimal] = money_column(nullable=False)
+    currency: Mapped[str] = currency_column(nullable=False)
+
+    #: Where the customer was sent, for the hosted flow.
+    redirect_url: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    #: Whatever the provider said about this attempt, for diagnosis.
+    provider_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+__all__ = ["ORDER_NO_SEQUENCE", "Order", "OrderEvent", "OrderPayment"]

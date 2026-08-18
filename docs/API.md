@@ -1336,82 +1336,88 @@ Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
 ## 22. To'lov
 
-> **To'lovning buyurtma bilan bog'lanishi va saga oqimi** —
-> [`order-system/03-design.md`](order-system/03-design.md) §3.4, §3.7.
-> Quyidagi endpoint ro'yxati o'z kuchida qoladi.
+> **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
+> bo'ysunadi va 2026-08-18 da qayta yozildi.** Sabab: modelda `payment`
+> degan alohida obyekt yo'q. Bir buyurtmaga bitta summa va bitta valyuta
+> to'g'ri keladi, ular esa buyurtmaning o'z ustunlarida (`O12`) — demak
+> `payment_id` hech narsani nomlamaydi. Saqlanadigan narsa — **urinishlar**.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
-| `GET` | `/public/payments/{payment_id}/` | ✓ | To'lov holati va summasi |
 | `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
-| `POST` | `/public/payments/{payment_id}/transactions/` | ✓ | Tranzaksiya boshlash (`method`, ixtiyoriy `card_id`) |
-| `GET` | `/public/transactions/{id}/` | ✓ | Tranzaksiya holati |
-| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish |
-| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTP bilan tasdiqlash |
-| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish |
+| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini boshlaydi. **`Idempotency-Key` majburiy**, limit 10/daq |
+| `GET` | `/public/transactions/{id}/` | ✓ | Urinish holati |
+| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **hali qurilmagan** |
+| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTB bilan tasdiqlash — **hali qurilmagan** |
+| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish — **hali qurilmagan** |
 
-Tranzaksiya **ikkita oqimdan** birida ketadi. Qaysi biri — javobdagi `flow` aytadi, va
-klient boshqa hech narsaga qarab qaror qilmasligi kerak:
+To'lanishi kerak bo'lgan summa buyurtmadan o'qiladi — `booking/` javobidagi
+`payment` bloki va `GET /public/orders/{id}/` shuni ko'rsatadi:
+
+```json
+"payment": { "status": "pending",
+             "amount": { "amount": "1250000.00", "currency": "UZS" },
+             "pay_before": "2026-08-20T09:14:22Z" }
+```
+
+`pay_before` — provayder o'rinni ushlab turadigan muddat. Ticketing uchun
+qoldiriladigan zaxira vaqt keyingi bo'lakda undan ayriladi.
+
+**Urinishni boshlash:**
+
+```json
+POST /public/orders/3f1c…/transactions/
+Idempotency-Key: 6d1f…
+{ "method": "payme",
+  "return_url": "https://brand.uz/checkout/done" }
+
+→ 201 { "status": "success",
+        "data": { "id": "9a2e…",
+                  "order_id": "3f1c…",
+                  "provider": "payme",
+                  "status": "pending",
+                  "flow": "redirect",
+                  "amount": { "amount": "1250000.00", "currency": "UZS" },
+                  "redirect_url": "https://checkout.paycom.uz/…",
+                  "paid_at": null,
+                  "error_message": null,
+                  "created_at": "…", "updated_at": "…" } }
+```
+
+`method` — `GET /public/payments/methods/` bergan kodlardan biri.
+`return_url` — **o'rnatmaning o'z domeni** bo'lishi shart (§17 dagi `domain`
+dan olinadi): so'rov tanlagan manzilni to'lov provayderiga uzatish —
+o'rnatmaning merchant akkaunti nomi bilan qilingan ochiq redirect.
 
 | `flow` | Qachon | Keyin nima bo'ladi |
 |---|---|---|
-| `redirect` | Usul hosted | `redirect_url` ga o'tiladi; yakun webhook orqali keladi |
-| `card` | Karta bilan to'lash (yangi yoki saqlangan) | `card/` → `confirm/` qadamlari shu tranzaksiya ustida bajariladi |
+| `redirect` | Hosted usul | `redirect_url` ga o'tiladi; yakun webhook orqali keladi (§40) |
+| `card` | Karta bilan to'lash — **hali qurilmagan** | `card/` → `confirm/` qadamlari shu urinish ustida bajariladi |
 
-**Redirect** — hosted usul, karta/OTP qadamlari o'tkazib yuboriladi:
+**Bir buyurtmaga bir nechta urinish bo'lishi mumkin.** Payme rad etsa mijoz
+Click bilan qayta urinadi — bu ikkita urinish va bitta buyurtma. Har biri
+alohida yozuv bo'lib qoladi: nima sinab ko'rilgani ham yozuvning bir qismi.
 
-```json
-POST /public/payments/{payment_id}/transactions/
-{ "method": "payme" }
-Idempotency-Key: …
+**Urinish provayder chaqiruvidan oldin yoziladi.** Jarayon o'rtada o'lsa,
+`provider_ref` siz qolgan urinish solishtirish uchun dalil bo'ladi; hech nima
+yozilmasa, hech kim topa olmaydigan to'lov qoladi
+([ARCHITECTURE.md](ARCHITECTURE.md) §8).
 
-→ { "status": "success",
-    "data": { "transaction_id": "…", "flow": "redirect", "redirect_url": "https://…" } }
-```
+**To'lov o'tgach** buyurtma `paid` holatiga o'tadi va chipta chiqarish navbatga
+tushadi. Summa buyurtmanikiga **mos kelmasa** buyurtma `paid` emas,
+`needs_attention` holatiga tushadi: pul harakatlangan, lekin u bu buyurtmaning
+puli emas ([`order-system/03-design.md`](order-system/03-design.md) T5).
 
-**Saqlangan karta** — `card_id` berilganda karta qadamini **server o'zi to'ldiradi**:
-saqlangan yozuvning shifrlangan raqami ochilib provayderga uzatiladi (§19), klient
-raqamni qayta termaydi. Qadamlarning aniq shakli (OTP qadami provayderga bog'liq)
-to'lov moduli bilan birga belgilanadi. Karta boshqa mijozniki bo'lsa yoki umuman
-bo'lmasa — `404` (§19 dagi qoida). Provayder rad etsa — `400 payment_failed`, to'lov
-esa `pending` holida qoladi va boshqa usul bilan qayta urinish mumkin.
+**Bo'lib to'lash** (`installment/…`) — §41, birinchi relizga kirmaydi.
 
-**Yangi karta bilan, saqlamasdan** — uch qadam, `flow: card`:
+> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Karta yo'li
+> qurilganda raqam so'rov tanasidan adapterga, adapterdan provayderga o'tadi va
+> shu yerda tugaydi; saqlangan kartada esa bazadagi **AES-GCM shifrlangan**
+> nusxadan ochilib uzatiladi ([PROJECT.md](PROJECT.md) §13, D7). **CVV umuman
+> so'ralmaydi.**
 
-```json
-POST /public/transactions/{id}/card/
-{ "number": "8600…", "expire": "0329", "save": false }
-Idempotency-Key: …
-
-→ { "data": { "transaction_id": "…", "flow": "card", "status": "awaiting_otp",
-              "otp_sent_to": "+9989**1234", "otp_expires_at": "…" } }
-
-POST /public/transactions/{id}/confirm/   { "code": "123456" }
-→ { "data": { "transaction_id": "…", "status": "paid", … } }
-```
-
-`save: true` bo'lsa muvaffaqiyatli to'lovdan keyin karta profilga ham qo'shiladi (§19).
-
-**Bo'lib to'lash** (`type: installment`) uchun qo'shimcha qadamlar:
-
-| Metod | Yo'l | Izoh |
-|---|---|---|
-| `GET` | `/public/payments/{payment_id}/installment/calculate/` | Oylik to'lov jadvalini hisoblash — **§41** |
-| `POST` | `/public/payments/{payment_id}/installment/apply/` | Ariza yuborish — **§41** |
-
-> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Yangi karta bilan
-> to'lovda raqam so'rov tanasidan adapterga, adapterdan provayderga o'tadi va shu yerda
-> tugaydi. Saqlangan kartada esa raqam bazadagi **AES-GCM shifrlangan** nusxadan ochilib
-> provayderga uzatiladi ([PROJECT.md](PROJECT.md) §13, D7) — klientga hech qachon
-> qaytmaydi. **CVV umuman so'ralmaydi.** Javobda karta hech qachon to'liq ko'rinmaydi:
-> faqat `masked_pan` va oxirgi to'rt raqam.
-
-> **Valyuta.** Karta yo'li (`card`) faqat **UZS** ni qabul qiladi — ikkala provayder ham
-> karta API'sida boshqa valyuta bermaydi. Boshqa valyutadagi to'lovga `card_id` berilsa
-> `422 validation` qaytadi va klient redirect oqimiga tushadi.
-
-To'lovdan keyingi oqim (chipta chiqarish, xato bo'lsa avtomatik qaytarish) —
-[ARCHITECTURE.md](ARCHITECTURE.md) §8.
+> **Valyuta.** Karta yo'li (`card`) faqat **UZS** ni qabul qiladi — ikkala
+> provayder ham karta API'sida boshqa valyuta bermaydi.
 
 ---
 

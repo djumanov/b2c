@@ -22,7 +22,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.core.money import Money
-from app.modules.orders.models import Order
+from app.modules.orders.models import Order, OrderPayment
 
 
 class OrderOut(BaseModel):
@@ -111,4 +111,60 @@ class OrderOut(BaseModel):
         )
 
 
-__all__ = ["OrderOut"]
+class TransactionOut(BaseModel):
+    """One attempt at paying for an order (API.md §22).
+
+    Called a transaction on the wire because that is what the contract calls
+    it, and because "attempt" is the honest word only from inside: a customer
+    sees one payment that either went through or did not.
+    """
+
+    id: uuid.UUID
+    order_id: uuid.UUID
+    #: ``payme`` · ``click``.
+    provider: str
+    #: ``pending`` · ``paid`` · ``failed`` · ``cancelled``.
+    status: str
+    #: ``redirect`` today. The card flow fills the rest of the vocabulary.
+    flow: str
+    amount: Money
+    #: Where to send the customer. ``null`` once the provider has answered, or
+    #: on a flow that does not leave the site.
+    redirect_url: str | None
+    paid_at: datetime | None
+    #: Why it did not work, when it did not.
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_attempt(cls, attempt: OrderPayment) -> "TransactionOut":
+        return cls(
+            id=attempt.id,
+            order_id=attempt.order_id,
+            provider=attempt.provider,
+            status=attempt.status,
+            flow=attempt.flow,
+            amount=Money(amount=attempt.amount, currency=attempt.currency),
+            redirect_url=attempt.redirect_url,
+            paid_at=attempt.paid_at,
+            error_message=attempt.error_message,
+            created_at=attempt.created_at,
+            updated_at=attempt.updated_at,
+        )
+
+
+class TransactionStartIn(BaseModel):
+    """Starting a payment: which method, and where to come back to."""
+
+    model_config = {"extra": "forbid"}
+
+    #: One of the codes ``GET /public/payments/methods/`` published.
+    method: str
+    #: Where the provider sends the customer afterwards. Checked against the
+    #: installation's own origins — a redirect target chosen by a request is
+    #: otherwise an open redirect with our merchant account's name on it.
+    return_url: str
+
+
+__all__ = ["OrderOut", "TransactionOut", "TransactionStartIn"]

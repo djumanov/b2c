@@ -19,7 +19,8 @@ ishlatadi, va pul yo'lida "yarim ulangan" holat eng qimmat xato.
 | S1 | Holat mashinasi | `orders` qayta yoziladi, `order_events` | yo'q | — |
 | S2 | `OrderOperations` porti + flight adapteri | yo'q | yo'q (fixture) | S1 |
 | S3 | Bron niyati + `Idempotency-Key` | yo'q | GTS booking | S1, S2 |
-| S4 | To'lov: `order_payments` + Payme/Click + webhooklar | `order_payments` | provayder | S3 |
+| S4a | To'lov yadrosi: `order_payments`, urinish endpointlari, webhook routeri | `order_payments` | yo'q (double) | S3 |
+| S4b | Payme va Click adapterlari | yo'q | provayder | S4a |
 | S5 | Ticketing + poller + reprice | yo'q | GTS ticketing | S4 |
 | S6 | Kompensatsiya va qaytarish | `order_refunds` | GTS + provayder | S5 |
 | S7 | Bekor qilish, sinxronizatsiya, admin yuzasi, maxfiylik | yo'q | GTS cancel/retrieve | S6 |

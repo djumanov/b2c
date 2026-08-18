@@ -132,6 +132,17 @@ class PaymentProvider(Protocol):
         """
         ...
 
+    def signature_rejected(self) -> CallbackResult:
+        """What to answer a callback whose signature did not check out.
+
+        On the port because the providers disagree about it and the route must
+        not guess: a plain ``401`` is the ordinary answer, but Payme reads one
+        as "retry blindly" and wants ``200`` with JSON-RPC ``-32504`` instead
+        (API.md §40). What the route enforces either way is that nothing
+        changed before this is returned.
+        """
+        ...
+
     async def handle_callback(
         self, headers: Mapping[str, str], body: bytes
     ) -> CallbackResult:

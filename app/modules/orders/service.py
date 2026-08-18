@@ -26,6 +26,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
@@ -33,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import Conflict, NotFound
+from app.api.errors import AppError, Conflict, NotFound, ValidationFailed
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -43,9 +44,19 @@ from app.api.listing import (
     paginate,
 )
 from app.core.logging import get_logger
+from app.core.money import Money
 from app.modules.orders import repository
-from app.modules.orders.models import ORDER_NO_SEQUENCE, Order, OrderEvent
-from app.modules.orders.schemas import OrderOut
+from app.modules.orders.models import (
+    ORDER_NO_SEQUENCE,
+    Order,
+    OrderEvent,
+    OrderPayment,
+)
+from app.modules.orders.schemas import (
+    OrderOut,
+    TransactionOut,
+    TransactionStartIn,
+)
 from app.modules.orders.states import (
     INITIAL_STATUS,
     STAMPED_AT,
@@ -53,6 +64,13 @@ from app.modules.orders.states import (
     EventAction,
     OrderStatus,
     can,
+)
+from app.modules.payments import service as payments_service
+from app.modules.settings import service as settings_service
+from app.providers.payments.base import (
+    PaymentProviderCode,
+    TransactionFlow,
+    TransactionStatus,
 )
 from app.providers.products.orders import BookingResult, CancelResult
 
@@ -328,9 +346,10 @@ def booking_answer(order: Order) -> dict[str, Any]:
 
     Three keys. ``data`` is the provider's answer, unchanged and complete,
     because the route, the segments and the fare rules live only there and we
-    do not lift them out. ``order`` is ours. ``payment`` is a placeholder until
-    the payment slice fills it, published as ``null`` now so the shape a client
-    codes against does not change when it does.
+    do not lift them out. ``order`` is ours, and ``payment`` says what is still
+    owed and until when.
+
+    ``payment`` is derived from the order rather than stored (``payment_state``).
 
     ``data`` is ``null`` on an order that never got an answer — a duplicate
     replayed while the first attempt is still in flight. That is honest: we
@@ -338,7 +357,7 @@ def booking_answer(order: Order) -> dict[str, Any]:
     """
     return {
         "order": OrderOut.from_order(order).model_dump(mode="json"),
-        "payment": None,
+        "payment": payment_state(order),
         "data": order.provider_response,
     }
 
@@ -399,6 +418,266 @@ async def apply_cancel(
     )
 
 
+# --- paying for an order (API.md §22) --------------------------------------------
+
+
+def payment_state(order: Order) -> dict[str, Any]:
+    """What the customer still owes, and until when.
+
+    Derived, not stored. One order carries one amount and one currency, so a
+    payment *intent* would be a second copy of two columns that already exist
+    (``O12``); what is stored is the attempts.
+
+    ``pay_before`` is the provider's hold, unshortened. The ticketing margin
+    that will make it earlier arrives with the ticketing slice, and putting a
+    guess in front of it now would only have to be unlearned.
+    """
+    if order.amount_total is None or order.currency is None:
+        return {"status": "pending", "amount": None, "pay_before": None}
+    settled = order.amount_paid >= order.amount_total
+    return {
+        "status": "paid" if settled else "pending",
+        "amount": Money(amount=order.amount_total, currency=order.currency).model_dump(
+            mode="json"
+        ),
+        "pay_before": (
+            order.ticket_time_limit_at.isoformat()
+            if order.ticket_time_limit_at is not None
+            else None
+        ),
+    }
+
+
+async def start_attempt(
+    session: AsyncSession, order: Order, *, provider: str, flow: str
+) -> OrderPayment:
+    """Write the attempt, **then** let the caller talk to the provider.
+
+    The order matters as much as it does at booking. A charge that exists at a
+    provider and nowhere here is money nobody can match to an order; an attempt
+    row with no ``provider_ref`` is merely an attempt that has not been answered
+    yet, and reconciliation knows what to do with one (ARCHITECTURE.md §8).
+    """
+    if order.amount_total is None or order.currency is None:
+        raise Conflict("This order has no amount to pay yet")
+    if OrderStatus(order.status) is not OrderStatus.BOOKED:
+        raise Conflict(
+            f"An order that is {order.status} cannot be paid for",
+            meta={"status": order.status},
+        )
+    attempt = OrderPayment(
+        order_id=order.id,
+        provider=provider,
+        status=TransactionStatus.PENDING.value,
+        flow=flow,
+        amount=order.amount_total,
+        currency=order.currency,
+    )
+    session.add(attempt)
+    await session.commit()
+    await session.refresh(attempt)
+    logger.info(
+        "payment_attempt_started",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        attempt_id=str(attempt.id),
+        provider=provider,
+    )
+    return attempt
+
+
+async def attach_redirect(
+    session: AsyncSession, attempt: OrderPayment, *, redirect_url: str
+) -> OrderPayment:
+    """Where the customer was sent. Written after the provider answered."""
+    attempt.redirect_url = redirect_url
+    await session.commit()
+    await session.refresh(attempt)
+    return attempt
+
+
+async def abandon_attempt(
+    session: AsyncSession, attempt: OrderPayment, *, message: str
+) -> None:
+    """The provider would not start the charge. The row stays as evidence."""
+    attempt.status = TransactionStatus.FAILED.value
+    attempt.error_message = message
+    await session.commit()
+    logger.warning(
+        "payment_attempt_abandoned", attempt_id=str(attempt.id), reason=message
+    )
+
+
+async def settle_attempt(
+    session: AsyncSession,
+    *,
+    provider: str,
+    provider_ref: str,
+    order_id: uuid.UUID,
+    provider_state: dict[str, Any] | None = None,
+) -> Order:
+    """Money arrived — the door a provider callback comes through.
+
+    **Idempotent by construction, not by care.** A provider that has already
+    been answered still resends, so the second call finds an attempt that is
+    already ``paid`` and returns the order untouched; and if two callbacks race,
+    the unique index on ``(provider, provider_ref)`` decides which one wrote it
+    rather than whichever query ran first (X6).
+
+    The amount is checked before the order moves. Money that arrives for a
+    different sum is not a payment for this order in any sense worth
+    automating, so the order goes to ``needs_attention`` rather than to
+    ``paid``: something has to be understood before a ticket is bought with it.
+    """
+    order = await repository.lock_order(session, order_id)
+    if order is None:
+        raise NotFound("No such order")
+
+    attempt = await repository.attempt_by_provider_ref(session, provider, provider_ref)
+    if attempt is None:
+        # A hosted redirect hands us a URL and no reference; the provider names
+        # the charge when it first calls back, so the open attempt is bound to
+        # that name here.
+        attempt = await repository.unreferenced_attempt(session, order_id, provider)
+        if attempt is None:
+            raise NotFound("No such payment attempt")
+        attempt.provider_ref = provider_ref
+    locked = await repository.lock_attempt(session, attempt.id)
+    if locked is None or locked.order_id != order.id:
+        raise NotFound("No such payment attempt")
+    attempt = locked
+    attempt.provider_ref = provider_ref
+
+    if attempt.status == TransactionStatus.PAID.value:
+        logger.info("payment_already_settled", attempt_id=str(attempt.id))
+        return order
+
+    attempt.status = TransactionStatus.PAID.value
+    attempt.paid_at = datetime.now(UTC)
+    attempt.provider_state = provider_state
+    try:
+        await session.commit()
+    except IntegrityError as clash:
+        # Two references racing for one attempt. The unique index decided, and
+        # the loser is a caller that must not be told it settled anything.
+        await session.rollback()
+        raise Conflict("This payment reference belongs to another attempt") from clash
+
+    if order.amount_total is None or attempt.amount != order.amount_total:
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.NEEDS_ATTENTION,
+            actor=Actor.system("payments.callback"),
+            action=EventAction.PAYMENT_MISMATCHED,
+            reason="The settled amount is not the amount of this order",
+            meta=provider_state,
+            fields={
+                "amount_paid": attempt.amount,
+                "attention_reason": "payment_amount_mismatch",
+            },
+        )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.PAID,
+        actor=Actor.system("payments.callback"),
+        action=EventAction.PAYMENT_SETTLED,
+        reason=f"Settled at {provider}",
+        meta=provider_state,
+        fields={"amount_paid": attempt.amount},
+        # The ticketing step is due immediately; the poller is the safety net
+        # for the moment the task fails to reach the queue (``O13``).
+        next_attempt_at=datetime.now(UTC),
+    )
+
+
+async def start_transaction(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    data: TransactionStartIn,
+) -> TransactionOut:
+    """Open an attempt at paying and hand back where to send the customer.
+
+    Four checks before anything leaves the building, in the order that costs
+    least: the order is this customer's, the method is one this installation
+    offers, the return address is one of ours, and the order is in a state that
+    can be paid for.
+
+    **The return address is checked against the installation's own origins.**
+    A redirect target chosen by a request and handed to a payment provider is
+    an open redirect wearing our merchant account's name; the provider will
+    send the customer wherever it is told.
+    """
+    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
+    try:
+        code = PaymentProviderCode(data.method)
+    except ValueError as unknown:
+        raise ValidationFailed("No such payment method", field="method") from unknown
+    if not await _is_our_origin(data.return_url):
+        raise ValidationFailed(
+            "The return address is not one of this installation's own",
+            field="return_url",
+        )
+
+    attempt = await start_attempt(
+        session, order, provider=code.value, flow=TransactionFlow.REDIRECT.value
+    )
+    try:
+        redirect_url = await payments_service.charge(
+            session,
+            code,
+            reference=str(order.id),
+            amount=attempt.amount,
+            currency=attempt.currency,
+            return_url=data.return_url,
+        )
+    except AppError as refused:
+        # The row stays: what was tried is part of the record, and an attempt
+        # that failed to start is the cheapest kind of evidence there is.
+        await abandon_attempt(session, attempt, message=str(refused))
+        raise
+    attempt = await attach_redirect(session, attempt, redirect_url=redirect_url)
+    return TransactionOut.from_attempt(attempt)
+
+
+async def _is_our_origin(url: str) -> bool:
+    """Whether a return address belongs to this installation.
+
+    Reads the same list the browser is held to (``settings.cors_origins``), so
+    turning an origin off closes both doors at once. A wildcard entry means the
+    owner has deliberately opened the installation to any origin, and refusing
+    here would contradict them.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    allowed = await settings_service.cors_origins()
+    return "*" in allowed or origin in allowed
+
+
+async def owned_order(
+    session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> Order:
+    """The order, if it is this customer's — the check every write starts with."""
+    order = await repository.order_by_id(session, customer_id, order_id)
+    if order is None:
+        raise NotFound("No such order")
+    return order
+
+
+async def owned_attempt(
+    session: AsyncSession, *, customer_id: uuid.UUID, attempt_id: uuid.UUID
+) -> OrderPayment:
+    order_payment = await repository.attempt_by_id(session, customer_id, attempt_id)
+    if order_payment is None:
+        raise NotFound("No such transaction")
+    return order_payment
+
+
 # --- what the customer reads ----------------------------------------------------
 
 
@@ -439,15 +718,23 @@ async def get_order(
 
 
 __all__ = [
+    "abandon_attempt",
     "apply_cancel",
+    "attach_redirect",
     "booking_answer",
     "confirm_booking",
-    "fail_booking",
     "ensure_cancellable",
+    "fail_booking",
     "get_order",
     "list_orders",
+    "owned_attempt",
     "owned_by_provider_number",
+    "owned_order",
+    "payment_state",
     "record_unreadable_booking",
+    "settle_attempt",
+    "start_attempt",
     "start_order",
+    "start_transaction",
     "transition",
 ]

@@ -127,7 +127,19 @@ kontrakt testlari.
 > haqiqiy qo'riqchi bazadagi `(customer_id, idempotency_key)` unique indeksi,
 > Redis esa tez yo'l. Javob `{order, payment, data}` shakliga o'tdi. Rad etilgan
 > bron kalitni bo'shatadi, javobsiz qolgani esa saqlaydi va `created` da
-> qoladi. Keyingisi — S4, to'lov (`order_payments` + Payme/Click + webhooklar).
+> qoladi.
+> **S4a (to'lov yadrosi) bajarildi 2026-08-18:** `order_payments` jadvali,
+> `POST /public/orders/{id}/transactions/`, `GET /public/transactions/{id}/`,
+> `GET /public/payments/methods/` va `POST /webhooks/payments/{provider}/`.
+> Urinish provayder chaqiruvidan **oldin** yoziladi; takroriy callback
+> `(provider, provider_ref)` unique indeksi tufayli bir marta yechadi; imzo
+> yomon bo'lsa hech narsa o'zgarmaydi; summa mos kelmasa buyurtma
+> `needs_attention` ga tushadi. `payment_id` kontraktdan chiqdi — `API.md` §22
+> qayta yozildi.
+> Keyingisi — **S4b: Payme va Click adapterlari**, merchant hujjatlari va
+> sandbox kaliti kelganda. Hozir portda faqat chegarasi bor
+> (`verify_signature` / `signature_rejected` / `handle_callback`), ortida
+> haqiqiy protokol yo'q.
 
 To'liq reja — [PHASES.md](PHASES.md).
 
