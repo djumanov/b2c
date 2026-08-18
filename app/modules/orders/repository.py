@@ -53,6 +53,26 @@ async def order_by_provider_number(
     return row
 
 
+async def order_by_idempotency_key(
+    session: AsyncSession, customer_id: uuid.UUID, key: str
+) -> Order | None:
+    """The order a previous attempt at this key created, if there was one.
+
+    Scoped by customer because the unique index is: keys are chosen by clients,
+    and reading one back without the owner would hand a booking to whoever
+    happened to pick the same string.
+
+    Not filtered by ``deleted_at`` — the index is not either, and an order is
+    never soft-deleted anyway (``models.py``).
+    """
+    row: Order | None = await session.scalar(
+        select(Order).where(
+            Order.customer_id == customer_id, Order.idempotency_key == key
+        )
+    )
+    return row
+
+
 async def lock_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
     """The row, held under ``SELECT … FOR UPDATE`` until the transaction ends.
 
@@ -78,6 +98,7 @@ def events_of(order_id: uuid.UUID) -> Select[tuple[OrderEvent]]:
 __all__ = [
     "events_of",
     "lock_order",
+    "order_by_idempotency_key",
     "order_by_id",
     "order_by_provider_number",
     "owned_orders",

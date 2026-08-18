@@ -197,6 +197,23 @@ def headers(customer: Customer) -> dict[str, str]:
     return customer_headers_for(customer)
 
 
+def _booking_headers(headers: dict[str, str], key: str | None = None) -> dict[str, str]:
+    """Booking is a money endpoint: no key, no booking (API.md §10)."""
+    return {**headers, "Idempotency-Key": key or str(uuid.uuid4())}
+
+
+async def _book(
+    api: AsyncClient,
+    headers: dict[str, str],
+    *,
+    key: str | None = None,
+    body: dict[str, Any] | None = None,
+) -> Any:
+    return await api.post(
+        BOOKING, json=body or BOOKING_BODY, headers=_booking_headers(headers, key)
+    )
+
+
 # --- what booking writes -------------------------------------------------------------
 
 
@@ -211,12 +228,16 @@ async def test_a_booking_is_filed_under_the_customer_who_made_it(
     _mock_signin()
     _mock_booking()
 
-    response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    response = await _book(api, headers)
 
     assert response.status_code == 200
-    # The response is still GTS's, byte for byte. Slice S3 adds our own keys
-    # beside it; the state machine landing does not change the wire (API.md §20).
-    assert response.json()["data"] == GTS_BOOKING
+    answer = response.json()["data"]
+    # Three keys: ours, the payment placeholder the payment slice fills, and
+    # GTS's answer byte for byte (order-system/03-design.md §3.6).
+    assert set(answer) == {"order", "payment", "data"}
+    assert answer["data"] == GTS_BOOKING
+    assert answer["payment"] is None
+    assert answer["order"]["status"] == "booked"
 
     listed = await api.get(ORDERS, headers=headers)
     assert listed.status_code == 200
@@ -270,7 +291,7 @@ async def test_a_booking_leaves_its_first_history_line(
     _mock_signin()
     _mock_booking()
 
-    await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    await _book(api, headers)
 
     rows = (
         (
@@ -314,7 +335,7 @@ async def test_the_travellers_are_stored_in_our_own_shape(
     _mock_signin()
     _mock_booking()
 
-    await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    await _book(api, headers)
 
     (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
     assert order["travelers"] == [
@@ -359,9 +380,10 @@ async def test_an_unreadable_answer_lands_in_needs_attention(
     _mock_signin()
     _mock_booking({"data": {"reference": "1250", "state": "held"}})
 
-    response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    response = await _book(api, headers)
 
     assert response.status_code == 200
+    assert response.json()["data"]["order"]["status"] == "needs_attention"
     (order,) = (await api.get(ORDERS, headers=headers)).json()["data"]
     assert order["status"] == "needs_attention"
     assert order["provider_order_number"] is None
@@ -375,30 +397,178 @@ async def test_an_unreadable_answer_lands_in_needs_attention(
 
 
 @respx.mock
-async def test_a_failed_write_does_not_fail_the_booking(
+async def test_a_write_that_fails_never_reaches_gts(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
     headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GTS is already holding the seat. A 500 would send the client into a
-    retry and open a second booking — a real seat (API.md §20). Slice S3
-    removes the need for this by writing the row first."""
-    from app.modules.products import service as products_service
+    """The inverse of what this used to assert, and the point of the slice.
+
+    The row used to be written *after* GTS answered, inside a bare ``except``:
+    a failed insert left a reservation nobody could find, cancel or refund, and
+    the request still answered 200 (02-current-audit.md A1). Now the write comes
+    first, so a database that cannot take the row costs a 500 and **no seat**.
+    """
+    from app.modules.orders import service as orders_service
 
     async def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("the database went away")
 
-    monkeypatch.setattr(products_service.orders_service, "record_booking", boom)
+    monkeypatch.setattr(orders_service, "start_order", boom)
+    await _installation(session)
+    signin = _mock_signin()
+    booking = _mock_booking()
+
+    with pytest.raises(RuntimeError):
+        await _book(api, headers)
+
+    assert booking.call_count == 0
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_the_same_key_books_once(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """A dropped response and a double-tapped button look identical from here,
+    and both must cost one seat (API.md §10)."""
     await _installation(session)
     _mock_signin()
-    _mock_booking()
+    booking = _mock_booking()
+    key = str(uuid.uuid4())
+
+    first = await _book(api, headers, key=key)
+    second = await _book(api, headers, key=key)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert booking.call_count == 1
+    assert (await api.get(ORDERS, headers=headers)).json()["meta"]["total"] == 1
+
+
+@respx.mock
+async def test_the_database_holds_the_line_when_redis_forgets(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    fake_redis: Any,
+) -> None:
+    """The Redis record is a cache, and a cache can be flushed. If that were the
+    only guard, one eviction would turn a retry into a second real seat — so the
+    unique index is the thing that actually holds (``O8``)."""
+    await _installation(session)
+    _mock_signin()
+    booking = _mock_booking()
+    key = str(uuid.uuid4())
+
+    first = await _book(api, headers, key=key)
+    await fake_redis.flushall()
+    second = await _book(api, headers, key=key)
+
+    assert second.status_code == 200
+    assert booking.call_count == 1
+    assert second.json()["data"]["order"]["id"] == first.json()["data"]["order"]["id"]
+    assert (await api.get(ORDERS, headers=headers)).json()["meta"]["total"] == 1
+
+
+@respx.mock
+async def test_a_key_two_customers_share_is_refused_not_confused(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """Keys are chosen by clients, so two of them can collide. What must never
+    happen is one customer being handed the other's booking.
+
+    Two guards, and they answer differently. The Redis record in
+    ``api/idempotency.py`` is keyed on the header alone, so it sees a second
+    request with the same key and a different body and calls it a client bug —
+    ``422``, which is the right answer to give a stranger. The database index is
+    keyed on ``(customer_id, idempotency_key)``, so once the Redis record has
+    expired — it lives 24 hours and an order lives forever — the second customer
+    gets an order of their own rather than a collision nobody can resolve.
+
+    Neither path ever reads across customers, which is the property that
+    matters. The cost is that a colliding key is unusable for the second
+    customer for a day; with UUIDs, as the contract specifies, it does not
+    arise.
+    """
+    await _installation(session)
+    _mock_signin()
+    booking = _mock_booking()
+    stranger = await make_customer(session, email="someone.else@example.uz")
+    key = str(uuid.uuid4())
+
+    mine = await _book(api, headers, key=key)
+    theirs = await _book(
+        api,
+        customer_headers_for(stranger),
+        key=key,
+        body={**BOOKING_BODY, "offer_id": "o-2"},
+    )
+
+    assert mine.status_code == 200
+    assert theirs.status_code == 422
+    assert theirs.json()["errors"][0]["field"] == "Idempotency-Key"
+    # The stranger's request never became a booking, and never saw mine.
+    assert booking.call_count == 1
+    assert theirs.json()["data"] is None
+
+
+@respx.mock
+async def test_booking_without_a_key_is_a_422_and_takes_no_seat(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    await _installation(session)
+    signin = _mock_signin()
+    booking = _mock_booking()
 
     response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
 
-    assert response.status_code == 200
-    assert response.json()["data"] == GTS_BOOKING
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "Idempotency-Key"
+    assert booking.call_count == 0
+    assert signin.call_count == 0
+
+
+@respx.mock
+async def test_a_refused_booking_frees_its_key(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """A refusal took no seat, so retrying is safe and is what the customer
+    wants. Every other ending keeps its key, because every other ending may be
+    holding one."""
+    await _installation(session)
+    _mock_signin()
+    refused = respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(
+            200, json={"status": "error", "code": -104, "message": "no seats left"}
+        )
+    )
+    key = str(uuid.uuid4())
+
+    first = await _book(api, headers, key=key)
+    assert first.status_code == 502
+
+    refused.mock(return_value=httpx.Response(200, json=_envelope(GTS_BOOKING)))
+    second = await _book(api, headers, key=key)
+
+    assert second.status_code == 200
+    orders = (await api.get(ORDERS, headers=headers)).json()["data"]
+    assert sorted(order["status"] for order in orders) == ["booked", "failed"]
 
 
 # --- what the customer reads ---------------------------------------------------------

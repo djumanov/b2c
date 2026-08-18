@@ -31,10 +31,10 @@ STEPS: dict[str, tuple[str, ...]] = {
     "offers": ("search_status", "next_token", "count", "trip_type", "offers"),
     "upsell": ("search_status", "offers"),
     "verify": ("search_status", "verified"),
-    # Booking's answer is two layers deep — GTS's own wrapper, then the
-    # order. The wrapper is what ``data`` describes; the order beneath it is
-    # checked separately below.
-    "booking": ("message", "request_id", "data"),
+    # Booking answers with our order beside GTS's answer; the answer itself is
+    # what ``data`` holds, still whole, and the order inside it is checked
+    # separately below.
+    "booking": ("order", "payment", "data"),
     "cancel": ("status",),
 }
 
@@ -110,7 +110,9 @@ def test_the_booking_order_itself_is_described(schema: dict[str, Any]) -> None:
     the ``orders`` module reads out of it must stay documented — that pair
     drifting apart is what made every ``gts_order_number`` NULL once."""
     success = _json(_operation(schema, "booking"), "response")["schema"]
-    order = success["properties"]["data"]["properties"]["data"]
+    # envelope ``data`` → our answer → GTS's wrapper → the order itself.
+    answer = success["properties"]["data"]["properties"]["data"]
+    order = answer["properties"]["data"]
 
     for field in BOOKING_ORDER_FIELDS:
         assert field in order["properties"], f"booking: `{field}` undocumented"

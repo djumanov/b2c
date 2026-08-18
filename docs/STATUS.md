@@ -121,7 +121,13 @@ kontrakt testlari.
 > `ticket_time_limit` ning uch xil formatini, marshrutni va yo'lovchilarni
 > normallashtiradi; yo'lovchilar endi `orders.travelers` da **bizning
 > shaklimizda** (§8.17 shu bilan yopilishga tayyor — tozalash S7 da).
-> Keyingisi — S3, bron niyati va `Idempotency-Key`.
+> **S3 (bron niyati) bajarildi 2026-08-18:** buyurtma qatori endi GTS
+> chaqiruvidan **oldin** yoziladi — A1 (yo'qoladigan bron) yopildi. `booking/`
+> `Idempotency-Key` talab qiladi va 10/daq to'lov chelagida — A2 yopildi;
+> haqiqiy qo'riqchi bazadagi `(customer_id, idempotency_key)` unique indeksi,
+> Redis esa tez yo'l. Javob `{order, payment, data}` shakliga o'tdi. Rad etilgan
+> bron kalitni bo'shatadi, javobsiz qolgani esa saqlaydi va `created` da
+> qoladi. Keyingisi — S4, to'lov (`order_payments` + Payme/Click + webhooklar).
 
 To'liq reja — [PHASES.md](PHASES.md).
 

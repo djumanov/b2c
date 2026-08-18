@@ -112,8 +112,13 @@ class Order(Entity):
         # The real duplicate guard. The Redis record in ``api/idempotency.py``
         # is a cache; a flush or an eviction would let a retry through, and on
         # this path a retry is a second real seat (``O8``).
+        #
+        # Per customer, not global: keys are chosen by clients, so two of them
+        # choosing the same string must not make one customer's booking
+        # readable — or claimable — by the other.
         Index(
-            "uq_orders_idempotency_key",
+            "uq_orders_customer_id_idempotency_key",
+            "customer_id",
             "idempotency_key",
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),

@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
@@ -180,31 +181,31 @@ def _reference(payload: Mapping[str, Any], key: str) -> str | None:
     return text if text and len(text) <= 64 else None
 
 
-async def record_booking(
+async def start_order(
     session: AsyncSession,
     *,
     customer_id: uuid.UUID,
     product: str,
     payload: Mapping[str, Any],
-    result: BookingResult | None,
-    response: dict[str, Any],
-) -> Order:
-    """File a booking under the customer who made it.
+    idempotency_key: str,
+) -> tuple[Order, bool]:
+    """Write the intent to book, **before** anybody asks the provider.
 
-    Two writes, and the order of them is the point. The row is inserted first,
-    in ``created`` — so it exists no matter what the answer turns out to look
-    like — and only then moved by the machine, which is what puts the first
-    line in its history.
+    Returns the order and whether it is new. ``False`` means this key has been
+    seen before and the caller must not book again — the earlier attempt is
+    what the customer gets back.
 
-    ``result`` is ``None`` when the adapter could not make an order out of the
-    answer. That is not a failure to report: GTS very probably booked something
-    and we cannot name it, so the row goes to ``needs_attention`` with the whole
-    answer on its first event, which is a thing a person can act on. Neither
-    guessing nor discarding is acceptable when a real seat may be held.
+    This ordering is the whole point of the slice. Writing the row after the
+    provider answered meant a failed insert left a reservation nobody could
+    find, cancel, or refund: the seat was real, the money would follow, and the
+    only trace was a log line (02-current-audit.md A1). A row written first is
+    at worst an order stuck in ``created``, which reconciliation can resolve
+    because it knows what to look for.
 
-    Slice S3 moves the insert to **before** the provider call, which is what
-    finally closes the lost-booking gap (02-current-audit.md A1). Nothing in the
-    shape below changes when it does.
+    The unique index is the guard that actually holds. ``api/idempotency.py``
+    claims the key in Redis first and answers most duplicates there, but Redis
+    is a cache: a flush, an eviction or a restart lets the second request
+    through, and on this path a second request is a second real seat (``O8``).
     """
     order = Order(
         order_no=await _next_order_no(session),
@@ -213,32 +214,41 @@ async def record_booking(
         status=INITIAL_STATUS.value,
         request_id=_reference(payload, "request_id"),
         offer_id=_reference(payload, "offer_id"),
+        idempotency_key=idempotency_key,
     )
     session.add(order)
-    await session.commit()
-
-    if result is None:
-        logger.warning(
-            "order_answer_unreadable",
-            order_id=str(order.id),
-            order_no=order.order_no,
-            product=product,
-            fields=sorted(response),
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        earlier = await repository.order_by_idempotency_key(
+            session, customer_id, idempotency_key
         )
-        return await transition(
-            session,
-            order.id,
-            to=OrderStatus.NEEDS_ATTENTION,
-            actor=Actor.system("orders.booking"),
-            action=EventAction.BOOKING_UNRESOLVED,
-            reason="The booking answer could not be read",
-            meta=response,
-            fields={
-                "provider_response": response,
-                "attention_reason": "unreadable_booking_answer",
-            },
+        if earlier is None:
+            # Some other constraint, and guessing which would be worse than
+            # letting the 500 name it.
+            raise
+        logger.info(
+            "order_idempotent_replay",
+            order_id=str(earlier.id),
+            order_no=earlier.order_no,
+            status=earlier.status,
         )
+        return earlier, False
+    logger.info(
+        "order_created",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        product=product,
+        customer_id=str(customer_id),
+    )
+    return order, True
 
+
+async def confirm_booking(
+    session: AsyncSession, order: Order, result: BookingResult
+) -> Order:
+    """The provider is holding a seat — T2."""
     return await transition(
         session,
         order.id,
@@ -260,6 +270,77 @@ async def record_booking(
             "route_summary": result.route_summary,
         },
     )
+
+
+async def record_unreadable_booking(
+    session: AsyncSession, order: Order, response: dict[str, Any]
+) -> Order:
+    """The provider agreed in words we cannot parse — T4.
+
+    Not a failure to report: a real seat is probably held. The key is **kept**,
+    so a retry cannot open a second one, and the whole answer goes onto the
+    event where a person can read it.
+    """
+    logger.warning(
+        "order_answer_unreadable",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        product=order.product,
+        fields=sorted(response),
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.NEEDS_ATTENTION,
+        actor=Actor.system("orders.booking"),
+        action=EventAction.BOOKING_UNRESOLVED,
+        reason="The booking answer could not be read",
+        meta=response,
+        fields={
+            "provider_response": response,
+            "attention_reason": "unreadable_booking_answer",
+        },
+    )
+
+
+async def fail_booking(session: AsyncSession, order: Order, *, reason: str) -> Order:
+    """The provider refused — T3. No seat was taken and no money will move.
+
+    The idempotency key is **released** here and nowhere else. A refusal is the
+    one outcome where retrying is both safe and what the customer wants, and a
+    key still claimed by this row would make the retry replay the refusal
+    instead of trying again. Every other ending keeps its key, because every
+    other ending may be holding a seat.
+    """
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.FAILED,
+        actor=Actor.system("orders.booking"),
+        action=EventAction.BOOKING_REJECTED,
+        reason=reason,
+        fields={"failure_message": reason, "idempotency_key": None},
+    )
+
+
+def booking_answer(order: Order) -> dict[str, Any]:
+    """What ``booking/`` returns (order-system/03-design.md §3.6).
+
+    Three keys. ``data`` is the provider's answer, unchanged and complete,
+    because the route, the segments and the fare rules live only there and we
+    do not lift them out. ``order`` is ours. ``payment`` is a placeholder until
+    the payment slice fills it, published as ``null`` now so the shape a client
+    codes against does not change when it does.
+
+    ``data`` is ``null`` on an order that never got an answer — a duplicate
+    replayed while the first attempt is still in flight. That is honest: we
+    genuinely do not have one yet.
+    """
+    return {
+        "order": OrderOut.from_order(order).model_dump(mode="json"),
+        "payment": None,
+        "data": order.provider_response,
+    }
 
 
 async def owned_by_provider_number(
@@ -359,10 +440,14 @@ async def get_order(
 
 __all__ = [
     "apply_cancel",
+    "booking_answer",
+    "confirm_booking",
+    "fail_booking",
     "ensure_cancellable",
     "get_order",
     "list_orders",
     "owned_by_provider_number",
-    "record_booking",
+    "record_unreadable_booking",
+    "start_order",
     "transition",
 ]

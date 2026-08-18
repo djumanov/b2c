@@ -957,15 +957,20 @@ search  →  offers  →  verify  →  booking  →  payment  →  order
 | `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
 | `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
-| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi |
+| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi. **`Idempotency-Key` majburiy** (§10), limit 10/daq (§14) |
 | `POST` | `/public/{product}/cancel/` | ✓ | Chipta chiqarilmagan bronni bekor qiladi |
 
-> **Zanjirning `payment` qismi hali qurilmagan.** `booking/` bugun
-> **`payment_id` qaytarmaydi** va to'lov saga'si yo'q. Lokal buyurtma yozuvi
-> esa **bor** (2026-08-17 qarori, §21): bron muvaffaqiyatli o'tsa GTS javobi
-> mijozning nomiga saqlanadi. Javobga baribir **bitta ham maydon
-> qo'shilmaydi** — passthrough shakli o'zgarmaydi, yozuv `GET /public/orders/`
-> orqali ko'rinadi. To'lov va saga keyinroq shu endpoint **ustiga** quriladi.
+> **`booking/` — pul endpointi.** U buyurtma yaratadi va haqiqiy o'rin band
+> qiladi, shuning uchun `Idempotency-Key` majburiy (§10) va 10/daq to'lov
+> chelagida (§14). Javob endi **uchta kalitdan** iborat: `order` (bizniki),
+> `payment` (to'lov bo'lagi to'ldirguncha `null`) va `data` — GTS javobi
+> **o'zgarmasdan, to'liq**. Qolgan besh qadam avvalgidek sof passthrough
+> bo'lib qoladi. Batafsil:
+> [`order-system/03-design.md`](order-system/03-design.md) §3.6.
+>
+> **Buyurtma qatori GTS chaqiruvidan oldin yoziladi.** Shu sababdan bron
+> hech qachon yo'qolmaydi: yozuv bajarilmasa GTS'ga umuman borilmaydi, javob
+> kelmasa esa qator `created` holatida qoladi va solishtirish uni hal qiladi.
 
 **Vertikalga xos qo'shimcha qadamlar:**
 
@@ -1057,17 +1062,35 @@ POST /public/flight/booking/
 
 → { "status": "success",
     "data": {
-      "message": "booked",
-      "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
-      "data": { "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-                "order_number": 61453,
-                "status": "BO",
-                "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
-                "trip_type": "OW", "refundable": false,
-                "ticket_time_limit": 288000,
-                "routes": [ … ], "price_info": { … },
-                "passengers": [ … ] } } }
+      "order": { "id": "3f1c…", "order_no": "B2C-2608-000123",
+                 "product": "flight", "status": "booked",
+                 "provider_status": "BO",
+                 "provider_order_number": "61453", "provider_pnr": "UBPLKW",
+                 "amount": { "amount": "52.39", "currency": "EUR" },
+                 "travelers": [ … ], "ticket_time_limit_at": "…" },
+      "payment": null,
+      "data": {
+        "message": "booked",
+        "request_id": "7788056f-ec7e-4b1d-946c-299b97f07608",
+        "data": { "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+                  "order_number": 61453,
+                  "status": "BO",
+                  "gds_pnr": "UBPLKW", "supplier_pnr": ["UBPLKW"],
+                  "trip_type": "OW", "refundable": false,
+                  "ticket_time_limit": 288000,
+                  "routes": [ … ], "price_info": { … },
+                  "passengers": [ … ] } } } }
 ```
+
+`order` — `GET /public/orders/{id}/` bilan **bir xil shakl** (§21). `data` —
+GTS javobi aynan: marshrut, segmentlar va tarif qoidalari faqat o'sha yerda,
+va biz ularni ustunga chiqarmaymiz.
+
+**Takroriy so'rov ikkinchi o'rinni band qilmaydi.** Bir xil `Idempotency-Key`
+bilan kelgan ikkinchi so'rov birinchisining javobini qaytaradi va GTS'ga
+bormaydi. Kalitsiz so'rov — `422`. Bron **rad etilsa** kalit bo'shatiladi
+(o'rin band bo'lmagan, qayta urinish xavfsiz); javob **kelmasa** kalit
+saqlanadi, chunki o'rin haqiqiy bo'lishi mumkin.
 
 **Manba:** GTS gateway kolleksiyasi (`EASY_GATEWAY`), `/content/Booking`.
 Yuqoridagi tana va javob o'sha yerdan olingan — taxmin emas.

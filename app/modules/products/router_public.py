@@ -25,6 +25,11 @@ of the principal, so a vertical this installation does not sell answers 404 to
 an anonymous caller rather than 401. Which verticals we sell must not be
 readable from the difference (API.md §41).
 
+**Booking is a money endpoint.** It carries a mandatory ``Idempotency-Key``
+and the 10/min payment bucket, because it writes an order and takes real
+inventory (API.md §10, §14). ``cancel/`` does not yet — it moves onto the order
+resource with the cancellation slice and gains one there.
+
 **The bodies stay ``dict``, the documentation does not.** Every step carries an
 ``openapi_extra`` from ``products/openapi.py`` describing what it sends and
 returns, because a passthrough that annotates nothing publishes a schema that
@@ -39,7 +44,8 @@ from fastapi import Depends, Path
 
 from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
-from app.api.errors import NotFound
+from app.api.errors import NotFound, UpstreamError
+from app.api.idempotency import IdempotencyKey
 from app.db.session import SessionDep
 from app.modules.products import service
 from app.modules.products.openapi import (
@@ -158,23 +164,51 @@ async def verify(
     return await service.verify(session, adapter, payload)
 
 
-# No ``RateLimit`` on the two below: API.md §14 files booking under "boshqa
-# public", which the public surface already caps at 120/min. The 30/min search
-# bucket and the 10/min payment bucket both describe something else.
-
-
 @router.post(
-    "/booking/", summary="Book the verified offer", openapi_extra=FLIGHT_BOOKING
+    "/booking/",
+    summary="Book the verified offer",
+    dependencies=[Depends(RateLimit("payment"))],
+    openapi_extra=FLIGHT_BOOKING,
 )
 async def booking(
     payload: dict[str, Any],
     session: SessionDep,
     adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
     customer: CurrentCustomer,
+    idempotency: IdempotencyKey,
 ) -> dict[str, Any]:
-    # The response is still GTS's, byte for byte — the order row this writes is
-    # read back through ``/public/orders/``, not returned here (API.md §21).
-    return await service.book(session, adapter, payload, customer_id=customer.id)
+    """Book, once, whatever the network does to the request.
+
+    ``idempotency`` is declared **last** on purpose. FastAPI resolves the
+    parameters in order, so a vertical this installation does not sell still
+    answers ``404`` and an anonymous caller still answers ``401`` — neither
+    should be readable from a ``422`` about a header (API.md §41).
+
+    The key is released only when the booking was **refused**: nothing was
+    taken, so the customer may try again with it. A timeout keeps its claim,
+    because the seat may be real and a retry could take a second one — the
+    order row's own unique key holds that line even after Redis forgets
+    (order-system/03-design.md §3.8).
+
+    ``RateLimit("payment")`` — 10/min/user (API.md §14). Booking spends the
+    installation's GTS credential and takes real inventory; it stopped being an
+    ordinary public read the moment it started writing orders.
+    """
+    if idempotency.replayed is not None:
+        return idempotency.replayed
+    try:
+        answer = await service.book(
+            session,
+            adapter,
+            payload,
+            customer_id=customer.id,
+            idempotency_key=idempotency.key,
+        )
+    except UpstreamError:
+        await idempotency.release()
+        raise
+    await idempotency.store(answer)
+    return answer
 
 
 @router.post(

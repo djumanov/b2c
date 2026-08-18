@@ -602,81 +602,134 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     },
     response_schema={
         "type": "object",
-        "additionalProperties": True,
         "description": (
-            "GTS's booking answer, verbatim. **No field of ours is added** — "
-            "not even the id of the order this writes. The booking is filed "
-            "under the signed-in customer and read back through "
-            "`GET /public/orders/` (§21); `payment_id` arrives with the saga."
-            "\n\n**Mind the second `data`.** The order's own fields are one "
-            "level down, under `data` — what you see here is GTS's wrapper "
-            "around it." + _UNCONFIRMED
+            "Three keys. `order` is ours — the record the booking created, in "
+            "the shape `GET /public/orders/` uses (§21). `payment` is the "
+            "payment to make, and is `null` until the payment step is built. "
+            "`data` is GTS's answer, **verbatim and complete**: the route, the "
+            "segments and the fare rules live only there and are not lifted "
+            "out."
+            "\n\n**This endpoint requires an `Idempotency-Key` header** "
+            "(API.md §10). The same key never books twice; without one the "
+            "request is refused with `422`." + _UNCONFIRMED
         ),
         "properties": {
-            "message": {
-                "type": "string",
-                "description": "GTS's word for the outcome, e.g. `booked`.",
+            "order": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": (
+                    "The order, as `/public/orders/{id}/` reports it — `id`, "
+                    "`order_no`, our canonical `status`, `amount`, "
+                    "`travelers`, `ticket_time_limit_at` and the provider's "
+                    "identifiers (API.md §21)."
+                ),
             },
-            "request_id": {
-                "type": "string",
-                "description": "The search this order came from, echoed back.",
+            "payment": {
+                "type": "object",
+                "nullable": True,
+                "additionalProperties": True,
+                "description": (
+                    "`null` for now. The payment slice fills it, and the shape "
+                    "around it does not change when it does."
+                ),
             },
             "data": {
                 "type": "object",
                 "additionalProperties": True,
-                "description": "**The order itself.**",
+                "description": (
+                    "GTS's booking answer, verbatim. **No field of ours is added** — "
+                    "not even the id of the order this writes. The booking is filed "
+                    "under the signed-in customer and read back through "
+                    "`GET /public/orders/` (§21); `payment_id` arrives with the saga."
+                    "\n\n**Mind the second `data`.** The order's own fields are one "
+                    "level down, under `data` — what you see here is GTS's wrapper "
+                    "around it." + _UNCONFIRMED
+                ),
                 "properties": {
-                    "order_number": {
-                        "type": "integer",
-                        "description": (
-                            "GTS's order number — **the handle `cancel/` "
-                            "takes**. An integer here; `/public/orders/` "
-                            "reports it as the string `gts_order_number` "
-                            "(API.md §1)."
-                        ),
-                    },
-                    "order_uid": {
+                    "message": {
                         "type": "string",
-                        "description": "GTS's internal key for the same order.",
+                        "description": "GTS's word for the outcome, e.g. `booked`.",
                     },
-                    "status": {
+                    "request_id": {
                         "type": "string",
-                        "enum": ["BO", "PW", "TI", "TE", "CB", "VO", "RF", "PRF"],
-                        "description": (
-                            "GTS's order status (GTS.md §4). A fresh booking "
-                            "is `BO` — held, not ticketed."
-                        ),
+                        "description": "The search this order came from, echoed back.",
                     },
-                    "gds_pnr": {"type": "string", "description": "Booking reference."},
-                    "supplier_pnr": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "An array, not a string.",
-                    },
-                    "ticket_time_limit": {
-                        "type": "integer",
-                        "description": "Seconds until the hold lapses.",
-                    },
-                    "refundable": {"type": "boolean"},
-                    "trip_type": _TRIP_TYPE,
-                    "routes": {
-                        "type": "array",
-                        "items": {"type": "object", "additionalProperties": True},
-                        "description": "Segments as booked.",
-                    },
-                    "price_info": {
+                    "data": {
                         "type": "object",
                         "additionalProperties": True,
-                        "description": "What was actually charged.",
-                    },
-                    "passengers": {
-                        "type": "array",
-                        "items": {"type": "object", "additionalProperties": True},
-                        "description": (
-                            "The travellers as GTS recorded them — note the "
-                            "names differ again (`firstname`, `lastname`, "
-                            "`document.passport_number`)."
-                        ),
+                        "description": "**The order itself.**",
+                        "properties": {
+                            "order_number": {
+                                "type": "integer",
+                                "description": (
+                                    "GTS's order number — **the handle `cancel/` "
+                                    "takes**. An integer here; `/public/orders/` "
+                                    "reports it as the string `gts_order_number` "
+                                    "(API.md §1)."
+                                ),
+                            },
+                            "order_uid": {
+                                "type": "string",
+                                "description": "GTS's internal key for the same order.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "BO",
+                                    "PW",
+                                    "TI",
+                                    "TE",
+                                    "CB",
+                                    "VO",
+                                    "RF",
+                                    "PRF",
+                                ],
+                                "description": (
+                                    "GTS's order status (GTS.md §4). A fresh booking "
+                                    "is `BO` — held, not ticketed."
+                                ),
+                            },
+                            "gds_pnr": {
+                                "type": "string",
+                                "description": "Booking reference.",
+                            },
+                            "supplier_pnr": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "An array, not a string.",
+                            },
+                            "ticket_time_limit": {
+                                "type": "integer",
+                                "description": "Seconds until the hold lapses.",
+                            },
+                            "refundable": {"type": "boolean"},
+                            "trip_type": _TRIP_TYPE,
+                            "routes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                                "description": "Segments as booked.",
+                            },
+                            "price_info": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "description": "What was actually charged.",
+                            },
+                            "passengers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                                "description": (
+                                    "The travellers as GTS recorded them — note the "
+                                    "names differ again (`firstname`, `lastname`, "
+                                    "`document.passport_number`)."
+                                ),
+                            },
+                        },
                     },
                 },
             },
@@ -685,23 +738,37 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     # Trimmed to the fields worth naming; the recorded answer also carries
     # routes, fares, baggage and supplier keys, all of which pass through.
     response_example={
-        "message": "booked",
-        "request_id": _REQUEST_ID,
+        "order": {
+            "id": "3f1c5f6e-2c0a-4f5e-9a7d-1b2c3d4e5f60",
+            "order_no": "B2C-2608-000123",
+            "product": "flight",
+            "status": "booked",
+            "provider_status": "BO",
+            "provider_order_number": "61453",
+            "provider_pnr": "UBPLKW",
+            "amount": {"amount": "52.39", "currency": "EUR"},
+        },
+        "payment": None,
         "data": {
-            "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
-            "order_number": 61453,
-            "status": "BO",
-            "gds_pnr": "UBPLKW",
-            "supplier_pnr": ["UBPLKW"],
-            "trip_type": "OW",
-            "refundable": False,
-            "ticket_time_limit": 288000,
-            "price_info": {"price": 46.89, "currency": "EUR", "fee_amount": 5.5},
+            "message": "booked",
+            "request_id": _REQUEST_ID,
+            "data": {
+                "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+                "order_number": 61453,
+                "status": "BO",
+                "gds_pnr": "UBPLKW",
+                "supplier_pnr": ["UBPLKW"],
+                "trip_type": "OW",
+                "refundable": False,
+                "ticket_time_limit": 288000,
+                "price_info": {"price": 46.89, "currency": "EUR", "fee_amount": 5.5},
+            },
         },
     },
     response_description=(
         "The seat is held by GTS and the order is recorded under the caller. "
-        "Requires a signed-in customer — there is no guest purchase."
+        "Requires a signed-in customer and an `Idempotency-Key` — there is no "
+        "guest purchase and no key-less booking."
     ),
 )
 

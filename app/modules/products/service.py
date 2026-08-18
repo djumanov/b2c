@@ -32,7 +32,12 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import NotFound, UpstreamError, ValidationFailed
+from app.api.errors import (
+    NotFound,
+    UpstreamError,
+    UpstreamTimeout,
+    ValidationFailed,
+)
 from app.core.logging import get_logger
 from app.modules.cms import service as cms_service
 from app.modules.integrations import service as integrations_service
@@ -41,7 +46,6 @@ from app.providers.gts.base import GtsClient
 from app.providers.gts.client import client_for
 from app.providers.products.base import ProductAdapter, ProductCode
 from app.providers.products.orders import (
-    BookingResult,
     OrderOperations,
     UnreadableAnswer,
     order_operations,
@@ -116,77 +120,60 @@ async def book(
     payload: dict[str, Any],
     *,
     customer_id: uuid.UUID,
+    idempotency_key: str,
 ) -> dict[str, Any]:
-    """Book, then file the answer under the customer (API.md §20, §21).
+    """Book, and never lose the booking (API.md §20, §21).
 
-    The wire is unchanged: what goes back is the provider's own answer, byte for
-    byte. What changed underneath is that the adapter now *reads* that answer
-    into a ``BookingResult`` before this module sees it, so the order row is
-    built from our own types rather than from GTS's dictionaries
-    (``providers/products/orders.py``).
+    The order of the first three lines is the slice. Everything that can fail
+    *without* touching a seat happens first — the adapter is resolved, the
+    credential is read — and only then is the row written, **before** the
+    provider is asked. From that line on there is no outcome that leaves a
+    reservation nobody can find (02-current-audit.md A1).
 
-    ``UnreadableAnswer`` is not a failure: the provider agreed in words we
-    cannot parse, so the seat is probably real. The row is written anyway and
-    lands in ``needs_attention``; the customer still gets the answer that names
-    their booking.
+    Each ending is a different thing and is treated as one:
 
-    **A failed write still does not fail the booking.** GTS is already holding
-    the seat, and answering ``500`` would send the client into a retry that
-    opens a *second* one — a real seat, and later real money. The response
-    carries the provider's identifiers either way, so the customer leaves with a
-    handle even when our row is missing; the loss is that they cannot cancel
-    through us. Slice S3 removes the need for this by writing the row before the
-    call (order-system/04-plan.md).
+    * **duplicate** — the key has been used, so the earlier order is returned
+      and GTS is not called again;
+    * **refused** — no seat was taken, the order is ``failed``, and the key is
+      released so the customer may try again with it;
+    * **no answer** — the row stays ``created``, which is precisely what that
+      status means: we do not know. Calling it failed would throw away a real
+      booking, so reconciliation resolves it later (slice S7);
+    * **unreadable** — the provider agreed in words we cannot parse, so the
+      order goes to ``needs_attention`` with the answer attached and the key is
+      kept: a seat is probably held and a retry must not open a second one.
     """
     ops = _order_ops(adapter)
     client = await _client(session)
-    try:
-        result = await ops.book(client, payload)
-    except UnreadableAnswer as unreadable:
-        await _record(
-            session,
-            customer_id=customer_id,
-            product=adapter.code,
-            payload=payload,
-            result=None,
-            response=unreadable.raw,
-        )
-        return unreadable.raw
-
-    await _record(
+    order, is_new = await orders_service.start_order(
         session,
         customer_id=customer_id,
         product=adapter.code,
         payload=payload,
-        result=result,
-        response=result.raw,
+        idempotency_key=idempotency_key,
     )
-    return result.raw
+    if not is_new:
+        return orders_service.booking_answer(order)
 
-
-async def _record(
-    session: AsyncSession,
-    *,
-    customer_id: uuid.UUID,
-    product: str,
-    payload: dict[str, Any],
-    result: BookingResult | None,
-    response: dict[str, Any],
-) -> None:
-    """Write the order, and swallow a write that fails — see ``book``."""
     try:
-        await orders_service.record_booking(
-            session,
-            customer_id=customer_id,
-            product=product,
-            payload=payload,
-            result=result,
-            response=response,
+        result = await ops.book(client, payload)
+    except UnreadableAnswer as unreadable:
+        order = await orders_service.record_unreadable_booking(
+            session, order, unreadable.raw
         )
-    except Exception:
-        logger.exception(
-            "order_not_recorded", product=product, customer_id=str(customer_id)
+        return orders_service.booking_answer(order)
+    except UpstreamTimeout:
+        # Deliberately not marked. ``created`` *is* "we asked and do not know".
+        logger.warning(
+            "order_answer_missing", order_id=str(order.id), order_no=order.order_no
         )
+        raise
+    except UpstreamError as refused:
+        await orders_service.fail_booking(session, order, reason=str(refused))
+        raise
+
+    order = await orders_service.confirm_booking(session, order, result)
+    return orders_service.booking_answer(order)
 
 
 async def cancel(

@@ -11,6 +11,7 @@ speaks ASGI, which respx leaves alone.
 """
 
 import json as jsonlib
+import uuid
 from typing import Any
 
 import httpx
@@ -321,28 +322,44 @@ async def test_anonymous_is_welcome_but_garbage_tokens_are_not(
 # --- booking and cancel (API.md §20) -------------------------------------------------
 
 
+def _booking_headers(customer: Customer) -> dict[str, str]:
+    """Booking is a money endpoint and refuses to run without a key (§10)."""
+    return {**customer_headers_for(customer), "Idempotency-Key": str(uuid.uuid4())}
+
+
 @respx.mock
-async def test_booking_passes_through_untouched(
+async def test_booking_relays_the_answer_beside_our_own_order(
     api: AsyncClient, session: AsyncSession, customer: Customer
 ) -> None:
-    """Nothing of ours joins the answer: no ``search_status``, no order id we
-    minted, no ``payment_id`` (decision of 2026-08-14)."""
+    """GTS's answer is still published whole, under ``data`` — the route, the
+    segments and the fare rules live only there. What is new beside it is the
+    order and the payment placeholder (order-system/03-design.md §3.6)."""
     await _activate_credential(session)
     await _enable_flight()
     _mock_signin()
-    gts_booking = {"order_id": "1250", "pnr": "ABCDEF", "status": "BO"}
+    gts_booking = {
+        "data": {
+            "order_number": 1250,
+            "gds_pnr": "ABCDEF",
+            "status": "BO",
+            "price_info": {"price": 100, "currency": "UZS"},
+        }
+    }
     route = respx.post(f"{GTS}/v1/content/booking/").mock(
         return_value=httpx.Response(200, json=_envelope(gts_booking))
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == gts_booking
+    answer = response.json()["data"]
+    assert answer["data"] == gts_booking
+    assert answer["order"]["provider_order_number"] == "1250"
+    assert answer["payment"] is None
     assert route.call_count == 1
-    # Passengers and all, byte for byte.
+    # Passengers and all, byte for byte — the request is untouched.
     assert jsonlib.loads(route.calls.last.request.content) == BOOKING_BODY
 
 
@@ -415,7 +432,7 @@ async def test_a_booking_without_an_offer_id_is_422_before_a_session(
     response = await api.post(
         BOOKING,
         json={"request_id": "r-1", "passengers": []},
-        headers=customer_headers_for(customer),
+        headers=_booking_headers(customer),
     )
 
     assert response.status_code == 422
@@ -450,7 +467,7 @@ async def test_a_refused_booking_keeps_the_gts_reason(
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 502
@@ -472,7 +489,7 @@ async def test_a_booking_timeout_is_a_504(
     )
 
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
 
     assert response.status_code == 504
@@ -493,7 +510,18 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
     await _enable_flight()
     _mock_signin()
     respx.post(f"{GTS}/v1/content/booking/").mock(
-        return_value=httpx.Response(200, json=_envelope({"order_id": "1250"}))
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {
+                    "data": {
+                        "order_number": 1250,
+                        "status": "BO",
+                        "price_info": {"price": 100, "currency": "UZS"},
+                    }
+                }
+            ),
+        )
     )
 
     async def counts() -> dict[str, int]:
@@ -505,7 +533,7 @@ async def test_a_booking_writes_one_order_row_and_touches_nothing_else(
 
     before = await counts()
     response = await api.post(
-        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(customer)
+        BOOKING, json=BOOKING_BODY, headers=_booking_headers(customer)
     )
     after = await counts()
 
