@@ -24,9 +24,10 @@ the principal, so a vertical this installation does not sell answers 404 to an
 anonymous caller rather than 401. Which verticals we sell must not be readable
 from the difference (API.md §41).
 
-**Booking is a money endpoint.** It carries a mandatory ``Idempotency-Key``
-and the 10/min payment bucket, because it writes an order and takes real
-inventory (API.md §10, §14).
+**Booking is a money endpoint.** It is idempotent and sits in the 10/min
+payment bucket, because it writes an order and takes real inventory (API.md
+§10, §14). The client is not asked for a key: one is derived from the request
+when the header is absent.
 
 **Cancelling is not here any more.** It moved to
 ``POST /public/orders/{id}/cancel/``: releasing a reservation is an operation on
@@ -184,14 +185,17 @@ async def booking(
 
     ``idempotency`` is declared **last** on purpose. FastAPI resolves the
     parameters in order, so a vertical this installation does not sell still
-    answers ``404`` and an anonymous caller still answers ``401`` — neither
-    should be readable from a ``422`` about a header (API.md §41).
+    answers ``404`` and an anonymous caller still answers ``401`` before any
+    of this runs (API.md §41). It also means the derived key is computed for a
+    caller who has already passed both gates.
 
     The key is released only when the booking was **refused**: nothing was
-    taken, so the customer may try again with it. A timeout keeps its claim,
-    because the seat may be real and a retry could take a second one — the
-    order row's own unique key holds that line even after Redis forgets
-    (order-system/03-design.md §3.8).
+    taken, so the customer may try again. A timeout keeps its claim, because
+    the seat may be real and a retry could take a second one — the order row's
+    own unique key holds that line even after Redis forgets
+    (order-system/03-design.md §3.8). Both hold whether the key came from the
+    client or was derived; the derived one is the same on every retry of the
+    same request, which is what makes it worth anything.
 
     ``RateLimit("payment")`` — 10/min/user (API.md §14). Booking spends the
     installation's GTS credential and takes real inventory; it stopped being an

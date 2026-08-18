@@ -269,15 +269,50 @@ GET  /api/v1/admin/jobs/{job_id}/      →  200
 
 ## 10. Idempotentlik
 
-Pul yoki tashqi tizimga ta'sir qiluvchi `POST` so'rovlarida (bron, to'lov, qaytarish)
-klient `Idempotency-Key` header'ini yuboradi:
+Pul yoki tashqi tizimga ta'sir qiluvchi `POST` so'rovlari (bron, to'lov,
+bekor qilish, qaytarish) **bir marta bajarilishi** kafolatlanadi: bir xil
+so'rov ikki marta kelsa, ikkinchisi yangi amal qilmaydi va birinchisining
+javobini qaytaradi. Javob 24 soat saqlanadi.
+
+Buni `Idempotency-Key` ta'minlaydi, va u **klientdan talab qilinmaydi**.
+
+**Kalitni server o'zi hosil qiladi.** Sarlavha yuborilmasa, server uni
+so'rovning o'zidan hisoblaydi:
 
 ```
-Idempotency-Key: 6f1a9c2e-…
+kalit = "auto:" + sha256( sub'ekt | METOD | yo'l | tana )
 ```
 
-Bir xil kalit bilan takroriy so'rov **yangi amal bajarmaydi**, birinchi natijani qaytaradi.
-Kalit 24 soat saqlanadi. Kalitsiz yuborilgan bunday so'rov `422 validation` bilan rad etiladi.
+* **sub'ekt** — tokendagi mijoz (tokensiz so'rovlarda IP). Ikki mijozning
+  bir xil tanasi hech qachon bir-birining javobini ko'rmasligi uchun.
+* **tana** — avval JSON sifatida **normallashtiriladi** (kalitlar alifbo
+  tartibida, probelsiz), shuning uchun serializatsiya farqi — kalit tartibi,
+  otstup — kalitni o'zgartirmaydi. JSON bo'lmagan tana kelganicha olinadi.
+
+Ya'ni **aynan bir xil so'rov har doim aynan bir xil kalit beradi**: tugma ikki
+marta bosilsa ham, javob yo'lda yo'qolib klient qayta yuborsa ham — bitta
+amal. Klient hech narsa saqlamaydi va hech narsa yubormaydi.
+
+**Sarlavha yuborilsa — o'shanikisi ishlatiladi.** Bu kuchliroq kafolat:
+hosil qilingan kalit *so'rovni* himoya qiladi (tana o'zgarsa — boshqa kalit,
+ya'ni yangi urinish), klient bergan kalit esa *niyatni* (tana o'zgarsa ham
+o'sha urinish). Ikkalasi bir xil qoidalarga bo'ysunadi:
+
+| Holat | Javob |
+|---|---|
+| Bir xil kalit, bir xil tana | Birinchi javob **aynan** qaytadi, tashqariga chiqilmaydi |
+| Bir xil kalit, boshqa tana | `422` — kalit boshqa so'rov uchun ishlatilgan. **Hosil qilingan kalitda bu holat bo'lmaydi**: tana o'zgarsa kalit ham o'zgaradi |
+| Ikkita bir xil so'rov bir vaqtda | Birinchisi kalitni egallaydi, ikkinchisi `409` — 1–2 soniyadan keyin qayta so'raladi |
+| Amal rad etilgan | Kalit **bo'shatiladi** — hech narsa bajarilmagan, qayta urinish xavfsiz |
+| Javob kelmagan | Kalit **saqlanadi** — amal haqiqatan bajarilgan bo'lishi mumkin |
+
+`auto:` prefiksi **zahiralangan**: shu bilan boshlanadigan kalit yuborilsa
+`422`, chunki u serverning o'z bo'shlig'i.
+
+> **Kalit yagona himoya emas.** Ikkinchi qavat — ma'lumotlar bazasidagi
+> `UNIQUE(customer_id, idempotency_key)` indeksi: Redis unutsa ham ikkinchi
+> buyurtma ochilmaydi
+> ([order-system/03-design.md](order-system/03-design.md) `O8`).
 
 ---
 
@@ -312,7 +347,7 @@ Mahsulot endpointlari (qidiruv, bron, chipta) GTS'ga chiqadi. Qoidalar:
 | Qidiruv timeout | 40 s (GTS provayderlarni parallel so'raydi) |
 | Boshqa amallar timeout | 15 s |
 | Retry | Faqat idempotent `GET` uchun, 2 marta, eksponensial kechikish bilan |
-| Bron/to'lov | **Retry yo'q** — takrorlash `Idempotency-Key` orqali klient tomonidan |
+| Bron/to'lov | **Retry yo'q** — klient qayta yuboradi, `Idempotency-Key` esa ikkinchi amalni to'sadi (§10) |
 
 GTS xatosi hech qachon yashirilmaydi: `502 upstream_error` bilan qaytadi, asl matn
 `message` da, asl kod `meta.upstream` da.
@@ -956,7 +991,7 @@ Oxirgi qator ataylab `404`, `403` emas: yozuv faqat o'z egasi orqali ko'rinadi, 
 ## 20. Mahsulotlar
 
 > **Bron va bekor qilish qismi qayta loyihalandi.** `booking/` endi buyurtma
-> va to'lov yaratadi va `Idempotency-Key` talab qiladi; `cancel/` esa bu
+> va to'lov yaratadi va idempotent (§10); `cancel/` esa bu
 > yerdan olib tashlanib `POST /public/orders/{id}/cancel/` ga ko'chdi.
 > Ustun hujjat — [`order-system/03-design.md`](order-system/03-design.md) §3.6.
 
@@ -977,11 +1012,11 @@ search  →  offers  →  (upsell)  →  verify  →  booking  →  order
 | `POST` | `/public/{product}/offers/` | (✓) | Takliflar sahifasi (`request_id` + `next_token`) |
 | `POST` | `/public/{product}/verify/` | (✓) | Tanlangan taklifni tasdiqlash (narx/mavjudlik) |
 | `POST` | `/public/{product}/upsell/` | (✓) | Tanlangan taklifning tarif variantlari (`flight`: branded fare'lar; `insurance`: qo'shimcha xizmatlar) |
-| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi. **`Idempotency-Key` majburiy** (§10), limit 10/daq (§14) |
+| `POST` | `/public/{product}/booking/` | ✓ | Tasdiqlangan taklifni bron qiladi. **Idempotent** — kalitni server hosil qiladi (§10), limit 10/daq (§14) |
 | ~~`POST`~~ | ~~`/public/{product}/cancel/`~~ | — | **Olib tashlandi.** Bekor qilish buyurtma resursida: `POST /public/orders/{id}/cancel/` (§21) |
 
 > **`booking/` — pul endpointi.** U buyurtma yaratadi va haqiqiy o'rin band
-> qiladi, shuning uchun `Idempotency-Key` majburiy (§10) va 10/daq to'lov
+> qiladi, shuning uchun u idempotent (§10) va 10/daq to'lov
 > chelagida (§14). Javob **uchta kalitdan** iborat: `order` (bizniki),
 > `payment` (nima qarz va qachongacha) va `data` — GTS javobi
 > **o'zgarmasdan, to'liq**. Qolgan to'rt qadam avvalgidek sof passthrough
@@ -1100,7 +1135,7 @@ qurilganda joriy etiladi.
 
 Bu — oqimdagi **birinchi pul endpointi**: u haqiqiy o'rinni band qiladi va
 bizda buyurtma yozuvini ochadi. Shu sababdan qolgan to'rt qadamdan uchta narsa
-bilan farq qiladi — token majburiy, `Idempotency-Key` majburiy, va javob sof
+bilan farq qiladi — token majburiy, so'rov **idempotent**, va javob sof
 passthrough emas.
 
 #### Undan oldin nima bo'lishi kerak
@@ -1122,7 +1157,7 @@ emas. `request_id` esa har doim `search/` bergani.
 | Sarlavha | Majburiy | Qiymat |
 |---|---|---|
 | `Authorization` | **✓** | `Bearer <access_token>`, `aud: public` (§4). Mehmon xaridi yo'q ([PROJECT.md](PROJECT.md) D4). Admin tokeni bilan — `403`, `401` emas |
-| `Idempotency-Key` | **✓** | Har bir bron urinishi uchun **yangi UUIDv4**. Bo'lmasa yoki bo'sh bo'lsa — `422`, `field: "Idempotency-Key"`. Qoidalari — quyidagi *`Idempotency-Key` — qoidalar* bo'limida |
+| `Idempotency-Key` | — | **Yubormasa ham bo'ladi**: server uni so'rovdan o'zi hosil qiladi va aynan bir xil so'rov ikkinchi o'rinni band qilmaydi (§10). Yuborilsa — o'shanikisi. Qoidalari quyida |
 | `Content-Type` | **✓** | `application/json` |
 | `Accept-Language` | — | Xato matnlari tili (§7). Bron javobiga ta'sir qilmaydi |
 
@@ -1196,7 +1231,6 @@ esa saqlanmaydi.
 ```bash
 curl -X POST 'https://api.example.uz/api/v1/public/flight/booking/' \
   -H 'Authorization: Bearer eyJhbGciOi…' \
-  -H 'Idempotency-Key: 4f9a1c2e-7b1d-4d2a-9c33-8b7e5f0a1d64' \
   -H 'Content-Type: application/json' \
   -d @booking.json
 ```
@@ -1337,8 +1371,8 @@ holati yo'q.
 | `401` | `unauthorized` | Token yo'q, yaroqsiz yoki muddati tugagan | Refresh, keyin **o'sha kalit bilan** qayta yuboradi |
 | `403` | `forbidden` | Admin tokeni (`aud: admin`) bilan kelingan | Mijoz tokeni bilan kiradi |
 | `404` | `not_found` | Bunday vertikal yo'q yoki bu o'rnatmada sotilmaydi | Qayta urinmaydi |
-| `409` | `conflict` | Aynan shu so'rov **hozir bajarilmoqda** (`Idempotency-Key` band) | 1–2 soniyadan keyin **o'sha kalit bilan** qayta so'raydi |
-| `422` | `validation` | `Idempotency-Key` yo'q · `request_id`/`offer_id` yo'q · kalit boshqa tana bilan ishlatilgan | Tanani tuzatadi va **yangi kalit** bilan yuboradi |
+| `409` | `conflict` | Aynan shu so'rov **hozir bajarilmoqda** | 1–2 soniyadan keyin **aynan o'sha tana bilan** qayta so'raydi |
+| `422` | `validation` | `request_id`/`offer_id` yo'q · yuborilgan kalit boshqa tana bilan ishlatilgan · kalit `auto:` bilan boshlangan | Tanani tuzatadi. Kalit yuborayotgan bo'lsa — **yangisi** bilan |
 | `429` | `rate_limited` | 10/daq to'lov chelagi to'ldi (§14) | `Retry-After` sarlavhasini kutadi |
 | `502` | `upstream_error` | GTS rad etdi: taklif muddati o'tgan, o'rin qolmagan, yo'lovchi maydoni noto'g'ri, balans yetmagan | GTS matni `message` da, asl kodi `meta.upstream` da. **O'rin band bo'lmagan** — qayta urinish xavfsiz |
 | `504` | `upstream_timeout` | GTS javob bermadi | **Qayta bron qilmasin** — quyidagi kalit qoidalariga qarang |
@@ -1349,37 +1383,43 @@ holati yo'q.
 > relay qilinadi (2026-08-13 qarori). Klient bu holda **qidiruvni qaytadan
 > boshlaydi**: yangi `search/` → yangi `request_id` → yangi `offer_id`.
 
-#### `Idempotency-Key` — qoidalar
+#### Ikkinchi o'rin band bo'lmasligi
 
 Bron qilishda tarmoq javobni yo'qotishi mumkin, foydalanuvchi esa tugmani ikki
 marta bosadi. Ikkalasi ham serverda bir xil ko'rinadi, va ikkinchi o'rin band
-qilish — pul. Kalit shuni to'sadi.
+qilish — pul.
+
+**Klient buning uchun hech narsa qilmaydi.** Server har so'rovga uning
+o'zidan kalit hisoblaydi (§10), ya'ni aynan bir xil tana bilan kelgan
+ikkinchi so'rov GTS'ga umuman bormaydi va birinchisining javobini oladi.
 
 | Holat | Nima bo'ladi |
 |---|---|
-| **Bir xil kalit, bir xil tana** | Birinchi javob **aynan** qaytadi, GTS'ga borilmaydi. 24 soat davomida |
-| **Bir xil kalit, boshqa tana** | `422` — "already used for a different request". Bu klient xatosi va u yashirilmaydi |
-| **Ikki so'rov bir vaqtda** | Birinchisi kalitni egallaydi, ikkinchisi `409` oladi. Ikkinchi o'rin band bo'lmaydi |
-| **Bron rad etilgan (`502`)** | Kalit **bo'shatiladi** — o'rin band bo'lmagan, o'sha kalit bilan qayta urinish xavfsiz |
-| **Javob kelmagan (`504`)** | Kalit **saqlanadi** — o'rin haqiqiy bo'lishi mumkin. Birinchi daqiqada o'sha kalit `409` beradi (da'vo hali ochiq), keyin bizdagi buyurtma qaytadi |
-| **Tana noto'g'ri (`422`)** | Kalit **60 soniya band** bo'lib qoladi. Tuzatilgan so'rov **yangi kalit** bilan yuboriladi |
+| **Tugma ikki marta bosildi** | Ikkinchisi `409` (birinchisi hali ketmoqda) yoki birinchisining javobi. Ikkala holatda ham **bitta bron** |
+| **Tarmoq uzildi, klient qayta yubordi** | Aynan bir xil tana → birinchi javob qaytadi, GTS'ga borilmaydi. 24 soat davomida |
+| **Bron rad etilgan (`502`)** | Kalit **bo'shatiladi** — o'rin band bo'lmagan, qayta urinish xavfsiz |
+| **Javob kelmagan (`504`)** | Kalit **saqlanadi** — o'rin haqiqiy bo'lishi mumkin. Birinchi daqiqada `409` keladi (da'vo hali ochiq), keyin bizdagi buyurtma qaytadi |
+| **Tana o'zgartirildi va qayta yuborildi** | Bu **boshqa** so'rov: yangi urinish boshlanadi. Birinchisi muvaffaqiyatli bo'lgan bo'lsa GTS o'sha `offer_id` ni ikkinchi marta bron qilmaydi (`502`) |
 
-Amaliy qoidalar:
+Klient uchun ikkita amaliy qoida qoladi:
 
-1. Kalit — **UUIDv4**. U global bo'shliqda yashaydi, ya'ni "order-1" kabi
-   taxmin qilinadigan qiymat boshqa mijozning so'rovi bilan to'qnashadi.
-2. Kalit **bron urinishiga** beriladi, so'rovga emas: qayta urinishlarda
-   **o'sha kalit** yuboriladi. Yangi kalit = yangi bron = ikkinchi o'rin.
-3. Foydalanuvchi shaklni o'zgartirsa (yo'lovchi tuzatildi, boshqa taklif
-   tanlandi) — **yangi kalit**, chunki bu boshqa bron.
-4. Javob kelmasa yoki `504` bo'lsa: **qayta bron qilmang.** O'sha kalit bilan
-   so'rovni takrorlang — **60 soniyadan keyin**, undan oldin `409` keladi,
-   chunki birinchi urinishning da'vosi hali ochiq. Javobda buyurtma `created`
-   holatida kelishi mumkin va `data` `null` bo'ladi: bu "so'radik, javobini
-   bilmaymiz" degani. Klient `GET /public/orders/{id}/` ni kuzatadi.
+1. **Qayta yuborganda tanani o'zgartirmang.** Aynan o'sha JSON — himoya shunga
+   asoslangan. (Kalitlar tartibi va probel ahamiyatsiz: tana solishtirishdan
+   oldin normallashtiriladi.)
+2. **`504` da qayta bron qilmang.** O'sha so'rovni takrorlang —
+   **60 soniyadan keyin**, undan oldin `409` keladi, chunki birinchi
+   urinishning da'vosi hali ochiq. Javobda buyurtma `created` holatida
+   kelishi mumkin va `data` `null` bo'ladi: bu "so'radik, javobini bilmaymiz"
+   degani. Klient `GET /public/orders/{id}/` ni kuzatadi.
    ⚠ **`created` ni bugun avtomatik hal qiladigan narsa yo'q** — solishtirish
    (`sync_open`) hali qurilmagan, shuning uchun bunday buyurtmani operator
    yopadi.
+
+**`Idempotency-Key` ni o'zi yuborishni xohlagan klient** buni qilishi mumkin
+va kalit hurmat qilinadi (§10). Bu bitta qo'shimcha kafolat beradi: tana
+o'zgarsa ham urinish **o'sha** deb qaraladi — masalan foydalanuvchi pasport
+raqamini tuzatib qayta yuborsa, ikkinchi bron ochilmaydi. Buning evaziga
+kalitni ekran holatida saqlash klient zimmasiga tushadi.
 
 **Buyurtma qatori GTS chaqiruvidan oldin yoziladi.** Shu sababdan bron hech
 qachon yo'qolmaydi: yozuv bajarilmasa GTS'ga umuman borilmaydi, javob
@@ -1429,7 +1469,7 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
 | `GET` | `/public/orders/{id}/` | ✓ | Tafsilot |
 | `GET` | `/public/orders/{id}/receipt/` | ✓ | Kvitansiya (PDF yoki HTML) — **hali qurilmagan** |
-| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bronni bo'shatish. **`Idempotency-Key` majburiy**, limit 10/daq |
+| `POST` | `/public/orders/{id}/cancel/` | ✓ | Bronni bo'shatish. **Idempotent** — kalitni server hosil qiladi (§10), limit 10/daq |
 
 **Buyurtma yozuvi — egalikning manbai va holat mashinasining o'zi.**
 `booking/` muvaffaqiyatli o'tganda buyurtma mijozning nomiga yoziladi (§20).
@@ -1537,7 +1577,7 @@ provayderga qaytariladi, `status` `cancelled` va `cancellation_reason`
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
 | `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
-| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini boshlaydi. **`Idempotency-Key` majburiy**, limit 10/daq |
+| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini boshlaydi. **Idempotent** — kalitni server hosil qiladi (§10), limit 10/daq |
 | `GET` | `/public/transactions/{id}/` | ✓ | Urinish holati |
 | `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **hali qurilmagan** |
 | `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTB bilan tasdiqlash — **hali qurilmagan** |
@@ -1559,7 +1599,6 @@ qoldiriladigan zaxira vaqt keyingi bo'lakda undan ayriladi.
 
 ```json
 POST /public/orders/3f1c…/transactions/
-Idempotency-Key: 6d1f…
 { "method": "payme",
   "return_url": "https://brand.uz/checkout/done" }
 
@@ -2214,7 +2253,7 @@ massivi bor, frontend tugmalarni shunga qarab ko'rsatadi:
 | `POST` | `/admin/payments/{id}/refund/` | `admin` | Qaytarish (to'liq yoki qisman) |
 | `POST` | `/admin/payments/{id}/sync/` | `admin` | Provayderdan holatni qayta olish |
 
-`refund/` — `Idempotency-Key` majburiy (§10).
+`refund/` — idempotent; kalitni server hosil qiladi (§10).
 
 ---
 

@@ -142,9 +142,11 @@ async def start_transaction(
     (ARCHITECTURE.md §8). If the provider then refuses to start, the row stays
     as a failed attempt: what was tried is part of the record.
 
-    ``Idempotency-Key`` is mandatory here for the same reason as on booking — a
-    dropped response and a double-tapped button look identical, and one of them
-    must not become two charges (API.md §10).
+    Idempotent for the same reason as booking — a dropped response and a
+    double-tapped button look identical, and one of them must not become two
+    charges (API.md §10). The key is derived from the request when the client
+    sends none, so the protection does not depend on the client remembering to
+    ask for it.
     """
     if idempotency.replayed is not None:
         return TransactionOut.model_validate(idempotency.replayed)

@@ -246,7 +246,8 @@ saqlangan karta bilan (card_id berilgan) — karta qadamini server o'zi to'ldira
   keyin bajarilmasa, buyurtma **`needs_attention`** terminal holatiga tushadi va panelda
   ko'rinadi. **Pul hech qachon jimgina yo'qolmaydi.**
 - `Idempotency-Key` ([API.md](API.md) §10) Redis'da 24 soat: so'rov barmoq izi → keshlangan javob.
-  Pul endpointida kalitsiz so'rov — `422`.
+  Klient kalit yubormasa **server uni so'rovdan hosil qiladi**, ya'ni pul
+  endpointi kalitsiz ham idempotent.
 - **Saqlangan karta oqimi ham sagadan chetda qolmaydi**: `reveal_card()` bergan raqam bilan
   qilingan provayder chaqiruvi javobi o'sha holat mashinasiga, o'sha outbox qatoriga tushadi.
   Tranzaksiya qatori tarmoq

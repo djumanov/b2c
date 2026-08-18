@@ -200,7 +200,8 @@ def headers(customer: Customer) -> dict[str, str]:
 
 
 def _booking_headers(headers: dict[str, str], key: str | None = None) -> dict[str, str]:
-    """Booking is a money endpoint: no key, no booking (API.md §10)."""
+    """A client that names its own key. Sending none is the ordinary case and
+    is covered separately — the server derives one (API.md §10)."""
     return {**headers, "Idempotency-Key": key or str(uuid.uuid4())}
 
 
@@ -530,22 +531,96 @@ async def test_a_key_two_customers_share_is_refused_not_confused(
 
 
 @respx.mock
-async def test_booking_without_a_key_is_a_422_and_takes_no_seat(
+async def test_booking_without_a_key_still_books_exactly_once(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
+    """The ordinary case now. It used to be a ``422``; the server derives the
+    key from the request instead, so the protection no longer depends on the
+    client having built a state machine for it (API.md §10)."""
     await _installation(session)
-    signin = _mock_signin()
+    _mock_signin()
     booking = _mock_booking()
 
-    response = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    first = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    second = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
 
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "Idempotency-Key"
-    assert booking.call_count == 0
-    assert signin.call_count == 0
+    assert first.status_code == 200
+    assert first.json()["data"] == second.json()["data"]
+    assert booking.call_count == 1
+    assert (await api.get(ORDERS, headers=headers)).json()["meta"]["total"] == 1
+
+
+@respx.mock
+async def test_a_keyless_booking_is_scoped_to_its_customer(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The derived key carries the subject. Without it the Redis record is one
+    flat namespace, and two customers whose bodies happened to match would be
+    handed each other's order."""
+    await _installation(session)
+    _mock_signin()
+    booking = _mock_booking()
+    stranger = await make_customer(session, email="stranger@brand.uz")
+    # Two answers: ``orders`` is unique on the provider's number, so one seat
+    # cannot be sold twice even in a test.
+    booking.mock(
+        side_effect=[
+            httpx.Response(200, json=_envelope(GTS_BOOKING)),
+            httpx.Response(
+                200,
+                json=_envelope(
+                    {
+                        **GTS_BOOKING,
+                        "data": {**GTS_BOOKING["data"], "order_number": 61454},
+                    }
+                ),
+            ),
+        ]
+    )
+
+    mine = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    theirs = await api.post(
+        BOOKING, json=BOOKING_BODY, headers=customer_headers_for(stranger)
+    )
+
+    assert mine.status_code == theirs.status_code == 200
+    assert mine.json()["data"]["order"]["id"] != theirs.json()["data"]["order"]["id"]
+    assert booking.call_count == 2
+    # And each sees only their own.
+    assert (await api.get(ORDERS, headers=headers)).json()["meta"]["total"] == 1
+
+
+@respx.mock
+async def test_a_keyless_booking_that_is_refused_can_be_retried(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """Releasing on refusal has to work for the derived key too, or a customer
+    whose first attempt hit a full flight could never book that search again."""
+    await _installation(session)
+    _mock_signin()
+    refused = respx.post(f"{GTS}/v1/content/booking/").mock(
+        return_value=httpx.Response(
+            200, json={"status": "error", "code": -104, "message": "no seats left"}
+        )
+    )
+
+    first = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+    assert first.status_code == 502
+
+    refused.mock(return_value=httpx.Response(200, json=_envelope(GTS_BOOKING)))
+    second = await api.post(BOOKING, json=BOOKING_BODY, headers=headers)
+
+    assert second.status_code == 200
+    assert second.json()["data"]["order"]["status"] == "booked"
 
 
 @respx.mock
@@ -759,7 +834,6 @@ async def test_cancelling_needs_a_key_and_only_cancels_once(
     order = await _order(session, customer)
     key = str(uuid.uuid4())
 
-    keyless = await api.post(f"{ORDERS}{order.id}/cancel/", headers=headers)
     first = await api.post(
         f"{ORDERS}{order.id}/cancel/", headers=_booking_headers(headers, key)
     )
@@ -767,8 +841,29 @@ async def test_cancelling_needs_a_key_and_only_cancels_once(
         f"{ORDERS}{order.id}/cancel/", headers=_booking_headers(headers, key)
     )
 
-    assert keyless.status_code == 422
-    assert keyless.json()["errors"][0]["field"] == "Idempotency-Key"
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert cancel.call_count == 1
+
+
+@respx.mock
+async def test_cancelling_twice_without_a_key_only_cancels_once(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """``cancel/`` sends no body at all, so the derived key rests on the path —
+    which carries the order id. Two calls for one order collapse; two orders
+    stay two."""
+    await _installation(session)
+    _mock_signin()
+    cancel = _mock_cancel()
+    order = await _order(session, customer)
+
+    first = await api.post(f"{ORDERS}{order.id}/cancel/", headers=headers)
+    second = await api.post(f"{ORDERS}{order.id}/cancel/", headers=headers)
+
     assert first.status_code == second.status_code == 200
     assert first.json() == second.json()
     assert cancel.call_count == 1

@@ -1,4 +1,10 @@
-"""Idempotency-Key behaviour (API.md §10) — the money endpoints depend on it."""
+"""Idempotency-Key behaviour (API.md §10) — the money endpoints depend on it.
+
+Two halves. The first is the promise a client never has to ask for: leave the
+header out and the server derives a key from the request, so the same request
+twice is one charge. The second is the older contract, still honoured, for a
+client that wants to name its own key.
+"""
 
 import json
 from collections.abc import AsyncIterator
@@ -17,6 +23,8 @@ from app.api.idempotency import (
     IN_FLIGHT_TTL_SECONDS,
     KEY_TTL_SECONDS,
     IdempotencyKey,
+    canonical,
+    derived_key,
     fingerprint,
 )
 
@@ -67,14 +75,105 @@ async def pay_client(charges: list[str]) -> AsyncIterator[AsyncClient]:
         yield client
 
 
-async def test_missing_key_is_422(pay_client: AsyncClient) -> None:
-    """Never a silent pass: an unkeyed charge is rejected."""
+# --- no header: the server derives one ------------------------------------------------
+
+
+async def test_a_charge_without_a_key_goes_through(
+    pay_client: AsyncClient, charges: list[str]
+) -> None:
+    """It used to be a 422. Refusing was the safe answer only while nothing
+    could be derived; now the key exists either way (API.md §10)."""
     response = await pay_client.post("/pay/", json={"amount": "100.00"})
 
+    assert response.status_code == 200
+    assert charges == ["100.00"]
+
+
+async def test_the_same_unkeyed_charge_twice_charges_once(
+    pay_client: AsyncClient, charges: list[str]
+) -> None:
+    """The whole point. A dropped response and a double-tapped button both
+    arrive as this, and the client sent nothing to tell them apart."""
+    body = {"amount": "100.00"}
+
+    first = await pay_client.post("/pay/", json=body)
+    second = await pay_client.post("/pay/", json=body)
+
+    assert first.json()["data"] == second.json()["data"]
+    assert second.json()["data"]["call_number"] == 1
+    assert charges == ["100.00"]
+
+
+async def test_formatting_is_not_a_second_charge(
+    pay_client: AsyncClient, charges: list[str]
+) -> None:
+    """Same request, different bytes: key order and whitespace belong to the
+    serialiser, not to the request. Hashing the raw body would make a client
+    that reorders its JSON pay twice."""
+    await pay_client.post(
+        "/pay/",
+        content=b'{"amount": "100.00"}',
+        headers={"Content-Type": "application/json"},
+    )
+    await pay_client.post(
+        "/pay/",
+        content=b'{\n  "amount":"100.00"\n}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert charges == ["100.00"]
+
+
+async def test_a_different_unkeyed_charge_is_a_different_charge(
+    pay_client: AsyncClient, charges: list[str]
+) -> None:
+    """A derived key protects *this request*. Change it and it is another one —
+    which is the documented limit of deriving rather than being told."""
+    await pay_client.post("/pay/", json={"amount": "100.00"})
+    await pay_client.post("/pay/", json={"amount": "250.00"})
+
+    assert charges == ["100.00", "250.00"]
+
+
+async def test_a_reserved_key_is_refused(pay_client: AsyncClient) -> None:
+    """``auto:`` is the server's own namespace. A client allowed to write into
+    it could aim a request at another subject's derived key."""
+    response = await pay_client.post(
+        "/pay/", json={"amount": "1.00"}, headers={"Idempotency-Key": "auto:beef"}
+    )
+
     assert response.status_code == 422
-    error = response.json()["errors"][0]
-    assert error["code"] == "validation"
-    assert error["field"] == "Idempotency-Key"
+    assert response.json()["errors"][0]["field"] == "Idempotency-Key"
+
+
+async def test_the_derived_key_is_stable_and_subject_scoped() -> None:
+    """Two properties the whole scheme rests on, checked without a request.
+
+    Stable, or a retry would not match; subject-scoped, or two customers whose
+    bodies happen to agree would read each other's answer out of one flat
+    Redis namespace.
+    """
+    body = b'{"amount": "1.00"}'
+    args = ("POST", "/pay/", body)
+
+    assert derived_key("sub:a", *args) == derived_key("sub:a", *args)
+    assert derived_key("sub:a", *args) != derived_key("sub:b", *args)
+    assert derived_key("sub:a", *args) != derived_key("sub:a", "POST", "/other/", body)
+    assert derived_key("sub:a", *args).startswith("auto:")
+    # Formatting is not identity, but content is.
+    assert derived_key("sub:a", "POST", "/pay/", b'{"amount":"1.00"}') == derived_key(
+        "sub:a", *args
+    )
+
+
+def test_canonical_leaves_a_body_it_cannot_parse_alone() -> None:
+    """``cancel/`` sends none at all, and there is nothing to normalise."""
+    assert canonical(b"") == b""
+    assert canonical(b"not json") == b"not json"
+    assert canonical(b'{"b":2,"a":1}') == canonical(b'{"a": 1, "b": 2}')
+
+
+# --- a client that names its own key --------------------------------------------------
 
 
 async def test_repeat_replays_instead_of_charging_twice(
@@ -118,12 +217,20 @@ async def test_key_reused_with_a_different_body_is_422(
     assert charges == ["100.00"]
 
 
-async def test_blank_key_is_rejected(pay_client: AsyncClient) -> None:
-    response = await pay_client.post(
-        "/pay/", json={"amount": "1.00"}, headers={"Idempotency-Key": "   "}
-    )
+async def test_a_blank_key_is_the_same_as_no_key(
+    pay_client: AsyncClient, charges: list[str]
+) -> None:
+    """Whitespace is not a key. It used to be a 422; now it falls through to
+    the derived one, which is the same answer a client sending nothing gets."""
+    headers = {"Idempotency-Key": "   "}
+    body = {"amount": "1.00"}
 
-    assert response.status_code == 422
+    first = await pay_client.post("/pay/", json=body, headers=headers)
+    second = await pay_client.post("/pay/", json=body, headers=headers)
+
+    assert first.status_code == 200
+    assert second.json()["data"]["call_number"] == 1
+    assert charges == ["1.00"]
 
 
 # --- the race, and what a claim left behind costs ------------------------------------

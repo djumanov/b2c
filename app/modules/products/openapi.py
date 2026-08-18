@@ -797,11 +797,11 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
         "description": (
             "Books the exact `offer_id` that `verify/` cleared — after "
             "`upsell/`, the **branded fare's** id rather than the original."
-            "\n\n**Two mandatory headers.** `Authorization: Bearer …` for a "
-            "customer token (`aud: public`; an admin token answers `403`) and "
-            "`Idempotency-Key` — a fresh UUIDv4 per booking attempt. Without "
-            "the key the request is refused with `422`; the same key never "
-            "books twice (API.md §10)."
+            "\n\n**One mandatory header:** `Authorization: Bearer …` for a "
+            "customer token (`aud: public`; an admin token answers `403`). "
+            "`Idempotency-Key` is **optional** — leave it out and the server "
+            "derives one from the request, so an identical repeat never books "
+            "twice (API.md §10)."
             "\n\n**Only the two identifiers are checked by us.** Everything "
             "else — passengers included — is forwarded unchecked, because the "
             "GTS booking contract decides which fields it needs, and a "
@@ -1052,8 +1052,8 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     },
     response_description=(
         "The seat is held by GTS and the order is recorded under the caller. "
-        "Requires a signed-in customer and an `Idempotency-Key` — there is no "
-        "guest purchase and no key-less booking."
+        "Requires a signed-in customer — there is no guest purchase — and is "
+        "idempotent whether or not the caller supplies a key."
     ),
 )
 
