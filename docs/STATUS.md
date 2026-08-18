@@ -548,24 +548,22 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     `order_recorded_without_gts_number` ogohlantirishi ikkala qavatning
     maydon ro'yxati bilan log'ga tushadi.
 
-15a. 🔴 **Bekor qilish javobining shakli mos kelmayapti.** Kolleksiyada
-    saqlangan yagona `cancel` javobi eski shaklda — `{status, code, order}`,
-    ya'ni unda **`data` kaliti yo'q**. Bizning `providers/gts/client.py`
-    `_translate` esa envelope'siz rejimda `data` ni talab qiladi va bo'lmasa
-    `502 upstream_error` beradi. Agar jonli GTS ham shu shaklni qaytarsa,
-    **bekor qilish har doim 502 bo'ladi** — bron esa ishlaydi. Bu jonli
-    tekshiruvda **birinchi ko'riladigan narsa**. Tuzatish arzon (`cancel`
-    uchun `post_envelope` yoki alohida shakl), lekin qaysi biri kerakligini
-    haqiqiy javobsiz tanlab bo'lmaydi.
+15a. ✅ **Bekor qilish javobining shakli mos kelmasligi** — **yopildi.**
+    Kolleksiyadagi yagona `cancel` javobi eski shaklda (`{status, code,
+    order}`, `data` kalitisiz) va bare-`data` o'quvchisi uni rad etardi, ya'ni
+    bekor qilish jonli GTS'da har doim `502` bo'lardi. Endi `cancel` ham,
+    ticketing ham `post_envelope` ishlatadi — u butun payloadni qaytaradi va
+    javob `data` da ham, `order` da ham kelsa o'qiydi
+    (`providers/products/flight.py`, `providers/gts/client.py::_translate`).
 
-16. 🟠 **Bron yozilmay qolsa buyurtma yo'qoladi.** `booking/` da GTS javob
-    bergandan keyingi `INSERT` xato bersa, so'rov baribir `200` qaytaradi
-    (izohi API.md §20 da: `500` qaytarish mijozni qayta urinishga va
-    **ikkinchi bronga** olib borardi — haqiqiy o'rin). Oqibati: o'sha bron
-    bizda ko'rinmaydi va u orqali bekor qilib bo'lmaydi; mijoz qo'lida faqat
-    javobdagi `order_id`/`pnr` qoladi. To'g'ri yechimi — holat o'zgarishi
-    bilan bitta tranzaksiyadagi outbox (ARCHITECTURE.md §8), u **9-bo'lakda**.
-    Hozircha `order_not_recorded` log'i.
+16. ✅ **Bron yozilmay qolsa buyurtma yo'qolishi** — **yopildi.** Qator endi
+    GTS chaqiruvidan **oldin** yoziladi (`orders/service.py::start_order`),
+    ya'ni yozuv bajarilmasa GTS'ga umuman borilmaydi va yo'qoladigan bron
+    qolmaydi. Javob kelmasa qator `created` holatida turadi — bu "so'radik,
+    javobini bilmaymiz" degani, va uni topib bo'ladi
+    (`order-system/02-current-audit.md` A1).
+    ⚠ Qolgani: `created` ni avtomatik hal qiladigan solishtirish (`sync_open`)
+    hali qurilmagan — bugun bunday qatorni operator yopadi.
 
 17. 🔴 **Buyurtma anonimlashtirilmaydi, va endi bu tasdiqlangan.**
     Kolleksiyadagi bron javobida `data.passengers[]` bor va uning ichida

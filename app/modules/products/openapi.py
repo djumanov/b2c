@@ -541,16 +541,271 @@ _PASSENGER: Final[dict[str, Any]] = {
     },
 }
 
+#: One traveller **as we store and republish them** — ``orders.travelers``.
+#: Deliberately not ``_PASSENGER``: that is the shape GTS is *sent*, this is
+#: the shape that comes back. The differences are the ones a client gets wrong
+#: — ``phone`` is one string here, and two fields arrive that were never sent.
+_STORED_TRAVELER: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": True,
+    "description": (
+        "One traveller in **our** shape (order-system/03-design.md `O10`). "
+        "Every field may be `null`: a provider that omits a middle name must "
+        "not cost us the traveller."
+    ),
+    "properties": {
+        "position": {
+            "type": "integer",
+            "description": "1-based, in the order the travellers were sent.",
+        },
+        "type": {"type": "string", "description": "`ADT` · `CHD` · `INF` · `INS`."},
+        "first_name": {"type": "string", "nullable": True},
+        "last_name": {"type": "string", "nullable": True},
+        "middle_name": {"type": "string", "nullable": True},
+        "birth_date": {
+            "type": "string",
+            "nullable": True,
+            "description": "`YYYY-MM-DD`.",
+        },
+        "gender": {"type": "string", "nullable": True},
+        "citizenship": {"type": "string", "nullable": True, "description": "ISO code."},
+        "document": {
+            "type": "object",
+            "description": "The same four keys the request nests.",
+            "properties": {
+                "type": {"type": "string", "nullable": True},
+                "number": {"type": "string", "nullable": True},
+                "issue_date": {"type": "string", "nullable": True},
+                "expire_date": {"type": "string", "nullable": True},
+            },
+        },
+        "email": {"type": "string", "nullable": True},
+        "phone": {
+            "type": "string",
+            "nullable": True,
+            "description": (
+                "**One string**, not the `{phone_code, phone_number}` object "
+                "the request sends — the two halves are joined."
+            ),
+        },
+        "provider_traveler_id": {
+            "type": "string",
+            "nullable": True,
+            "description": (
+                "GTS's own id for this traveller. What their support asks for."
+            ),
+        },
+        "ticket_number": {
+            "type": "string",
+            "nullable": True,
+            "description": "**`null` here.** Ticketing fills it, after payment.",
+        },
+        "anonymized_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+            "description": (
+                "Set when the account is deleted and the traveller is scrubbed "
+                "(PROJECT.md §13). `null` on a live order."
+            ),
+        },
+    },
+}
+
+#: What the booking answer's ``order`` half names. Written out rather than left
+#: an opaque object because this is the one endpoint where a client meets the
+#: order for the first time, and ``id`` is the handle every later call takes.
+_BOOKED_ORDER: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": True,
+    "description": (
+        "The order, in the same shape `GET /public/orders/{id}/` uses "
+        "(API.md §21). **Keep `id`** — paying, cancelling and polling all "
+        "take it."
+    ),
+    "properties": {
+        "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": (
+                "**Ours.** The handle for `POST /public/orders/{id}/"
+                "transactions/`, `POST /public/orders/{id}/cancel/` and "
+                "`GET /public/orders/{id}/`. Not GTS's order number."
+            ),
+        },
+        "order_no": {
+            "type": "string",
+            "description": "Human-readable: `B2C-2608-000123`. What support asks for.",
+        },
+        "product": {"type": "string", "description": "The vertical, e.g. `flight`."},
+        "status": {
+            "type": "string",
+            "enum": [
+                "created",
+                "booked",
+                "paid",
+                "ticketing",
+                "ticketed",
+                "refunding",
+                "refunded",
+                "partially_refunded",
+                "cancelled",
+                "voided",
+                "failed",
+                "needs_attention",
+            ],
+            "description": (
+                "**Canonical, ours** (order-system/03-design.md §3.3). A "
+                "booking normally answers `booked`. `needs_attention` means "
+                "GTS agreed in words we could not read — a seat is probably "
+                "held, so **do not book again**; poll the order instead."
+            ),
+        },
+        "provider_status": {
+            "type": "string",
+            "nullable": True,
+            "description": (
+                "GTS's own code, verbatim — `BO`, `PW`, `TI`, `CB`, … "
+                "(GTS.md §4). Informational; decide on `status`."
+            ),
+        },
+        "provider_order_number": {
+            "type": "string",
+            "nullable": True,
+            "description": (
+                "GTS's order number as a **string** (an integer upstream — "
+                "API.md §1 keeps identifiers textual). The field was called "
+                "`gts_order_number` before the order system; that name is gone."
+            ),
+        },
+        "provider_order_uid": {
+            "type": "string",
+            "nullable": True,
+            "description": "GTS's internal key. Nothing we expose takes it.",
+        },
+        "provider_pnr": {
+            "type": "string",
+            "nullable": True,
+            "description": "The airline record locator (`gds_pnr`).",
+        },
+        "request_id": {"type": "string", "nullable": True},
+        "offer_id": {"type": "string", "nullable": True},
+        "amount": {
+            "type": "object",
+            "nullable": True,
+            "description": (
+                'What the customer owes: `{"amount": "52.39", "currency": '
+                '"EUR"}` — the amount a **string** (API.md §1). `null` only '
+                "if the provider has not priced the order."
+            ),
+            "properties": {
+                "amount": {"type": "string"},
+                "currency": {"type": "string", "minLength": 3, "maxLength": 3},
+            },
+        },
+        "travelers": {
+            "type": "array",
+            "items": _STORED_TRAVELER,
+            "description": (
+                "Travellers in **our** shape, not GTS's — read back from the "
+                "answer where it lists them, from the request otherwise."
+            ),
+        },
+        "ticket_time_limit_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+            "description": (
+                "**The deadline.** GTS holds the seat until this moment; an "
+                "unpaid order lapses on its own afterwards. Send the customer "
+                "to payment straight away."
+            ),
+        },
+        "travel_start_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+            "description": "Departure — for the list row, nothing depends on it.",
+        },
+        "route_summary": {
+            "type": "string",
+            "nullable": True,
+            "description": "`TAS → IST`, for display.",
+        },
+        "cancellation_reason": {"type": "string", "nullable": True},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "booked_at": {"type": "string", "format": "date-time", "nullable": True},
+        "paid_at": {"type": "string", "format": "date-time", "nullable": True},
+        "ticketed_at": {"type": "string", "format": "date-time", "nullable": True},
+        "cancelled_at": {"type": "string", "format": "date-time", "nullable": True},
+        "data": {
+            "type": "object",
+            "nullable": True,
+            "additionalProperties": True,
+            "description": (
+                "The provider's answer — **the same object as the sibling "
+                "`data` below**. Read either one."
+            ),
+        },
+    },
+}
+
+#: What is owed and until when. Derived from the order, not a stored record:
+#: one order carries one amount, and the attempts at paying it live in
+#: ``/public/orders/{id}/transactions/`` (API.md §22).
+_PAYMENT_STATE: Final[dict[str, Any]] = {
+    "type": "object",
+    "description": (
+        "What the customer still owes, and until when. Derived from the "
+        "order — it is not a payment record. Starting a payment is a separate "
+        "call: `POST /public/orders/{id}/transactions/` (API.md §22)."
+    ),
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["pending", "paid"],
+            "description": "`pending` until the full amount has settled.",
+        },
+        "amount": {
+            "type": "object",
+            "nullable": True,
+            "description": "The same money as `order.amount`.",
+            "properties": {
+                "amount": {"type": "string"},
+                "currency": {"type": "string", "minLength": 3, "maxLength": 3},
+            },
+        },
+        "pay_before": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+            "description": (
+                "`order.ticket_time_limit_at`, unshortened. `null` when the "
+                "provider named no deadline."
+            ),
+        },
+    },
+    "required": ["status", "amount", "pay_before"],
+}
+
 FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     request_schema={
         "type": "object",
         "additionalProperties": True,
         "required": ["request_id", "offer_id"],
         "description": (
-            "Books the exact `offer_id` that `verify/` cleared. Only the two "
-            "identifiers are checked; passengers and everything else are "
-            "forwarded unchecked, because the GTS booking contract decides "
-            "which fields it needs." + _UNCONFIRMED
+            "Books the exact `offer_id` that `verify/` cleared — after "
+            "`upsell/`, the **branded fare's** id rather than the original."
+            "\n\n**Two mandatory headers.** `Authorization: Bearer …` for a "
+            "customer token (`aud: public`; an admin token answers `403`) and "
+            "`Idempotency-Key` — a fresh UUIDv4 per booking attempt. Without "
+            "the key the request is refused with `422`; the same key never "
+            "books twice (API.md §10)."
+            "\n\n**Only the two identifiers are checked by us.** Everything "
+            "else — passengers included — is forwarded unchecked, because the "
+            "GTS booking contract decides which fields it needs, and a "
+            "mismatch comes back as `502` with GTS's own message." + _UNCONFIRMED
         ),
         "properties": {
             **_OFFER_REF_PROPERTIES,
@@ -566,8 +821,10 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "save_passenger": {
                 "type": "boolean",
                 "description": (
-                    "Store these travellers on the customer's profile for next "
-                    "time (§19)."
+                    "⚠ **Not implemented.** It travels to GTS and stops there; "
+                    "the traveller is **not** added to the customer's saved "
+                    "passengers (§19). Send it if you like, but do not rely on "
+                    "it — use `POST /public/profile/passengers/` to save one."
                 ),
             },
         },
@@ -575,7 +832,8 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     # Recorded from the EASY_GATEWAY collection's ``/content/Booking`` — a
     # real call, not a composition. One adult, because that is the request
     # that was actually made; the passenger shape is the part worth copying.
-    # ``save_passenger`` is ours (§19) and rides along; GTS ignores it.
+    # ``save_passenger`` is left out: documenting an example that promises
+    # something the code does not do is how the field got believed in.
     request_example={
         "request_id": _REQUEST_ID,
         "offer_id": _OFFER_ID,
@@ -598,52 +856,36 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                 "phone": {"phone_code": "998", "phone_number": "998328192"},
             }
         ],
-        "save_passenger": True,
     },
     response_schema={
         "type": "object",
         "description": (
-            "Three keys. `order` is ours — the record the booking created, in "
-            "the shape `GET /public/orders/` uses (§21). `payment` is the "
-            "payment to make, and is `null` until the payment step is built. "
-            "`data` is GTS's answer, **verbatim and complete**: the route, the "
-            "segments and the fare rules live only there and are not lifted "
-            "out."
-            "\n\n**This endpoint requires an `Idempotency-Key` header** "
-            "(API.md §10). The same key never books twice; without one the "
-            "request is refused with `422`." + _UNCONFIRMED
+            "Three keys. `order` is **ours** — the record this booking wrote, "
+            "in the shape `GET /public/orders/{id}/` uses (§21); its `id` is "
+            "what every later call takes. `payment` says what is owed and "
+            "until when. `data` is GTS's answer, **verbatim and complete**: "
+            "the route, the segments and the fare rules live only there and "
+            "are not lifted out."
+            "\n\n**Next call:** `POST /public/orders/{id}/transactions/` "
+            "(§22). An unpaid order lapses at `order.ticket_time_limit_at`."
+            "\n\n`order` and `payment` are ours and settled." + _UNCONFIRMED
         ),
         "properties": {
-            "order": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": (
-                    "The order, as `/public/orders/{id}/` reports it — `id`, "
-                    "`order_no`, our canonical `status`, `amount`, "
-                    "`travelers`, `ticket_time_limit_at` and the provider's "
-                    "identifiers (API.md §21)."
-                ),
-            },
-            "payment": {
+            "order": _BOOKED_ORDER,
+            "payment": _PAYMENT_STATE,
+            "data": {
                 "type": "object",
                 "nullable": True,
                 "additionalProperties": True,
                 "description": (
-                    "`null` for now. The payment slice fills it, and the shape "
-                    "around it does not change when it does."
-                ),
-            },
-            "data": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": (
-                    "GTS's booking answer, verbatim. **No field of ours is added** — "
-                    "not even the id of the order this writes. The booking is filed "
-                    "under the signed-in customer and read back through "
-                    "`GET /public/orders/` (§21); `payment_id` arrives with the saga."
+                    "GTS's booking answer, verbatim. **No field of ours is added.**"
                     "\n\n**Mind the second `data`.** The order's own fields are one "
                     "level down, under `data` — what you see here is GTS's wrapper "
-                    "around it." + _UNCONFIRMED
+                    "around it. There is no `search_status` here: booking has no "
+                    '"In process" state.'
+                    "\n\n`null` on an order that has no answer yet — an "
+                    "idempotent replay of a request whose first attempt is "
+                    "still in flight." + _UNCONFIRMED
                 ),
                 "properties": {
                     "message": {
@@ -662,10 +904,9 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                             "order_number": {
                                 "type": "integer",
                                 "description": (
-                                    "GTS's order number — **the handle `cancel/` "
-                                    "takes**. An integer here; `/public/orders/` "
-                                    "reports it as the string `gts_order_number` "
-                                    "(API.md §1)."
+                                    "GTS's order number. An integer here; we "
+                                    "publish it as the string "
+                                    "`order.provider_order_number` (API.md §1)."
                                 ),
                             },
                             "order_uid": {
@@ -700,7 +941,13 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                             },
                             "ticket_time_limit": {
                                 "type": "integer",
-                                "description": "Seconds until the hold lapses.",
+                                "description": (
+                                    "How long the hold lasts. Read it from "
+                                    "`order.ticket_time_limit_at` instead — the "
+                                    "unit here is not documented and three "
+                                    "spellings have been seen "
+                                    "(order-system/03-design.md Q1)."
+                                ),
                             },
                             "refundable": {"type": "boolean"},
                             "trip_type": _TRIP_TYPE,
@@ -726,7 +973,9 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                                 "description": (
                                     "The travellers as GTS recorded them — note the "
                                     "names differ again (`firstname`, `lastname`, "
-                                    "`document.passport_number`)."
+                                    "`document.passport_number`). Read "
+                                    "`order.travelers` instead unless you need "
+                                    "something only GTS carries."
                                 ),
                             },
                         },
@@ -734,6 +983,7 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                 },
             },
         },
+        "required": ["order", "payment", "data"],
     },
     # Trimmed to the fields worth naming; the recorded answer also carries
     # routes, fares, baggage and supplier keys, all of which pass through.
@@ -745,10 +995,43 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "status": "booked",
             "provider_status": "BO",
             "provider_order_number": "61453",
+            "provider_order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
             "provider_pnr": "UBPLKW",
             "amount": {"amount": "52.39", "currency": "EUR"},
+            "travelers": [
+                {
+                    "position": 1,
+                    "type": "ADT",
+                    "first_name": "Azimjon",
+                    "last_name": "Yusufov",
+                    "middle_name": "Kamoliddin",
+                    "birth_date": "2002-12-20",
+                    "gender": "M",
+                    "citizenship": "UZ",
+                    "document": {
+                        "type": "PSP",
+                        "number": "FA2145157",
+                        "issue_date": "2019-05-30",
+                        "expire_date": "2029-05-29",
+                    },
+                    "email": "yusufovazimjon@gmail.com",
+                    "phone": "998998328192",
+                    "provider_traveler_id": "1",
+                    "ticket_number": None,
+                    "anonymized_at": None,
+                }
+            ],
+            "ticket_time_limit_at": "2026-08-21T09:14:22Z",
+            "route_summary": "TAS → IST",
+            "booked_at": "2026-08-18T09:14:22Z",
+            "paid_at": None,
+            "ticketed_at": None,
         },
-        "payment": None,
+        "payment": {
+            "status": "pending",
+            "amount": {"amount": "52.39", "currency": "EUR"},
+            "pay_before": "2026-08-21T09:14:22Z",
+        },
         "data": {
             "message": "booked",
             "request_id": _REQUEST_ID,
