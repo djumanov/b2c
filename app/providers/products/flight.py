@@ -36,7 +36,7 @@ from typing import Any, Final
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.errors import UpstreamError, ValidationFailed
+from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
 from app.core.money import Money, quantize, to_decimal
 from app.modules.orders.states import OrderStatus
 from app.providers.gts.base import GtsClient, GtsTimeouts
@@ -44,6 +44,9 @@ from app.providers.products.base import FlowStep, ProductCode
 from app.providers.products.orders import (
     BookingResult,
     CancelResult,
+    FailureClass,
+    RepriceResult,
+    TicketingResult,
     TravelerRef,
     UnreadableAnswer,
 )
@@ -73,6 +76,24 @@ _STATUS_MAP: Final[Mapping[str, OrderStatus]] = {
 #: deadlines under exactly one reading each, and this threshold separates them
 #: (order-system/03-design.md §3.10, Q1).
 _MINUTES_CEILING: Final = 10_000
+
+#: What an empty agreement balance sounds like. Recorded verbatim from GTS's
+#: own error convention (GTS.md §10) — ``"BOOKING: save_booking 403: user don't
+#: have enough credits on account"``. It is a failure of *ours*, not the
+#: customer's, so it is kept apart from the rest (``O5``).
+_DEPOSIT_PHRASES: Final = ("enough credits", "insufficient balance", "balance is low")
+
+#: Failures worth trying again. Short and conservative on purpose: an
+#: unrecognised message is treated as terminal, because refunding a customer for
+#: a reason nobody understands is recoverable and retrying past the hold is not.
+_RETRYABLE_PHRASES: Final = (
+    "timeout",
+    "timed out",
+    "temporarily",
+    "try again",
+    "service unavailable",
+    "too many requests",
+)
 
 #: ``UTC+5``, ``UTC-03:30``, ``UTC+0`` — what GTS puts in ``departure_timezone``
 #: when it puts anything at all.
@@ -136,6 +157,20 @@ def _validated(model: type[BaseModel], payload: dict[str, Any]) -> None:
         raise ValidationFailed(first["msg"], field=field) from exc
 
 
+def _number(order_number: str) -> int | str:
+    """GTS's ``order_number`` as GTS spells it.
+
+    An integer upstream and text on our side (API.md §1), and the collection's
+    bodies send the integer. A value that will not convert is passed through
+    rather than rejected: it came out of the provider's own answer, and the
+    provider is the one entitled to say what it means.
+    """
+    try:
+        return int(order_number)
+    except ValueError:
+        return order_number
+
+
 def _order_body(response: Mapping[str, Any]) -> Mapping[str, Any]:
     """The order itself, out of GTS's two-layer booking answer.
 
@@ -144,12 +179,18 @@ def _order_body(response: Mapping[str, Any]) -> Mapping[str, Any]:
     order's own fields sit under that inner ``data`` (EASY_GATEWAY collection,
     ``/content/Booking``).
 
-    Falling back to the response itself is not politeness: an older shape in the
-    same collection returns the order flat, and reading a flat answer wrongly
-    costs nothing while missing a nested one costs the ability to cancel.
+    ``order`` is tried after ``data`` because the collection is not consistent
+    with itself: ``booking`` nests the order under ``data`` and ``ticketing``
+    puts it under ``order``. Falling back to the response itself is not
+    politeness either — an older shape returns the order flat, and reading a
+    flat answer wrongly costs nothing while missing a nested one costs the
+    ability to cancel.
     """
-    inner = response.get("data")
-    return inner if isinstance(inner, dict) else response
+    for key in ("data", "order"):
+        inner = response.get(key)
+        if isinstance(inner, dict):
+            return inner
+    return response
 
 
 def _text(source: Mapping[str, Any], *keys: str, limit: int) -> str | None:
@@ -505,6 +546,70 @@ class FlightAdapter:
         return CancelResult(
             provider_status=_text(_order_body(raw), "status", limit=16), raw=raw
         )
+
+    async def reprice(self, client: GtsClient, order_number: str) -> RepriceResult:
+        """Ask what the reservation costs now.
+
+        ``reprice_check`` reads; it does not commit anything. Whether GTS also
+        needs ``reprice_confirm`` before it will ticket at the new price is not
+        written down anywhere we control and has not been seen live
+        (order-system/03-design.md §3.10, Q4) — so this asks, and the caller
+        decides whether the answer is acceptable.
+        """
+        envelope = await client.post_envelope(
+            "/v1/content/reprice_check/",
+            json={"order_number": _number(order_number)},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        total = _money(_order_body(envelope))
+        if total is None:
+            raise UnreadableAnswer(
+                "the GTS reprice answer names no price", raw=envelope
+            )
+        return RepriceResult(total=total, raw=envelope)
+
+    async def ticket(self, client: GtsClient, order_number: str) -> TicketingResult:
+        """Issue the tickets, paid from the installation's GTS deposit.
+
+        ``post_envelope`` and not ``post``: the recorded answer puts the order
+        under **``order``**, not ``data``, and the bare-``data`` reader would
+        turn a successful ticketing into a ``502``. Reading the whole envelope
+        costs nothing and survives either spelling — the same fix ``cancel``
+        needs and will get with its own slice (STATUS.md §8.15a).
+
+        ``payment_method: "deposit"`` is the only value the collection records:
+        GTS charges the agreement's balance, so an empty one is *our*
+        accounting problem and ``classify`` keeps it apart from a customer's.
+        """
+        envelope = await client.post_envelope(
+            "/v1/content/ticketing/",
+            json={"order_number": _number(order_number), "payment_method": "deposit"},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        body = _order_body(envelope)
+        code = _text(body, "status", limit=16)
+        return TicketingResult(
+            provider_status=code,
+            status=_STATUS_MAP.get(code or "", OrderStatus.TICKETED),
+            travelers=_travelers(body, {}),
+            raw=envelope,
+        )
+
+    def classify(self, failure: AppError) -> FailureClass:
+        """Which kind of "no" this was.
+
+        Everything unrecognised is **terminal**, and that direction is
+        deliberate: refunding a customer for a failure nobody understands is
+        recoverable, while retrying one forever until the hold lapses is not.
+        """
+        if isinstance(failure, UpstreamTimeout):
+            return FailureClass.RETRYABLE
+        message = str(failure).lower()
+        if any(phrase in message for phrase in _DEPOSIT_PHRASES):
+            return FailureClass.DEPOSIT
+        if any(phrase in message for phrase in _RETRYABLE_PHRASES):
+            return FailureClass.RETRYABLE
+        return FailureClass.TERMINAL
 
     def status_map(self) -> Mapping[str, OrderStatus]:
         return _STATUS_MAP

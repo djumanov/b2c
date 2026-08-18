@@ -1614,6 +1614,7 @@ bo'limi ko'rinmaydi, integratsiya kalitlari va tizim ekranlari faqat o'qish reji
 | `GET` `PATCH` | `/admin/settings/currencies/` | `admin` | Asosiy valyuta va ko'rsatiladigan valyutalar |
 | CRUD | `/admin/settings/menu/` | `admin` | Menyu elementlari (ierarxik) — **§41** |
 | `GET` `PATCH` | `/admin/settings/features/` | `GET` `admin` · `PATCH` **`owner`** | Bo'limlarni yoqish/o'chirish (blog, sharhlar, …) |
+| `GET` `PATCH` | `/admin/settings/orders/` | `admin` | Chipta chiqarish sozlamalari — zaxira vaqt, qayta narxlash tolerantligi |
 | `GET` | `/admin/settings/products/` | — | Yoqilgan mahsulot vertikallari — **faqat o'qish** |
 | `POST` | `/admin/settings/cache/purge/` | `admin` | `site-config` keshini tozalash |
 
@@ -1623,6 +1624,24 @@ PATCH /admin/settings/branding/
 ```
 
 O'zgarish saqlanganda `public/site-config/` keshi avtomatik tozalanadi.
+
+```json
+GET /admin/settings/orders/
+→ { "data": { "ticket_margin_minutes": 30,
+              "reprice_tolerance": "0.00",
+              "hold_fallback_minutes": 180 } }
+```
+
+| Maydon | Nima |
+|---|---|
+| `ticket_margin_minutes` | Provayderning muddatidan qancha oldin chipta chiqarish tugagan bo'lishi kerak. Qayta urinishlar shu chegaraga qadar davom etadi, muddatning o'ziga qadar emas |
+| `reprice_tolerance` | To'lov bilan chipta orasida tarif qanchagacha qimmatlashsa ham chipta chiqariladi. `0` — har qanday oshish chiptani to'xtatadi va pul qaytariladi |
+| `hold_fallback_minutes` | Provayder muddat aytmagan bo'lsa, to'lanmagan buyurtma qancha ochiq turadi. Bu ularning qoidasi haqidagi taxmin emas — **bizning** chegaramiz |
+
+Uchalasi ham `PROJECT.md` §7 ning "ikki client turli qiymat xohlashi mumkinmi?"
+savoliga ha deb javob beradi: uzoq yo'nalish sotadigan agentlik keng zaxira
+vaqt xohlaydi, kichik tarif tebranishini o'z marjasidan yopadigan agentlik esa
+noldan katta tolerantlik.
 
 > `settings/products/` faqat o'qish uchun: qaysi vertikallar sotilishi GTS shartnomasi bilan
 > belgilanadi. Panel ularni ko'rsatadi, o'zgartira olmaydi — sabab

@@ -24,7 +24,7 @@ lost either way.
 
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -67,12 +67,17 @@ from app.modules.orders.states import (
 )
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
+from app.modules.settings.schemas import OrderSettingsOut
 from app.providers.payments.base import (
     PaymentProviderCode,
     TransactionFlow,
     TransactionStatus,
 )
-from app.providers.products.orders import BookingResult, CancelResult
+from app.providers.products.orders import (
+    BookingResult,
+    CancelResult,
+    TicketingResult,
+)
 
 logger = get_logger(__name__)
 
@@ -678,6 +683,152 @@ async def owned_attempt(
     return order_payment
 
 
+# --- ticketing (order-system/03-design.md §3.7) ----------------------------------
+
+
+def ticket_deadline(order: Order, settings: OrderSettingsOut) -> datetime:
+    """The last moment ticketing may still be attempted.
+
+    Earlier than the provider's own deadline by the configured margin, because
+    a ticket bought a second before a hold lapses is a race nobody wins — and
+    the retries have to fit inside what is left.
+
+    A provider that named no deadline gets one of ours. That is not a guess at
+    *their* rule: it is a bound on how long an order may sit open here, which
+    is a thing we are entitled to decide (``hold_fallback_minutes``).
+    """
+    limit = order.ticket_time_limit_at
+    if limit is None:
+        started = order.paid_at or order.created_at
+        limit = started + timedelta(minutes=settings.hold_fallback_minutes)
+    return limit - timedelta(minutes=settings.ticket_margin_minutes)
+
+
+async def claim_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
+    """The order, locked, for a background step that is about to work on it.
+
+    A door rather than a peek at the repository: the ticketing task lives in
+    ``app/tasks`` and a module's repository is nobody else's to reach into
+    (ARCHITECTURE.md §4). ``None`` means the row is gone, which a task must
+    treat as "nothing to do" rather than as an error.
+    """
+    return await repository.lock_order(session, order_id)
+
+
+async def begin_ticketing(session: AsyncSession, order: Order) -> Order:
+    """T8. Only from ``paid`` — a run already under way just carries on."""
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_STARTED,
+    )
+
+
+async def retry_ticketing(
+    session: AsyncSession, order: Order, *, reason: str, when: datetime
+) -> Order:
+    """T9 — the retry loop, and the only self-transition in the machine.
+
+    ``attempts`` counts up rather than being passed in, so the schedule cannot
+    disagree with the history about which try this was.
+    """
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_RETRY,
+        reason=reason,
+        next_attempt_at=when,
+    )
+
+
+async def finish_ticketing(
+    session: AsyncSession, order: Order, result: TicketingResult
+) -> Order:
+    """T10, or T10x when only some of the tickets came out.
+
+    Ticket numbers are merged onto the travellers already stored rather than
+    replacing them: the booking answer carried document dates and contacts that
+    a ticketing answer has no reason to repeat, and overwriting the list would
+    quietly lose them.
+
+    **Every traveller or none.** A partial issue is not a smaller success — the
+    order has some tickets and some passengers without one, and nothing
+    automatic can put that right.
+    """
+    issued = {
+        traveler.position: traveler.ticket_number
+        for traveler in result.travelers
+        if traveler.ticket_number
+    }
+    travelers = [
+        {**person, "ticket_number": issued.get(index, person.get("ticket_number"))}
+        for index, person in enumerate(order.travelers, start=1)
+    ]
+    missing = [person for person in travelers if not person.get("ticket_number")]
+
+    if missing or not travelers:
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.NEEDS_ATTENTION,
+            actor=Actor.system("orders.ticket"),
+            action=EventAction.TICKETING_PARTIAL,
+            reason=f"{len(missing)} of {len(travelers)} travellers have no ticket",
+            meta=result.raw,
+            fields={
+                "travelers": travelers,
+                "provider_status": result.provider_status,
+                "provider_response": result.raw,
+                "attention_reason": "partial_ticketing",
+            },
+        )
+
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.TICKETED,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_SUCCEEDED,
+        meta=result.raw,
+        fields={
+            "travelers": travelers,
+            "provider_status": result.provider_status,
+            "provider_response": result.raw,
+        },
+    )
+
+
+async def send_to_refund(
+    session: AsyncSession, order: Order, *, reason: str, failure: str | None = None
+) -> Order:
+    """T11 — ticketing is not going to happen and the money must go back.
+
+    **No ``next_attempt_at``.** The refund itself is the next slice; until then
+    an order that lands here is money taken and no ticket issued, which is a
+    thing a person has to finish. It is logged at ``ERROR`` for that reason
+    rather than left to be noticed.
+    """
+    logger.error(
+        "order_awaiting_manual_refund",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        reason=reason,
+    )
+    return await transition(
+        session,
+        order.id,
+        to=OrderStatus.REFUNDING,
+        actor=Actor.system("orders.ticket"),
+        action=EventAction.TICKETING_FAILED,
+        reason=reason,
+        fields={"failure_message": failure or reason},
+    )
+
+
 # --- what the customer reads ----------------------------------------------------
 
 
@@ -721,10 +872,13 @@ __all__ = [
     "abandon_attempt",
     "apply_cancel",
     "attach_redirect",
+    "begin_ticketing",
     "booking_answer",
+    "claim_order",
     "confirm_booking",
     "ensure_cancellable",
     "fail_booking",
+    "finish_ticketing",
     "get_order",
     "list_orders",
     "owned_attempt",
@@ -732,9 +886,12 @@ __all__ = [
     "owned_order",
     "payment_state",
     "record_unreadable_booking",
+    "retry_ticketing",
+    "send_to_refund",
     "settle_attempt",
     "start_attempt",
     "start_order",
     "start_transaction",
+    "ticket_deadline",
     "transition",
 ]

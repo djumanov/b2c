@@ -636,8 +636,15 @@ Outbox jadvali ham, dispatcher ham yo'q. O'rniga:
 
 * holat o'zgarganda, keyingi qadam kerak bo'lsa, **o'sha tranzaksiyada**
   `next_attempt_at` qo'yiladi;
-* commitdan **keyin** task darhol yuboriladi — tezlik uchun, "best effort";
-* `orders.run_due` beat har 30 soniyada muddati kelganlarni yig'ib oladi.
+* `orders.run_due` beat har 30 soniyada muddati kelganlarni yig'ib oladi va
+  taskni yuboradi.
+
+> **To'g'ridan-to'g'ri yuborish rejadan chiqarildi (2026-08-18).** Dastlab
+> commitdan keyin task darhol ham yuborilishi ko'zda tutilgan edi. Amalda bu
+> Celery brokerini **webhook javobining kritik yo'liga** qo'yardi: broker
+> ishlamasa, pul yechilgandan keyin provayderga xato qaytarardik. Yutuq esa
+> ko'pi bilan 30 soniya kechikish — mijoz ekranida baribir "chipta
+> chiqarilmoqda" turadi. Supurgich yagona dispetcher bo'lib qoldi.
 
 ```sql
 SELECT * FROM orders

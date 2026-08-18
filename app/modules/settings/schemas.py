@@ -12,6 +12,7 @@ field its own empty value: a colour is removed by omitting it from the object.
 
 import re
 import uuid
+from decimal import Decimal
 from typing import Annotated, Any
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -134,6 +135,23 @@ class LanguagesIn(BaseModel):
         if value is not None and value not in SUPPORTED_LANGUAGES:
             raise ValueError(f"unsupported language: {value}")
         return value
+
+
+class OrderSettingsOut(BaseModel):
+    """The ticketing dials (API.md §28)."""
+
+    #: Minutes before the provider's deadline that ticketing must be done by.
+    ticket_margin_minutes: int
+    #: How much dearer a fare may become between paying and ticketing.
+    reprice_tolerance: Decimal
+    #: How long an unpaid order is held when the provider states no deadline.
+    hold_fallback_minutes: int
+
+
+class OrderSettingsIn(BaseModel):
+    ticket_margin_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
+    reprice_tolerance: Decimal | None = Field(default=None, ge=0)
+    hold_fallback_minutes: int | None = Field(default=None, gt=0, le=7 * 24 * 60)
 
 
 class CurrenciesOut(BaseModel):

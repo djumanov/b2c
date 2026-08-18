@@ -32,13 +32,21 @@ class RecordingClient:
     """A ``GtsClient`` that remembers the one call made through it.
 
     ``post`` answers with the bare data (like the real client); a caller of
-    ``post_envelope`` gets the same data wrapped in a GTS envelope whose
-    status is ``self.status``.
+    ``post_envelope`` gets the same data wrapped in a GTS envelope whose status
+    is ``self.status``.
+
+    ``envelope=False`` turns that wrapping off, for the recorded answers that
+    **are** the envelope — ticketing puts the order under ``order`` beside its
+    own ``status``, and wrapping one of those again would test a shape GTS
+    never sends.
     """
 
-    def __init__(self, data: dict[str, Any], *, status: str = "success") -> None:
+    def __init__(
+        self, data: dict[str, Any], *, status: str = "success", envelope: bool = True
+    ) -> None:
         self.data = data
         self.status = status
+        self.envelope = envelope
         self.calls: list[tuple[str, dict[str, Any], float | None]] = []
 
     async def get(
@@ -60,6 +68,8 @@ class RecordingClient:
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:
         self.calls.append((path, json, timeout))
+        if not self.envelope:
+            return self.data
         return {"status": self.status, "message": "…", "code": 0, "data": self.data}
 
 

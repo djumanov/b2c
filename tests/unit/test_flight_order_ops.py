@@ -18,9 +18,14 @@ from typing import Any
 
 import pytest
 
+from app.api.errors import UpstreamError, UpstreamTimeout
 from app.modules.orders.states import OrderStatus
 from app.providers.products.flight import FlightAdapter
-from app.providers.products.orders import OrderOperations, UnreadableAnswer
+from app.providers.products.orders import (
+    FailureClass,
+    OrderOperations,
+    UnreadableAnswer,
+)
 from tests.unit.test_flight_adapter import RecordingClient
 
 BOOKING_REQUEST: dict[str, Any] = {
@@ -436,3 +441,113 @@ async def test_cancelling_needs_nothing_from_the_answer() -> None:
     result = await FlightAdapter().cancel(RecordingClient({}), {"order_number": 1})
 
     assert result.provider_status is None
+
+
+# --- repricing and ticketing ---------------------------------------------------
+
+
+GTS_TICKETED: dict[str, Any] = {
+    "status": "success",
+    "code": 100,
+    # **``order``, not ``data``.** The recorded ticketing answer nests the order
+    # under a different key than booking does, and the bare-``data`` reader
+    # would call a successful ticketing a 502 (STATUS.md §8.15a).
+    "order": {
+        "status": "TI",
+        "passengers": [
+            {
+                "passenger_type": "ADT",
+                "first_name": "AZIMJON",
+                "last_name": "YUSUFOV",
+                "passenger_id": "4faa37bc-91d1-4da1-ba3d-b22ef8ec8802",
+                "ticket_number": "7653081297644",
+            }
+        ],
+    },
+}
+
+
+async def test_ticketing_reads_the_order_out_of_its_own_key() -> None:
+    client = RecordingClient(GTS_TICKETED, envelope=False)
+
+    result = await FlightAdapter().ticket(client, "61453")
+
+    path, sent, timeout = client.calls[0]
+    assert path == "/v1/content/ticketing/"
+    # The integer GTS spells it with, and the deposit it charges.
+    assert sent == {"order_number": 61453, "payment_method": "deposit"}
+    assert result.provider_status == "TI"
+    assert result.status is OrderStatus.TICKETED
+    (traveler,) = result.travelers
+    assert traveler.ticket_number == "7653081297644"
+    assert traveler.last_name == "YUSUFOV"
+
+
+async def test_repricing_reads_what_the_order_costs_now() -> None:
+    client = RecordingClient(
+        {
+            "status": "success",
+            "code": 200,
+            "data": {"price_info": {"price": 243.28, "currency": "UZS"}},
+        },
+        envelope=False,
+    )
+
+    result = await FlightAdapter().reprice(client, "430")
+
+    assert client.calls[0][0] == "/v1/content/reprice_check/"
+    assert client.calls[0][1] == {"order_number": 430}
+    assert result.total.amount == Decimal("243.28")
+    assert result.total.currency == "UZS"
+
+
+async def test_a_reprice_that_names_no_price_is_refused() -> None:
+    client = RecordingClient({"status": "success", "data": {}}, envelope=False)
+
+    with pytest.raises(UnreadableAnswer):
+        await FlightAdapter().reprice(client, "430")
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        pytest.param(
+            UpstreamTimeout("GTS did not answer in time"),
+            FailureClass.RETRYABLE,
+            id="timeout",
+        ),
+        pytest.param(
+            UpstreamError(
+                "BOOKING: save_booking 403: user don't have enough credits on account"
+            ),
+            FailureClass.DEPOSIT,
+            id="our-own-balance",
+        ),
+        pytest.param(
+            UpstreamError("Service temporarily unavailable"),
+            FailureClass.RETRYABLE,
+            id="upstream-busy",
+        ),
+        pytest.param(
+            UpstreamError("Fare is no longer available"),
+            FailureClass.TERMINAL,
+            id="fare-gone",
+        ),
+        pytest.param(
+            UpstreamError("something nobody has seen before"),
+            FailureClass.TERMINAL,
+            id="unrecognised-is-terminal",
+        ),
+    ],
+)
+async def test_failures_are_sorted_into_retry_alarm_or_give_up(
+    failure: Any, expected: FailureClass
+) -> None:
+    """An empty deposit and a fare that no longer exists are both "no ticket",
+    and treating them the same would refund a whole day of customers for an
+    accounting problem a top-up fixes in a minute (``O5``).
+
+    Unrecognised is **terminal** on purpose: refunding for a reason nobody
+    understands is recoverable, retrying past the hold is not.
+    """
+    assert FlightAdapter().classify(failure) is expected

@@ -44,7 +44,8 @@ from app.modules.integrations import service as integrations_service
 from app.modules.orders import service as orders_service
 from app.providers.gts.base import GtsClient
 from app.providers.gts.client import client_for
-from app.providers.products.base import ProductAdapter, ProductCode
+from app.providers.products.base import ProductAdapter, ProductCode, registry
+from app.providers.products.flight import FlightAdapter
 from app.providers.products.orders import (
     OrderOperations,
     UnreadableAnswer,
@@ -54,7 +55,14 @@ from app.providers.products.orders import (
 logger = get_logger(__name__)
 
 
-async def _client(session: AsyncSession) -> GtsClient:
+# One line per vertical, and it lives **here** rather than beside the router.
+# A Celery worker never imports a router, so an adapter registered there is
+# missing from every background step — which is where ticketing runs. The
+# router imports this module, so both surfaces get the same registry.
+registry.register(FlightAdapter())
+
+
+async def gts_client(session: AsyncSession) -> GtsClient:
     credential = await integrations_service.active_credential(session)
     if credential is None:
         raise UpstreamError(
@@ -70,7 +78,7 @@ async def search(
     *,
     requested: str | None = None,
 ) -> dict[str, Any]:
-    data = await adapter.search(await _client(session), payload)
+    data = await adapter.search(await gts_client(session), payload)
     if adapter.code != ProductCode.FLIGHT:
         return data
     # Our one addition to the passthrough (API.md §20): a random published
@@ -84,19 +92,19 @@ async def search(
 async def offers(
     session: AsyncSession, adapter: ProductAdapter, params: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.offers(await _client(session), params)
+    return await adapter.offers(await gts_client(session), params)
 
 
 async def upsell(
     session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.upsell(await _client(session), payload)
+    return await adapter.upsell(await gts_client(session), payload)
 
 
 async def verify(
     session: AsyncSession, adapter: ProductAdapter, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    return await adapter.verify(await _client(session), payload)
+    return await adapter.verify(await gts_client(session), payload)
 
 
 def _order_ops(adapter: ProductAdapter) -> OrderOperations:
@@ -144,7 +152,7 @@ async def book(
       kept: a seat is probably held and a retry must not open a second one.
     """
     ops = _order_ops(adapter)
-    client = await _client(session)
+    client = await gts_client(session)
     order, is_new = await orders_service.start_order(
         session,
         customer_id=customer_id,
@@ -210,9 +218,17 @@ async def cancel(
     # call would release a real seat and then answer 409 — the one ordering of
     # these two steps that costs money.
     orders_service.ensure_cancellable(order)
-    result = await ops.cancel(await _client(session), payload)
+    result = await ops.cancel(await gts_client(session), payload)
     await orders_service.apply_cancel(session, order, result)
     return result.raw
 
 
-__all__ = ["book", "cancel", "offers", "search", "upsell", "verify"]
+__all__ = [
+    "book",
+    "cancel",
+    "gts_client",
+    "offers",
+    "search",
+    "upsell",
+    "verify",
+]

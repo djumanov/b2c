@@ -10,6 +10,7 @@ a predefined list" — the site ships the faces, so a free-text value would name
 one the browser cannot load.
 """
 
+from decimal import Decimal
 from typing import Final
 
 from app.core.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
@@ -79,14 +80,30 @@ FEATURE_DEFAULTS: Final[dict[str, bool]] = {
 LOCKED_FEATURES: Final[frozenset[str]] = frozenset({"loyalty"})
 
 
+#: The ticketing dials an installation starts with (API.md §28).
+#:
+#: Thirty minutes of margin because a ticketing run that has to be retried
+#: needs room for several attempts before the hold lapses, and a zero
+#: tolerance because absorbing a fare increase out of margin is a commercial
+#: choice a client makes deliberately, not one a default makes for them.
+DEFAULT_TICKET_MARGIN_MINUTES: Final = 30
+DEFAULT_REPRICE_TOLERANCE: Final = Decimal("0")
+#: How long an unpaid order is held when the provider names no deadline. Three
+#: hours is short enough that a lapsed hold is noticed the same day.
+DEFAULT_HOLD_FALLBACK_MINUTES: Final = 180
+
+
 __all__ = [
     "COLOR_KEYS",
     "DEFAULT_COLORS",
     "DEFAULT_CURRENCIES",
     "DEFAULT_CURRENCY",
     "DEFAULT_FONT",
+    "DEFAULT_HOLD_FALLBACK_MINUTES",
     "DEFAULT_LANGUAGE",
     "DEFAULT_LANGUAGES",
+    "DEFAULT_REPRICE_TOLERANCE",
+    "DEFAULT_TICKET_MARGIN_MINUTES",
     "FEATURE_DEFAULTS",
     "FONT_CHOICES",
     "LOCKED_FEATURES",

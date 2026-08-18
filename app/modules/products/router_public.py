@@ -58,13 +58,13 @@ from app.modules.products.openapi import (
 )
 from app.modules.settings import service as settings_service
 from app.providers.products.base import FlowStep, ProductAdapter, registry
-from app.providers.products.flight import FlightAdapter
 
 router = enveloped_router(prefix="/{product}", tags=["products"])
 
-# One line per vertical, beside the router that serves it: the route cannot
-# exist without its adapter, and phase 3 is four more of these lines.
-registry.register(FlightAdapter())
+# The vertical registry is populated by ``products.service``, which this module
+# imports. It moved there when ticketing arrived: a Celery worker never imports
+# a router, so an adapter registered here would be missing from every
+# background step.
 
 
 class RequireProductStep:

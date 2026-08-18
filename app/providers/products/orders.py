@@ -29,8 +29,10 @@ for the same reason: a module's *published vocabulary* is not its ``models.py``
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from app.api.errors import AppError
 from app.core.money import Money
 from app.modules.orders.states import OrderStatus
 from app.providers.gts.base import GtsClient
@@ -158,6 +160,53 @@ class CancelResult:
     raw: dict[str, Any]
 
 
+class FailureClass(StrEnum):
+    """What kind of "no" the provider said, which decides what happens next.
+
+    The distinction is the point of ``O5``. An empty deposit balance and a fare
+    that no longer exists are both failures to issue a ticket, and treating them
+    the same would refund every customer of the day for an accounting problem
+    that a top-up fixes in a minute.
+    """
+
+    #: Try again — the provider was busy, slow, or briefly unreachable.
+    RETRYABLE = "retryable"
+    #: Retryable, and **ours**: our own balance at the provider is empty. Kept
+    #: apart so it can raise an alarm nobody confuses with a customer's problem.
+    DEPOSIT = "deposit"
+    #: There is nothing to try again. The fare is gone, the flight is not, or
+    #: the provider refused outright.
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True, slots=True)
+class TicketingResult:
+    """Tickets, issued.
+
+    Travellers come back whole rather than as bare numbers: the provider is the
+    only place a ticket number exists, and reading the answer's own passenger
+    list is the only way to be sure whose it is.
+    """
+
+    provider_status: str | None
+    status: OrderStatus
+    travelers: tuple[TravelerRef, ...]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RepriceResult:
+    """What the provider says the order costs **now**.
+
+    Asked before ticketing because the answer can differ from what the customer
+    already paid, and buying a ticket at a price nobody agreed to is worse than
+    not buying one (``O6``).
+    """
+
+    total: Money
+    raw: dict[str, Any]
+
+
 @runtime_checkable
 class OrderOperations(Protocol):
     """What a vertical must implement before its orders can be managed.
@@ -179,6 +228,27 @@ class OrderOperations(Protocol):
 
     async def cancel(self, client: GtsClient, payload: dict[str, Any]) -> CancelResult:
         """Release a reservation the provider is still holding."""
+        ...
+
+    async def reprice(self, client: GtsClient, order_number: str) -> RepriceResult:
+        """What the reservation costs now, before a ticket is bought."""
+        ...
+
+    async def ticket(self, client: GtsClient, order_number: str) -> TicketingResult:
+        """Issue the tickets.
+
+        Raises ``UpstreamError``/``UpstreamTimeout`` like every other call; what
+        the caller does about it is decided by ``classify``.
+        """
+        ...
+
+    def classify(self, failure: AppError) -> FailureClass:
+        """Sort a provider failure into retry, alarm, or give up.
+
+        On the adapter because the wording is the vertical's: GTS's flight
+        service says "user don't have enough credits on account" and nothing
+        outside this file should have to know that sentence.
+        """
         ...
 
     def status_map(self) -> Mapping[str, OrderStatus]:
@@ -203,6 +273,9 @@ def order_operations(adapter: ProductAdapter) -> OrderOperations | None:
 __all__ = [
     "BookingResult",
     "CancelResult",
+    "FailureClass",
+    "RepriceResult",
+    "TicketingResult",
     "OrderOperations",
     "TravelerRef",
     "UnreadableAnswer",

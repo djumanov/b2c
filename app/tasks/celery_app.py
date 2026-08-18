@@ -37,7 +37,7 @@ celery_app = Celery(
     "b2c",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.heartbeat", "app.tasks.uploads"],
+    include=["app.tasks.heartbeat", "app.tasks.orders", "app.tasks.uploads"],
 )
 
 celery_app.conf.update(
@@ -64,6 +64,20 @@ celery_app.conf.update(
 #   * refresh the static catalogues        -> modules/catalog
 #   * refresh currency rates               -> modules/catalog
 celery_app.conf.beat_schedule = {
+    # The money path's safety net. A step is scheduled in the same transaction
+    # as the state change that needs it and the task is also sent directly, so
+    # this sweep only ever picks up what the direct send lost — but it has to
+    # run often, because what it picks up is a customer waiting for a ticket
+    # (order-system/03-design.md §3.7).
+    #
+    # **No separate queue yet.** The design reserves a ``money`` queue so a
+    # long catalogue sync cannot starve ticketing; there is nothing to starve
+    # it today, and a routing rule the worker is not told to consume would
+    # strand these silently. It arrives with the first competing beat entry.
+    "orders-run-due-every-thirty-seconds": {
+        "task": "app.tasks.orders.run_due",
+        "schedule": 30.0,
+    },
     "heartbeat-every-five-minutes": {
         "task": "app.tasks.heartbeat.heartbeat",
         "schedule": 300.0,

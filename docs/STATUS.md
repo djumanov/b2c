@@ -136,10 +136,20 @@ kontrakt testlari.
 > yomon bo'lsa hech narsa o'zgarmaydi; summa mos kelmasa buyurtma
 > `needs_attention` ga tushadi. `payment_id` kontraktdan chiqdi — `API.md` §22
 > qayta yozildi.
-> Keyingisi — **S4b: Payme va Click adapterlari**, merchant hujjatlari va
-> sandbox kaliti kelganda. Hozir portda faqat chegarasi bor
-> (`verify_signature` / `signature_rejected` / `handle_callback`), ortida
-> haqiqiy protokol yo'q.
+> **S5 (ticketing) bajarildi 2026-08-18:** `OrderOperations` porti `ticket`,
+> `reprice` va `classify` bilan to'ldi; `app/tasks/orders.py` da `ticket` va
+> `run_due` (har 30 soniyalik supurgich); `order_settings` singleton'i va
+> `/admin/settings/orders/`. Ticketing GTS javobini `post_envelope` bilan
+> o'qiydi — yozib olingan javob buyurtmani `data` emas, **`order`** ostiga
+> qo'yadi, ya'ni `client.post()` muvaffaqiyatli ticketingni `502` qilardi
+> (§8.15a ning ticketing yarmi shu bilan yopildi; `cancel` yarmi S7 da).
+> Xato sinflari ishlaydi: bo'sh deposit — qayta urinish va alert, tarif
+> yo'qolgani — pul qaytarish. Chipta chiqmasa buyurtma `refunding` da qoladi va
+> **qo'lda** hal qilinadi — avtomatik kompensatsiya S6 da.
+>
+> Keyingi ikkitasi: **S4b — Payme va Click adapterlari** (merchant hujjatlari va
+> sandbox kaliti kelganda; hozir portda faqat chegarasi bor) va
+> **S6 — kompensatsiya va qaytarish**.
 
 To'liq reja — [PHASES.md](PHASES.md).
 
