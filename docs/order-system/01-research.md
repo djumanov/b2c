@@ -145,7 +145,7 @@ Shuning uchun:
 * **Order — yagona aggregate root.** Holat mashinasi unda, boshqa hech qayerda.
 * **Booking — order'ning provayderdagi aksi**, alohida jadval emas: uning
   identifikatorlari (`provider_order_number`, `pnr`, `ticket_time_limit_at`)
-  order ustunlarida, xom javobi esa snapshot'da yashaydi.
+  order ustunlarida, xom javobi esa hodisa jurnalida yashaydi.
 * **Payment — alohida entity**, chunki umri boshqa va kelajakda "keyin to'lash"
   mumkin.
 * **Ticket — yo'lovchiga biriktirilgan**, order'ga emas: bitta buyurtmada uchta
@@ -250,6 +250,15 @@ COMMIT;
 Kafolat **at-least-once**: dispatcher yuborgandan keyin, belgilashdan oldin
 o'lsa, task ikki marta ketadi. Shuning uchun keyingi band majburiy.
 
+**Yengil varianti — holat jadvalining o'zi navbat.** Alohida `outbox` jadvali
+o'rniga aggregate qatoriga `next_attempt_at` qo'yiladi va davriy ish muddati
+kelganlarni `FOR UPDATE SKIP LOCKED` bilan oladi. Kafolat bir xil — keyingi
+qadam holat o'zgarishi bilan bitta tranzaksiyada qayd etiladi — lekin jadval
+ham, dispatcher ham kam. Evaziga kechikish poll oralig'i bilan chegaralanadi
+va bitta aggregate bir vaqtda bitta kutayotgan qadamni ko'taradi. Ko'p turdagi
+yon ta'sir bir vaqtda navbatda tursa — outbox; pul yo'li chiziqli bo'lsa —
+holat ustuni yetarli.
+
 ### Idempotentlik — uch qavatda
 
 **"Exactly-once delivery" mavjud emas.** Mavjud bo'lgan narsa — at-least-once
@@ -259,7 +268,7 @@ yetkazish + idempotent qabul qiluvchi. Amalda uch qavat kerak:
 |---|---|---|
 | **HTTP** | Mijoz ikki marta bosdi, tarmoq javobni yo'qotdi | `Idempotency-Key` header, 24 soat saqlanadi |
 | **Baza** | Kesh yo'qoldi, ikkita worker parallel ketdi | `UNIQUE` cheklov (idempotency kaliti, provayder ref'i) |
-| **Task** | Outbox ikki marta yubordi, provayder webhook'ni takrorladi | Har bir task holatni tekshiradi: "allaqachon `ticketed` bo'lsa — hech nima qilma, muvaffaqiyat qaytar" |
+| **Task** | Navbat ikki marta yubordi, provayder webhook'ni takrorladi | Har bir task holatni tekshiradi: "allaqachon `ticketed` bo'lsa — hech nima qilma, muvaffaqiyat qaytar" |
 
 Faqat birinchi qavat bilan cheklanish keng tarqalgan xato: Redis'dagi
 idempotency yozuvi **kesh**, kafolat emas.
@@ -282,7 +291,7 @@ Har bir jiddiy buyurtma tizimi shu jadvalga javob berishi kerak:
 | 8 | **Bron muddati** to'lovsiz o'tdi | Muddat supurgichi bronni provayderda bo'shatadi va buyurtmani yopadi |
 | 9 | To'lov bilan ticketing orasida **narx o'zgardi** | Ticketingdan oldin qayta narxlash; farq tolerantlikdan oshsa — chipta chiqarilmaydi, pul qaytariladi |
 | 10 | Provayderdagi **balansimiz bo'sh** | Bu *bizning* operatsion nosozligimiz: retry + alert, avtomatik refund **emas** |
-| 11 | Worker commit bilan yuborish **orasida o'ldi** | Outbox uni qaytadan oladi |
+| 11 | Worker commit bilan yuborish **orasida o'ldi** | Qayd etilgan keyingi qadam uni qaytadan oladi |
 | 12 | Provayder buyurtma holatini **biz bilmagan holda** o'zgartirdi (masalan o'zi bekor qildi) | Ochiq buyurtmalarni davriy sinxronlash |
 
 10-band alohida e'tiborga loyiq: **hamma ticketing xatosi refundga olib
@@ -345,8 +354,9 @@ tashlanmaydi.
    sourcing'dan **ko'ra foydali**: mijoz "men boshqa narsa ko'rgandim" desa,
    kerak bo'ladigan dalil aynan o'sha xom javob.
 
-Shuning uchun: **status history + snapshot log**, event sourcing'siz. Bu
-qaror `03-design.md` da `O9` sifatida qayd etilgan.
+Shuning uchun: **status history**, va xom javob o'sha hodisaning ichida —
+alohida snapshot jadvalisiz. Bu qaror `03-design.md` da `O9` sifatida qayd
+etilgan.
 
 ---
 
@@ -358,9 +368,9 @@ qaror `03-design.md` da `O9` sifatida qayd etilgan.
 | X2 | Booking, payment, ticket — alohida umrga ega, alohida modellashtiriladi | §2 |
 | X3 | Bronning tashqarida belgilangan muddati bor; to'lov oynasi undan uzun bo'lolmaydi | §3, §6 |
 | X4 | "Chipta chiqarilmoqda" — foydalanuvchiga ko'rinadigan holat va berilgan va'da | §3, §5 |
-| X5 | Yon ta'sirlar outbox orqali; at-least-once + idempotent qabul | §6 |
+| X5 | Keyingi qadam holat bilan **bitta tranzaksiyada** qayd etiladi; at-least-once + idempotent qabul | §6 |
 | X6 | Idempotentlik uch qavatda: HTTP, baza, task | §7 |
 | X7 | Ticketing xatolari sinflanadi: vaqtinchalik ≠ yakuniy | §3, §6 |
 | X8 | Kompensatsiyaning oxiri — odam (`needs_attention`) | §3 |
 | X9 | Solishtirish poydevor, webhook optimallashtirish | §6 |
-| X10 | Event sourcing emas — status history + snapshot | §4 |
+| X10 | Event sourcing emas — status history, xom javob hodisa ichida | §4 |
