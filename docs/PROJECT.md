@@ -275,7 +275,7 @@ Batafsil asoslar — [ARCHITECTURE.md](ARCHITECTURE.md) §2.
 |---|---|
 | **D1** | GTS bilan aloqa — **o'rnatmaning o'z GTS agent akkaunti** orqali. Akkaunt bittadan ko'p saqlanadi, bittasi aktiv ([API.md](API.md) §29); credential DB'da, shifrlangan. ⚠ Mashina akkaunti uchun GTS tomondagi ikki bosqichli tasdiq o'chirilishi kerak — bu akkaunt bayrog'i (`two_factory`), ya'ni **GTS tomondagi sozlama** ([GTS.md](GTS.md) §3) |
 | **D2** | Qidiruv takliflari **keshlanmaydi**; qidiruv **to'liq holatsiz**. GTS `request_id` bo'yicha o'z keshini yuritadi, biz uni takrorlamaymiz — `offers/` GTS'ga passthrough qilinadi. Evaziga saralash va filtr GTS imkoniyati bilan chegaralanadi |
-| **D3** | **Bron → to'lov → avtomatik chipta.** Chipta chiqmasa — avtomatik qaytarish; qaytarish ham bajarilmasa buyurtma `needs_attention` holatiga tushadi va panelda ko'rinadi |
+| **D3** | **Bron → to'lov → avtomatik chipta.** Chipta chiqmasa — avtomatik qaytarish; qaytarish ham bajarilmasa buyurtma `needs_attention` holatiga tushadi va panelda ko'rinadi | *(Aniqlashtirildi: ticketing xatolari sinflanadi — vaqtinchalik xato qayta urinishga, yakuniy xato qaytarishga olib keladi. [`order-system/03-design.md`](order-system/03-design.md) `O5`)*
 | **D4** | Xarid uchun **akkaunt majburiy** — mehmon sifatida xarid yo'q |
 | **D5** | Auth — **email + parol**, qo'shimcha **Google**. ⚠ iOS ilovada Google bo'lsa Apple qoidalari **Sign in with Apple** ni talab qiladi (6-bosqich) |
 | **D6** | MVP'da OTP va parol tiklash — **faqat email/SMTP**. Telefon + SMS keyinroq |

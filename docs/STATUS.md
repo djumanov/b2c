@@ -106,6 +106,9 @@ kontrakt testlari.
 
 ## 3. Keyingi ish
 
+> **Keyingi ish — buyurtma tizimi.** Reja va bo'laklar:
+> [`order-system/04-plan.md`](order-system/04-plan.md) (S1…S11).
+
 To'liq reja — [PHASES.md](PHASES.md).
 
 1-bosqichdan **bitta bo'lak** qoldi:
@@ -416,6 +419,11 @@ PROJECT.md §16 dagi oltitasi. Qaysi biri qachon to'sadi:
 ---
 
 ## 8. Ma'lum kamchiliklar
+
+> **Buyurtma tizimi qayta loyihalandi (2026-08-18).** Quyidagi 🔴/🟠 bandlarning
+> aksariyati [`order-system/02-current-audit.md`](order-system/02-current-audit.md) da
+> `A1…A11` sifatida qayta ta'riflangan va yechimi
+> [`order-system/03-design.md`](order-system/03-design.md) da belgilangan.
 
 2026-08-06 ko'rigida topilgan, lekin **hali tuzatilmagan**. Hech biri to'smaydi;
 yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.

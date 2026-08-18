@@ -384,6 +384,10 @@ Quyidagi ikki xatboshi o'sha eski dizaynni tasvirlaydi.) `avatar/` uchun mavjud
 
 **Qabul mezoni** ([PROJECT.md](PROJECT.md) §15):
 
+> **9-bo'lak (`booking` sagasi) qayta loyihalandi va 11 ta bo'lakka bo'lindi** —
+> [`order-system/04-plan.md`](order-system/04-plan.md). Modul nomi ham o'zgardi:
+> saga `orders` moduliga joylashadi.
+
 | Mezon | Qayerda tekshiriladi |
 |---|---|
 | Panelga `owner` sifatida kirish mumkin | `tests/integration/test_staff_auth.py` ✅ |

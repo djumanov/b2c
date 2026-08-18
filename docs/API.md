@@ -889,6 +889,11 @@ Oxirgi qator ataylab `404`, `403` emas: yozuv faqat o'z egasi orqali ko'rinadi, 
 
 ## 20. Mahsulotlar
 
+> **Bron va bekor qilish qismi qayta loyihalandi.** `booking/` endi buyurtma
+> va to'lov yaratadi va `Idempotency-Key` talab qiladi; `cancel/` esa bu
+> yerdan olib tashlanib `POST /public/orders/{id}/cancel/` ga ko'chdi.
+> Ustun hujjat — [`order-system/03-design.md`](order-system/03-design.md) §3.6.
+
 Barcha vertikallar **bir xil naqshda** ishlaydi. `{product}` o'rniga: `flight`, `railway`,
 `insurance`, `esim`, `transfer` — **beshtasi ham birinchi relizda**
 ([PROJECT.md](PROJECT.md) §8).
@@ -1153,6 +1158,11 @@ ochiq. Kontrakt o'zgarsa **avval shu bo'lim**, keyin
 
 ## 21. Buyurtmalar
 
+> **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
+> bo'ysunadi.** U yerda kanonik status enumi, `available_actions`,
+> `history/`, `cancel/`, `refund/` va `receipt/` belgilangan. Quyidagi tavsif
+> passthrough davridagi holatni aks ettiradi.
+
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
 | `GET` | `/public/orders/` | ✓ | Barcha vertikal bo'yicha; `?product=`, `?status=` |
@@ -1234,6 +1244,10 @@ Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 ---
 
 ## 22. To'lov
+
+> **To'lovning buyurtma bilan bog'lanishi va saga oqimi** —
+> [`order-system/03-design.md`](order-system/03-design.md) §3.4, §3.7.
+> Quyidagi endpoint ro'yxati o'z kuchida qoladi.
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|

@@ -9,6 +9,7 @@ docstrings and commit messages are in English.
 
 | Document | Authority |
 |---|---|
+| `docs/order-system/` | The **order system** — orders, payments, tickets, cancellation, refunds. Wins any conflict inside that scope; outside it the rows below still rule |
 | `docs/API.md` | The REST **contract**. Wins any conflict about what the outside sees |
 | `docs/ARCHITECTURE.md` | Internal structure: modules, layers, DB, saga, adapters |
 | `docs/PROJECT.md` | Product and project: scope, decisions, phases, operations |
