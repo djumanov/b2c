@@ -1,6 +1,6 @@
 # Holat va qolgan ish
 
-**Oxirgi yangilanish:** 2026-08-17 · `feat/orders-local-record`
+**Oxirgi yangilanish:** 2026-08-19 · `feat/card-checkout-endpoints`
 
 Bu hujjat **avtoritet emas** — kontrakt uchun [API.md](API.md), tuzilma uchun
 [ARCHITECTURE.md](ARCHITECTURE.md), qamrov va bosqichlar uchun
@@ -18,10 +18,10 @@ takrorlamaydi.
 | | |
 |---|---|
 | Bosqich | **1 — Yadro** bajarilgan; 4-fazadan FAQ, sahifalar va `leads` oldinga tortilgan ([PHASES.md](PHASES.md) §2.14). 2-fazadan GTS klienti, aviachipta qidiruvi va buyurtma yozuvi boshlab yuborildi (§4 bo'laklari 1, 2, 4, 5, 6 — qisman) |
-| Endpointlar | 92 ta yo'l / 129 operatsiya (API.md dagi ~150 dan) |
-| Jadvallar | 28 ta + `alembic_version` |
-| Migratsiyalar | 29 ta, bitta head (`3c1f9a4d7e02`) |
-| Testlar | 842 ta — unit 24 fayl · contract 9 · integration 31 |
+| Endpointlar | 100 ta yo'l / 138 operatsiya (API.md dagi ~150 dan) |
+| Jadvallar | 32 ta + `alembic_version` |
+| Migratsiyalar | 36 ta, bitta head (`c8f2a5d61b40`) |
+| Testlar | 1203 ta — unit 26 fayl · contract 10 · integration 38 |
 | Gate'lar | ruff · mypy strict · pytest — uchalasi ham yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
@@ -84,6 +84,7 @@ kontrakt testlari.
 | `leads` | Sodda murojaat: mavzu + xabar + aloqa, token ixtiyoriy (`current_customer_optional` — sarlavha yo'q → anonim, yaroqsiz token → `401`); panelda ro'yxat, status va izoh | 3 |
 | `leads` (mavzular) | `support_topics` lug'ati — `name` JSONB + `sort_order`, holatsiz, `leads` bayrog'i ostida; admin CRUD, public ro'yxat bitta tilda | 3 |
 | `payments` (kartalar) | `/public/profile/cards/` — saqlangan kartalar **oddiy CRUD** (list/qo'shish/ko'rish/o'chirish): raqam faqat AES-GCM shifrlangan holda, provayder va OTP qatnashmaydi ([API.md](API.md) §19). Akkaunt o'chirilganda `forget_cards()` chaqiriladi | 2 |
+| `payments` (karta bilan to'lov) | `card/` · `confirm/` · `resend-otp/` — mijoz karta ma'lumotini bizga yuboradi, provayder SMS yuboradi, yechish `confirm/` ning **ichida** bo'ladi (`O14`, `O16`). Redirect butunlay olib tashlandi. `reveal_card()` nihoyat chaqiriladi: `card_id` bilan server raqamni o'zi ochadi | 3 |
 
 > Ustundagi son — **yo'llar** soni (jami — §1 dagi 80).
 > Operatsiyalar ko'proq: `settings` ning yettita yo'lida 12 ta bor, chunki
@@ -167,9 +168,32 @@ kontrakt testlari.
 > Endi envelope rejimi butun payload'ni qaytaradi va qaysi kalitda javob
 > borligini adapter hal qiladi.
 >
-> Qolgani: **S4b — Payme va Click adapterlari** · **S6b — mijoz so'rovi
-> bo'yicha qaytarish va admin tasdig'i** · **S7b — sinxronizatsiya, admin
-> yuzasi, kvitansiya, anonimlashtirish**.
+> **S4b (karta oqimi) bajarildi 2026-08-19** — va u bilan birga **redirect
+> oqimi o'chirildi**. `O14`/`O15`/`O16` kodga tushdi: `POST
+> /public/transactions/{id}/card|confirm|resend-otp/`, `TransactionStartIn`
+> bo'shadi, `flow` va `redirect_url` ustunlari tushdi, `create_payment` va
+> `TransactionFlow` port'dan chiqdi. Yechish endi `confirm/` **ichida**
+> bo'ladi va mavjud `settle_attempt` ni chaqiradi; webhook ikkinchi eshik
+> bo'lib qoldi. `reveal_card()` nihoyat chaqiriladi.
+>
+> Uchala yangi yo'lda ham **`Idempotency-Key` yo'q**, va uchtasida uch xil
+> sabab: `card/` tanasida PAN bor va kalit tanadan `sha256` bilan hosil
+> bo'ladi; `confirm/` tanasida bir martalik kod bor; `transactions/` tanasi
+> esa bo'sh, ya'ni bitta hosil qilingan kalit bir mijozning bir buyurtmasi
+> uchun barcha chaqiruvlarga xizmat qilardi va yiqilgan birinchi urinish 24
+> soat qayta o'ynalardi. O'rniga bazadagi `uq_order_payments_open` va
+> `confirm/` dagi `FOR UPDATE`.
+>
+> **S9 (supurgichlar) bajarildi 2026-08-19:** tashlab ketilgan checkout 30
+> daqiqadan keyin yopiladi (`updated_at` bo'yicha — kod so'ragan mijoz hali
+> checkout'da), javobsiz qolgan yechish esa `PaymentProvider.status()` orqali
+> provayderdan so'raladi. Ikkalasi bitta beat yozuvida, 5 daqiqada.
+>
+> Qolgani: **S4c — Payme va Click adapterlari** (⚠ provayder API'sining aniq
+> maydon nomlari merchant kabinetida tasdiqlanishi kerak —
+> `order-system/03-design.md` Q9–Q12) · **S6b — mijoz so'rovi bo'yicha
+> qaytarish va admin tasdig'i** · **S7b — sinxronizatsiya, admin yuzasi,
+> kvitansiya, anonimlashtirish**.
 
 To'liq reja — [PHASES.md](PHASES.md).
 
@@ -210,10 +234,9 @@ tekshirildi (2026-08-12)**:
   (API.md §12) birinchi `GET` iste'molchisi bilan keladi.
   (`POST /public/flight/booking/` **endi ishlaydi** — 2026-08-14, quyida.)
 - `POST /admin/integrations/payments/{code}/test/` — Payme va Click
-  adapterlari bilan birga (2-fazaning 7-bo'lagi). Bugungi `PaymentProvider`
-  portida sinash uchun chaqiriladigan metod yo'q: har biri haqiqiy to'lovni
-  boshlaydi. Adapter kelganda portga `verify()` qo'shilishi kerak — `Notifier`
-  da shunday.
+  adapterlari bilan birga (S4c). `PaymentProvider.verify()` portda allaqachon
+  bor va uni chaqiradigan yagona narsa shu route; adapterlarsiz esa u
+  ishlatadigan hech narsa yo'q.
 - `POST /public/auth/devices/` — API.md §41, push bilan birga.
 
 **Seam'lar ishladi**: `providers/gts/client.py` qo'shildi va `integrations`
@@ -353,6 +376,11 @@ tug'ilmasligi uchun.
 | 83 | `booking/` da **yozuv xatosi so'rovni yiqitmaydi** — log'ga yoziladi va GTS javobi qaytadi | GTS o'rinni allaqachon ushlab turibdi. `500` mijozni qayta urinishga, u esa **ikkinchi bronga** olib borardi — haqiqiy o'rin va keyinroq haqiqiy pul. Javobdagi `order_id`/`pnr` mijoz qo'lida qoladi. To'g'ri yechimi outbox (ARCHITECTURE.md §8), u 9-bo'lakda; §8.16 shu oraliqni ochiq kamchilik sifatida yuritadi |
 | 85 | **Profil telefoni obyektga aylandi** (2026-08-18): yassi `phone VARCHAR(32)` o'rniga `phone_code` + `phone_number` + `phone_mask` uchta ustun; `deleted_customers` arxivi ham shunday. `is_profile_complete` uchun `phone_code` va `phone_number` ikkalasi ham kerak, `phone_mask` sanalmaydi | GTS bron tanasi telefonni `{phone_code, phone_number}` shaklida kutadi (№84), ya'ni yassi satr saqlangani bilan bron uni **ishlata olmasdi** — shakl mijozdan telefonni qayta so'rashga majbur edi. `phone_mask` yoniga qo'shildi, chunki §26 katalogidan olingan maska bo'lmasa klient saqlangan raqamni ko'rsatish uchun katalogga ikkinchi marta boradi; u `avatar_id` kabi server uchun shaffof matn. Eski qiymatlar migratsiyada `+998XXXXXXXXX` namunasi bo'yicha ajratildi, mos kelmaganlari `phone_number` da kodsiz qoldi |
 | 86 | **`offers/` va `upsell/` nosozlikda bo'sh natija qaytaradi** (2026-08-18): GTS `status: "error"`, 5xx, timeout yoki ulanib bo'lmaslik — hammasi `200` + `offers: []` + `search_status: "In process"`, `502` emas | Qidiruv uzun va asinxron; provayderning bir zumlik nosozligi foydalanuvchiga xato ekrani bo'lib ko'rinardi, holbuki keyingi poll'da natija kelishi mumkin edi. `search/`, `verify/`, `booking/`, `cancel/` da bunday yumshatish yo'q — u yerda taklif allaqachon tanlangan va bo'sh javob yolg'on bo'lardi. Credential yo'qligi ham `502` bo'lib qoladi: bu GTS'ning emas, o'rnatmaning nosozligi. Narxi — klient pollingni o'zi cheklashi kerak ([API.md](API.md) §20) |
+| 87 | **To'lovning uchala yangi yo'lida `Idempotency-Key` yo'q** (2026-08-19) | Uch xil sabab. `card/` tanasida karta raqami bor va kalit `sha256(subject, method, path, canonical(body))` dan hosil bo'lib Redis kaliti nomiga aylanadi — PANdan hosil bo'lgan digest bazadan tashqarida yotmasligi kerak ([PROJECT.md](PROJECT.md) §13). `confirm/` tanasida bir martalik kod bor va ayni mulohaza. `transactions/` esa **bo'sh tana** bilan ishlaydi, ya'ni bitta hosil qilingan kalit bir mijozning bir buyurtmasi uchun barcha chaqiruvlarga xizmat qilardi: yiqilgan birinchi urinishdan keyin 24 soat davomida eski javob qaytarilib, mijoz umuman to'lay olmasdi. O'rniga `O8` ning o'zi — `uq_order_payments_open` va `confirm/` dagi `FOR UPDATE` |
+| 88 | **Tasdiq maydoni `otp_code`, `code` emas** (2026-08-19) | `core/logging.py` `code` ni ataylab redaksiya qilmaydi — u provayder kodi, xato kodi, valyuta kodi va shablon kaliti ham — va buni `test_card_pan_never_stored.py` qotirib qo'ygan. Maydonni `code` deb atash har bir SMS kodini jurnalga tushirardi. `otp_code`, `sms_code`, `verify_code` va `card_token` esa ro'yxatda allaqachon bor, shuning uchun ustun nomlari ham shularga moslandi |
+| 89 | **Rad etilgan karta urinishni yoqmaydi** (2026-08-19) | Dizaynda `awaiting_card → failed` qatori bor edi; kod uni o'zgartirdi va hujjat kodga ergashdi. Xato terilgan raqam — sarflangan to'lov emas: urinishni yoqish har bir xato raqamni `transactions/` orqali qaytishga va tarixda bitta `failed` qatorga aylantirardi. `card/` shu sababdan `awaiting_otp` dan ham qabul qilinadi |
+| 90 | **Bekor qilishda provayderga chiqilmaydi** (2026-08-19) | Ochiq urinish buyurtma bilan bir tranzaksiyada yopiladi va `card_token` `NULL` bo'ladi, lekin token provayderdan bo'shatilmaydi: u ikkala provayderda ham bir martalik va qisqa umrli, bekor qilish ichidagi tarmoq chaqiruvi esa mijoz bilan uning bo'shatilgan o'rni orasiga provayderni qo'yardi. `pending` urinish esa umuman tegilmaydi — uni `payments.reconcile` yopadi |
+| 91 | **Bir vaqtda bitta provayder yoqilgan** (2026-08-19, `O15`) | Yangi ustun qo'shilmadi: `enabled` bugun "credential kiritilgan va ishlatsa bo'ladi" degan edi, endi "aynan shu yechadi" degani ham. Bittasini yoqish qolganlarini **o'sha tranzaksiyada** o'chiradi (har biriga audit yozuvi bilan) — `409` bilan rad etish bir bosishlik niyatni ikki qadamli topishmoqqa aylantirardi. `sort_order` ishsiz qoldi va saqlanib turibdi: bir nechta provayder kerak bo'lgan kun kelsa `is_primary` bilan birga qaytadi |
 
 ---
 
