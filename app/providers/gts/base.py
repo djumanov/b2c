@@ -68,6 +68,17 @@ class GtsClient(Protocol):
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]: ...
 
+    async def get_envelope(
+        self, path: str, *, params: dict[str, Any] | None = None, timeout: float | None
+    ) -> dict[str, Any]:
+        """``get``, with the whole envelope. ``post_envelope``'s twin.
+
+        For reads whose page is not under ``data``: the orders list wraps its
+        rows in ``{count, next, previous, results}`` and where that wrapper
+        sits is not something the boundary should have to guess.
+        """
+        ...
+
     async def post_envelope(
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:

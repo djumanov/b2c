@@ -964,7 +964,7 @@ sequenceDiagram
 | `orders.cancel_provider` | `run_due` | `money` | GTS'da allaqachon `CB` bo'lsa muvaffaqiyat |
 | `refunds.commit` | `run_due` | `money` | `refund.status` `approved`/`processing` bo'lmasa chiqadi |
 | `orders.notify` | commitdan keyin | `default` | Xabar yuborilmasa buyurtmani yiqitmaydi |
-| `orders.sync_open` | beat, 5 daq | `default` | Faqat o'qiydi va farqni o'tish orqali qo'llaydi |
+| `orders.sync_open` | beat, 1 daq | `default` | Faqat `created`, yoshi > 2 daq. O'qiydi va farqni o'tish orqali qo'llaydi; hech narsa topilmasa faqat `attempts` oshadi |
 | `orders.expire_unpaid` | beat, 1 daq | `money` | `T7` guard'i o'zi qo'riqlaydi. **Ikkinchi so'rov** — `CARD_OTP_TTL` dan uzoq ochiq qolgan urinishlarni yopadi va tokenini bo'shatadi; alohida beat yozuvi qo'shilmadi, chunki bir xil daqiqalik ritm |
 | `orders.reconcile_orphans` | beat, 2 daq | `money` | Faqat `created` va yoshi > 2 daq |
 | `orders.detect_stuck` | beat, 5 daq | `default` | Faqat log va alert |
@@ -991,7 +991,39 @@ valyuta kursi kabi statik ish pul yo'lini och qoldirmasligi kerak.
 6. xato bo'lsa `classify()` → `T9` (`attempts++`, `next_attempt_at = now + backoff`)
    yoki `T11`.
 
+### `orders.sync_open` — `created` da qolganini hal qilish
+
+T2x ning ikkinchi yarmi. Usiz `created` kutish xonasi emas, tupik bo'lardi:
+uni hech qanday supurgi olmaydi, mijoz undan bekor ham qila olmaydi
+(`created → cancelled` jadvalda yo'q), GTS'dagi o'rin esa da'vosiz qoladi.
+
+Har bir `created` qator uchun (yoshi > 2 daqiqa, `FOR UPDATE SKIP LOCKED`):
+
+1. `provider_order_number` bo'lmasa va qatorda javob saqlangan bo'lsa —
+   **qayta o'qiladi** (`OrderOperations.reread`, chaqiruvsiz). Imlo
+   o'zgargandan keyin yozilgan o'quvchi eski javobdan raqamni topa oladi;
+2. raqam bo'lsa — `OrderOperations.retrieve` GTS'dan so'raydi
+   (`/v1/orders/list/`, `order_number` filtri bilan, **javob yana shu yerda
+   raqam bo'yicha solishtiriladi**: e'tiborga olinmagan filtr birovning
+   buyurtmasini qaytarishi mumkin);
+3. band o'rin qaytsa — `T2` (`booked`), hamma maydon bilan;
+4. buyurtma bor, lekin band o'rin emas — `T2x`, o'qilgani yozilib qoladi;
+5. GTS javob bermasa yoki buyurtmani ko'rsatmasa — `T2x`, `attempts` oshadi.
+   **Bu rad javobi emas**: jimlikka qarab bronni o'lik deb e'lon qilish —
+   to'langan o'rinning yo'qolishi;
+6. `attempts` tugasa (8) — `T4`, `attention_reason = unaccounted_booking`.
+
+`retrieve` `/v1/content/retrieve/` emas, `/v1/orders/list/` ni oladi: ro'yxat
+javobi — **shu o'rnatmaning jonli GTS'idan** yozib olingan yagona buyurtma
+shakli, solishtirish esa kolleksiya eskirganini bilib olish uchun noto'g'ri
+joy ([`GTS.md`](../GTS.md) §4).
+
 ### `orders.reconcile_orphans` — "noma'lum" bronlarni topish
+
+> **Hali qurilmagan.** `sync_open` raqam **bor** qatorlarni hal qiladi — va
+> qutqarish (T2x) tufayli javob kelgan har bir qatorda raqam bor. Raqamsiz
+> qoladigan yagona holat — javob umuman kelmagani (timeout, jarayon o'lgani);
+> u bugun `attempts` tugagach `T4` ga boradi. Quyidagisi shuni avtomatlashtiradi.
 
 `created` da qolgan buyurtma uchun GTS'ga `/v1/orders/list/` so'rovi yuboriladi:
 `booking_date_from/to` (buyurtma yaratilgan vaqt ± oyna) + `passenger` (birinchi

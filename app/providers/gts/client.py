@@ -182,6 +182,18 @@ class GtsHttpClient:
             "GET", path, params=params, json=None, timeout=timeout
         )
 
+    async def get_envelope(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None,
+    ) -> dict[str, Any]:
+        """``get``, with the whole envelope — see ``post_envelope``."""
+        return await self._request(
+            "GET", path, params=params, json=None, timeout=timeout, envelope=True
+        )
+
     async def post(
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:

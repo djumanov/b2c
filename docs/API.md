@@ -1477,9 +1477,9 @@ Klient uchun ikkita amaliy qoida qoladi:
    urinishning da'vosi hali ochiq. Javobda buyurtma `created` holatida
    kelishi mumkin va `data` `null` bo'ladi: bu "so'radik, javobini bilmaymiz"
    degani. Klient `GET /public/orders/{id}/` ni kuzatadi.
-   ⚠ **`created` ni bugun avtomatik hal qiladigan narsa yo'q** — solishtirish
-   (`sync_open`) hali qurilmagan, shuning uchun bunday buyurtmani operator
-   yopadi.
+   `created` **avtomatik hal qilinadi**: `sync_open` har daqiqada GTS'dan
+   so'raydi va buyurtmani `booked` yoki `failed` ga chiqaradi. GTS uni sakkiz
+   urinishda ham tanimasa — o'shanda operatorga o'tadi.
 
 **`Idempotency-Key` ni o'zi yuborishni xohlagan klient** buni qilishi mumkin
 va kalit hurmat qilinadi (§10). Bu bitta qo'shimcha kafolat beradi: tana

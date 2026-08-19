@@ -369,6 +369,29 @@ class OrderOperations(Protocol):
         """
         ...
 
+    async def retrieve(
+        self, client: GtsClient, order_number: str
+    ) -> BookingResult | None:
+        """Ask the provider what it says about an order we already opened.
+
+        ``None`` means the provider does not report the order at all, which is
+        **not** a refusal and must never be read as one: the sweep asks again
+        rather than declaring dead a booking that may be holding a seat.
+
+        Raises ``UnreadableAnswer`` when the order is there but is not a held
+        reservation, exactly as ``book`` does and for the same reasons.
+        """
+        ...
+
+    def reread(self, raw: dict[str, Any]) -> PartialBooking:
+        """An answer already on the row, read again by today's reader.
+
+        Costs no call, and is the only way an order recorded before a spelling
+        was known gets its identifier back — without one there is nothing to
+        ask the provider about (STATUS.md §8.15).
+        """
+        ...
+
     async def cancel(self, client: GtsClient, payload: dict[str, Any]) -> CancelResult:
         """Release a reservation the provider is still holding."""
         ...

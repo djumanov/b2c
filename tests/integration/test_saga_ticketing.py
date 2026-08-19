@@ -32,6 +32,7 @@ from app.providers.products.orders import (
     BookingResult,
     CancelResult,
     FailureClass,
+    PartialBooking,
     RepriceResult,
     TicketingResult,
     TravelerRef,
@@ -67,6 +68,12 @@ class FakeOperations:
         if self.cancel_fails is not None:
             raise self.cancel_fails
         return CancelResult(provider_status="CB", raw={"order": {"status": "CB"}})
+
+    async def retrieve(self, client: Any, order_number: str) -> BookingResult | None:
+        raise AssertionError("ticketing never reconciles")
+
+    def reread(self, raw: dict[str, Any]) -> PartialBooking:
+        raise AssertionError("ticketing never rereads")
 
     async def reprice(self, client: Any, order_number: str) -> RepriceResult:
         self.calls.append("reprice")

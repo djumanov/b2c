@@ -421,6 +421,17 @@ async def _expire_unpaid() -> None:
         logger.info("orders_expired", count=len(expiring))
 
 
+async def _sync_open() -> None:
+    """Ask GTS about the orders we could not settle when they were booked.
+
+    Without this ``created`` is a dead end rather than a waiting room: nothing
+    else sweeps it, and the seat GTS may be holding goes unclaimed while the
+    row cannot even be cancelled out of.
+    """
+    async with get_sessionmaker()() as session:
+        await orders_service.sync_open(session, limit=_BATCH)
+
+
 async def _sweep_payments() -> None:
     """Close the checkouts nobody came back to, and chase the charges that hang.
 
@@ -442,6 +453,12 @@ async def _sweep_payments() -> None:
 def expire_unpaid() -> None:
     """Release the holds whose payment window has closed."""
     asyncio.run(_expire_unpaid())
+
+
+@celery_app.task(name="app.tasks.orders.sync_open")
+def sync_open() -> None:
+    """Settle the orders still waiting in ``created``."""
+    asyncio.run(_sync_open())
 
 
 @celery_app.task(name="app.tasks.orders.sweep_payments")
@@ -468,4 +485,11 @@ def run_due() -> None:
     asyncio.run(_run_due())
 
 
-__all__ = ["expire_unpaid", "refund", "run_due", "sweep_payments", "ticket"]
+__all__ = [
+    "expire_unpaid",
+    "refund",
+    "run_due",
+    "sweep_payments",
+    "sync_open",
+    "ticket",
+]

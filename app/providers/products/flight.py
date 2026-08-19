@@ -649,6 +649,27 @@ def _travelers(
     return ()
 
 
+#: How many of our own orders one reconciliation page may carry. Generous: the
+#: filter should reduce it to one, and a page that has to be walked twice is a
+#: second call for nothing.
+_LIST_PAGE: Final = 50
+
+
+def _listed(envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The orders in a ``/v1/orders/list/`` answer, wherever the page sits.
+
+    The rows come wrapped in ``{count, next, previous, results}`` and whether
+    that wrapper is the envelope's ``data`` or the envelope itself is not
+    written down anywhere we control. Both are looked in; neither is demanded.
+    """
+    for layer in (envelope.get("data"), envelope):
+        if isinstance(layer, Mapping):
+            results = layer.get("results")
+            if isinstance(results, list):
+                return [item for item in results if isinstance(item, dict)]
+    return []
+
+
 def _partial(
     raw: dict[str, Any], payload: Mapping[str, Any] | None = None
 ) -> PartialBooking:
@@ -889,6 +910,35 @@ class FlightAdapter:
             "/v1/content/booking/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
         )
         return _reservation(raw, payload)
+
+    async def retrieve(
+        self, client: GtsClient, order_number: str
+    ) -> BookingResult | None:
+        """What GTS says about an order it already has.
+
+        ``/v1/orders/list/`` rather than ``/v1/content/retrieve/``: the list's
+        answer is the one order shape recorded from **this installation's**
+        live GTS, and reconciliation is the wrong place to discover that a
+        collection has gone out of date (docs/GTS.md §4).
+
+        The filter is sent **and** the answer is matched again here. A filter
+        GTS quietly ignores would otherwise hand back the first order on the
+        page, and confirming a booking against somebody else's reservation is
+        the one mistake this whole sweep exists to prevent.
+        """
+        envelope = await client.get_envelope(
+            "/v1/orders/list/",
+            params={"order_number": _number(order_number), "per_page": _LIST_PAGE},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        for item in _listed(envelope):
+            if _text(item, "order_number", limit=64) == order_number:
+                return _reservation(item)
+        return None
+
+    def reread(self, raw: dict[str, Any]) -> PartialBooking:
+        """The stored answer, read again by today's reader. No call."""
+        return _partial(raw)
 
     async def cancel(self, client: GtsClient, payload: dict[str, Any]) -> CancelResult:
         """Release a booking GTS still holds.

@@ -91,6 +91,7 @@ from app.providers.products.orders import (
     OrderOperations,
     PartialBooking,
     TicketingResult,
+    UnreadableAnswer,
     order_operations,
 )
 
@@ -342,7 +343,12 @@ def _salvaged(partial: PartialBooking) -> dict[str, Any]:
 
 
 async def record_unresolved_booking(
-    session: AsyncSession, order: Order, partial: PartialBooking, *, reason: str
+    session: AsyncSession,
+    order: Order,
+    partial: PartialBooking,
+    *,
+    reason: str,
+    actor: Actor | None = None,
 ) -> Order:
     """The provider answered and we will not call it a reservation — T2x.
 
@@ -368,12 +374,13 @@ async def record_unresolved_booking(
         provider_status=partial.provider_status,
         provider_order_number=partial.provider_order_number,
     )
+    actor = actor or Actor.system("orders.booking")
     try:
         return await transition(
             session,
             order.id,
             to=OrderStatus.CREATED,
-            actor=Actor.system("orders.booking"),
+            actor=actor,
             action=EventAction.BOOKING_UNRESOLVED,
             reason=reason[:255],
             meta=partial.raw,
@@ -396,12 +403,136 @@ async def record_unresolved_booking(
             session,
             order.id,
             to=OrderStatus.CREATED,
-            actor=Actor.system("orders.booking"),
+            actor=actor,
             action=EventAction.BOOKING_UNRESOLVED,
             reason=reason[:255],
             meta=partial.raw,
             fields=fields,
         )
+
+
+#: How long an order is left in ``created`` before reconciliation asks about
+#: it. Comfortably longer than the booking call's own 15 s timeout, so a
+#: request still in flight is never mistaken for one that never finished.
+SYNC_GRACE: Final = timedelta(minutes=2)
+
+#: How many passes an order may go unaccounted for before it becomes a
+#: person's problem (T4). At one pass a minute this is the better part of ten
+#: minutes, which is longer than any GTS outage that resolves itself.
+SYNC_MAX_ATTEMPTS: Final = 8
+
+#: The actor every reconciliation move is written under, so the history says
+#: which of the two doors an order came through.
+_SYNC_ACTOR: Final = Actor.system("orders.sync")
+
+
+async def sync_open(session: AsyncSession, *, limit: int = 25) -> int:
+    """Settle the orders still sitting in ``created`` — the other half of T2x.
+
+    Without it ``created`` is a dead end rather than a waiting room: nothing
+    sweeps it, the customer cannot cancel out of it, and the seat GTS is
+    holding goes unclaimed. This is what makes "we asked and do not know" a
+    temporary answer (order-system/03-design.md §3.9).
+
+    Returns how many orders it settled, which is what the log reports.
+    """
+    cutoff = datetime.now(UTC) - SYNC_GRACE
+    waiting = await repository.unsettled_orders(session, before=cutoff, limit=limit)
+    if not waiting:
+        return 0
+    settled = 0
+    for order in waiting:
+        if await _sync_order(session, order):
+            settled += 1
+    logger.info("orders_synced", asked=len(waiting), settled=settled)
+    return settled
+
+
+async def _sync_order(session: AsyncSession, order: Order) -> bool:
+    """One order, asked about. ``True`` when it is no longer ``created``."""
+    operations = _order_operations(order.product)
+    number = order.provider_order_number
+    if number is None and order.provider_response:
+        # The answer is already on the row and today's reader may make more of
+        # it than the one that wrote it did. No call, and it is how an order
+        # recorded before a spelling was known gets its identifier back.
+        number = operations.reread(order.provider_response).provider_order_number
+    if number is None:
+        await _defer_sync(session, order, "no order number to ask GTS about")
+        return False
+
+    try:
+        found = await operations.retrieve(
+            await integrations_service.gts_client(session), number
+        )
+    except UnreadableAnswer as unresolved:
+        # GTS knows the order and it is not a held seat — cancelled upstream,
+        # already ticketed, or a shape we still cannot read. All three are the
+        # same to us here: keep what read, ask again.
+        await record_unresolved_booking(
+            session,
+            order,
+            unresolved.partial or PartialBooking(raw=unresolved.raw),
+            reason=str(unresolved),
+            actor=_SYNC_ACTOR,
+        )
+        return False
+    except AppError as failure:
+        # A provider that cannot be reached is not evidence about the booking.
+        await _defer_sync(session, order, f"GTS could not be asked: {failure}")
+        return False
+
+    if found is None:
+        # Not a refusal. GTS may simply not list it yet, and calling a booking
+        # dead on a silence is how a paid-for seat disappears.
+        await _defer_sync(session, order, f"GTS does not report order {number}")
+        return False
+
+    await confirm_booking(session, order, found)
+    logger.info(
+        "order_synced_to_booked",
+        order_id=str(order.id),
+        order_no=order.order_no,
+        provider_order_number=number,
+    )
+    return True
+
+
+async def _defer_sync(session: AsyncSession, order: Order, reason: str) -> None:
+    """Try again next pass — or stop trying, and say so.
+
+    ``attempts`` is what counts the passes; ``transition`` increments it on the
+    ``created → created`` edge and resets it on any other move. Once they run
+    out the order is one nobody can account for, and that **is** a person's
+    problem — which is the only remaining road from ``created`` to
+    ``needs_attention`` (T4).
+    """
+    if order.attempts + 1 >= SYNC_MAX_ATTEMPTS:
+        logger.error(
+            "order_unaccounted",
+            order_id=str(order.id),
+            order_no=order.order_no,
+            attempts=order.attempts,
+            detail=reason,
+        )
+        await transition(
+            session,
+            order.id,
+            to=OrderStatus.NEEDS_ATTENTION,
+            actor=_SYNC_ACTOR,
+            action=EventAction.BOOKING_UNRESOLVED,
+            reason=reason[:255],
+            fields={"attention_reason": "unaccounted_booking"},
+        )
+        return
+    await transition(
+        session,
+        order.id,
+        to=OrderStatus.CREATED,
+        actor=_SYNC_ACTOR,
+        action=EventAction.BOOKING_UNRESOLVED,
+        reason=reason[:255],
+    )
 
 
 async def fail_booking(session: AsyncSession, order: Order, *, reason: str) -> Order:
@@ -1635,6 +1766,7 @@ __all__ = [
     "reconcile_attempt",
     "reconcile_payments",
     "record_unresolved_booking",
+    "sync_open",
     "resend_code",
     "retry_refund",
     "retry_ticketing",

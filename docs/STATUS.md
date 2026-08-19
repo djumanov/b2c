@@ -600,6 +600,14 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     `gds_pnr`, marshrut, yo'lovchilar, muddat — qatorga yoziladi, ya'ni qator
     GTS'dagi o'rinni **nomlay oladi**.
 
+    Eski qatorlar bir martalik ma'lumot migratsiyasi bilan qaytarildi
+    (`4a1d7e0c93b2`): `needs_attention` + `unreadable_booking_answer` bo'lgan
+    qator `created` ga ko'chadi va `order_events` ga bitta qator yoziladi.
+    Migratsiya `transition` orqali o'tmaydi — mashinada `needs_attention` dan
+    odamsiz chiqish yo'q, va aynan shu tuzoq bekor qilinmoqda. U hech narsani
+    qayta o'qimaydi: javob qanday saqlangan bo'lsa shundayligicha qoladi va
+    haqiqatni `sync_open` GTS'dan so'raydi.
+
 15c. ✅ **Noma'lum status kodi endi jimgina `booked` bo'lmaydi.** `_STATUS_MAP`
     da yo'q kod avval sukut bo'yicha `booked` bo'lardi, ma'lum kod esa
     (`CB`, `TI`, `VO` …) `created` dan erishib bo'lmaydigan holatga
@@ -621,8 +629,13 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
     qolmaydi. Javob kelmasa qator `created` holatida turadi — bu "so'radik,
     javobini bilmaymiz" degani, va uni topib bo'ladi
     (`order-system/02-current-audit.md` A1).
-    ⚠ Qolgani: `created` ni avtomatik hal qiladigan solishtirish (`sync_open`)
-    hali qurilmagan — bugun bunday qatorni operator yopadi.
+    ✅ 2026-08-19 da `orders.sync_open` qo'shildi (beat, 1 daqiqa): `created`
+    da qolgan qatorni GTS'dan `/v1/orders/list/` orqali so'rab `booked` yoki
+    `failed` ga chiqaradi. Raqami yo'q qator avval saqlangan javobdan qayta
+    o'qiladi (`OrderOperations.reread`, chaqiruvsiz). Sakkiz urinishdan keyin
+    ham noaniq bo'lsa — `needs_attention`, `attention_reason =
+    unaccounted_booking`. Raqamsiz yetimlarni sana/yo'lovchi bo'yicha
+    izlaydigan `reconcile_orphans` hamon qurilmagan.
 
 17. 🔴 **Buyurtma anonimlashtirilmaydi, va endi bu tasdiqlangan.**
     Kolleksiyadagi bron javobida `data.passengers[]` bor va uning ichida
