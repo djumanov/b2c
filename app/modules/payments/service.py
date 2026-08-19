@@ -11,14 +11,13 @@ Two rules that shape the code below:
   (``masked_pan``, ``last4``, ``bin``, ``brand``) is derived locally from the
   digits before they are sealed. Nothing logs it and no response carries it
   (PROJECT.md §13).
-* **Only ``reveal_card`` opens the ciphertext.** It exists for the phase-2
-  checkout — the server fills the provider's card step itself when the client
-  sends a ``card_id`` (API.md §22) — and its result must never be logged.
+* **Only ``reveal_card`` opens the ciphertext.** It exists for the checkout —
+  the server fills the provider's card step itself when the client sends a
+  ``card_id`` (API.md §22) — and its result must never be logged.
 """
 
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
@@ -45,6 +44,7 @@ from app.modules.payments.models import CustomerCard
 from app.modules.payments.schemas import CardCreateIn, CardOut
 from app.providers.payments.base import (
     CallbackResult,
+    CardCredentials,
     PaymentProvider,
     PaymentProviderCode,
     RefundResult,
@@ -158,41 +158,24 @@ async def add_card(
 # --- revealing --------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class CardSecret:
-    """A card number in flight, on its way to a provider. Never logged.
-
-    The hand-written ``__repr__`` is the same precaution the old
-    ``CardCredentials`` took: a dataclass carrying a secret ends up inside a
-    structlog ``exc_info``, an f-string or a failing assertion sooner or later,
-    and the default ``repr`` would print the number in all three.
-    """
-
-    #: Digits only.
-    number: str
-    #: ``MMYY``, the shape the payment forms use.
-    expire: str
-
-    def __repr__(self) -> str:
-        return f"CardSecret(last4={self.number[-4:]!r})"
-
-
 async def reveal_card(
     session: AsyncSession, customer_id: uuid.UUID, card_id: uuid.UUID
-) -> CardSecret:
+) -> CardCredentials:
     """The stored number in the clear — the only path that opens the ciphertext.
 
     One of the doors this module opens to the rest of the application
-    (ARCHITECTURE.md §5), for the phase-2 checkout: the server fills the
-    provider's card step from this when the client sends a ``card_id``
-    (API.md §22). The result goes to a provider adapter and nowhere else.
+    (ARCHITECTURE.md §5). The checkout calls it when the client pays with a
+    ``card_id`` instead of typing the number (API.md §22) and hands the result
+    straight to ``register_card`` — the same call a freshly typed number makes,
+    so nothing downstream can tell the two apart. The result goes to a provider
+    adapter and nowhere else.
     """
     card = await _require_card(session, customer_id, card_id)
     if card.pan is None:
         # Unreachable for a live row — the CHECK constraint pairs a null
         # ciphertext with a soft-deleted row, and ``owned_cards`` filters those.
         raise NotFound("Card not found")
-    return CardSecret(
+    return CardCredentials(
         number=decrypt(card.pan, card.key_version or 0),
         expire=f"{card.expiry_month:02d}{card.expiry_year % 100:02d}",
     )
@@ -312,7 +295,6 @@ async def callback(
 
 
 __all__ = [
-    "CardSecret",
     "add_card",
     "callback",
     "charge",

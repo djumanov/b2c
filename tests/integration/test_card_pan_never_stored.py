@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import redact
 from app.modules.customers.models import Customer
 from app.modules.payments.schemas import CardCreateIn
-from app.modules.payments.service import CardSecret
+from app.providers.payments.base import CardCredentials
 from tests.integration.conftest import (
     TEST_CARD_EXPIRE,
     TEST_CARD_NUMBER,
@@ -142,9 +142,9 @@ def test_a_validation_error_does_not_quote_the_number() -> None:
 
 def test_the_revealed_secret_does_not_print_itself() -> None:
     """``reveal_card``'s result is headed for a provider — never for a log."""
-    secret = CardSecret(number=TEST_CARD_NUMBER, expire=TEST_CARD_EXPIRE)
+    secret = CardCredentials(number=TEST_CARD_NUMBER, expire=TEST_CARD_EXPIRE)
     assert TEST_CARD_NUMBER not in repr(secret)
-    assert repr(secret) == "CardSecret(last4='4608')"
+    assert repr(secret) == "CardCredentials(last4='4608')"
 
 
 def test_redaction_covers_the_card_keys_but_not_code() -> None:
