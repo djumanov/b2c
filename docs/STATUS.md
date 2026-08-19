@@ -22,7 +22,7 @@ takrorlamaydi.
 | Jadvallar | 28 ta + `alembic_version` |
 | Migratsiyalar | 29 ta, bitta head (`3c1f9a4d7e02`) |
 | Testlar | 842 ta — unit 24 fayl · contract 9 · integration 31 |
-| Gate'lar | ruff · mypy strict yashil; pytest'da kartaning Luhn tekshiruvi olib tashlangan `022016f` commit'iga ergashmagan 2 ta eski test qizil (`test_saved_cards`, `test_card_pan_never_stored`) — `main` da ham qizil, bron/bekor qilish ishiga aloqasiz |
+| Gate'lar | ruff · mypy strict · pytest — uchalasi ham yashil |
 
 **1-bosqich qabul mezonlari** (PROJECT.md §15):
 
