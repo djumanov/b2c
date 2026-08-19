@@ -662,3 +662,150 @@ async def test_only_one_attempt_may_be_open_per_order(
         )
     ).all()
     assert rows == []
+
+
+# --- the sweeps -----------------------------------------------------------------------
+
+
+async def test_an_abandoned_checkout_is_closed_and_frees_the_order(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    installation: None,
+    provider: RecordingProvider,
+) -> None:
+    """An attempt nobody came back to holds the order's one open slot."""
+    from app.modules.orders import service as orders_service
+
+    order = await _booked(session, customer)
+    attempt_id = await _open(api, order, headers)
+    await _send_card(api, attempt_id, headers)
+
+    row = await _attempt(session, attempt_id)
+    row.updated_at = datetime.now(UTC) - timedelta(hours=2)
+    await session.commit()
+
+    closed = await orders_service.expire_stale_attempts(session)
+
+    assert closed == 1
+    row = await _attempt(session, attempt_id)
+    assert row.status == "cancelled"
+    assert row.error_code == "abandoned"
+    assert row.card_token is None
+
+    # And the order can be paid for again.
+    second = await api.post(f"{ORDERS}{order.id}/transactions/", headers=headers)
+    assert second.status_code == 201
+    assert second.json()["data"]["id"] != attempt_id
+
+
+async def test_a_checkout_somebody_is_still_using_is_left_alone(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    installation: None,
+    provider: RecordingProvider,
+) -> None:
+    """The sweep measures from the last thing that happened, not from the start:
+    a customer asking for a second code is still at the checkout."""
+    from app.modules.orders import service as orders_service
+
+    order = await _booked(session, customer)
+    attempt_id = await _open(api, order, headers)
+    await _send_card(api, attempt_id, headers)
+
+    assert await orders_service.expire_stale_attempts(session) == 0
+    assert (await _attempt(session, attempt_id)).status == "awaiting_otp"
+
+
+async def test_a_charge_that_never_answered_is_asked_after(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    installation: None,
+    provider: RecordingProvider,
+) -> None:
+    """``pending`` is not a verdict, it is a question — and this is who asks it."""
+    from app.modules.orders import service as orders_service
+
+    order = await _booked(session, customer)
+    attempt_id = await _open(api, order, headers)
+    await _send_card(api, attempt_id, headers)
+    provider.charge_refuses = UpstreamError("the provider stopped answering")
+    await _confirm(api, attempt_id, headers)
+
+    # Put it back the way a lost answer would have left it: named, and waiting.
+    row = await _attempt(session, attempt_id)
+    row.status = TransactionStatus.PENDING.value
+    row.error_code = None
+    row.updated_at = datetime.now(UTC) - timedelta(minutes=30)
+    await session.commit()
+    provider.status_answer = TransactionStatus.PAID
+
+    resolved = await orders_service.reconcile_payments(session)
+
+    assert resolved == 1
+    assert provider.asked_after == ["receipt-1"]
+    assert (await _attempt(session, attempt_id)).status == "paid"
+    await session.refresh(order)
+    assert order.status == "paid"
+
+
+async def test_a_charge_the_provider_never_took_is_closed(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    installation: None,
+    provider: RecordingProvider,
+) -> None:
+    from app.modules.orders import service as orders_service
+
+    order = await _booked(session, customer)
+    attempt_id = await _open(api, order, headers)
+    await _send_card(api, attempt_id, headers)
+    row = await _attempt(session, attempt_id)
+    row.status = TransactionStatus.PENDING.value
+    row.provider_ref = "receipt-1"
+    row.updated_at = datetime.now(UTC) - timedelta(minutes=30)
+    await session.commit()
+    provider.status_answer = TransactionStatus.FAILED
+
+    resolved = await orders_service.reconcile_payments(session)
+
+    assert resolved == 1
+    row = await _attempt(session, attempt_id)
+    assert row.status == "failed"
+    assert row.card_token is None
+    await session.refresh(order)
+    # The seat is still theirs to pay for.
+    assert order.status == "booked"
+
+
+async def test_a_charge_the_provider_is_still_thinking_about_is_left_pending(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+    installation: None,
+    provider: RecordingProvider,
+) -> None:
+    """Guessing costs a customer their money or their seat. Asking twice costs
+    nothing."""
+    from app.modules.orders import service as orders_service
+
+    order = await _booked(session, customer)
+    attempt_id = await _open(api, order, headers)
+    await _send_card(api, attempt_id, headers)
+    row = await _attempt(session, attempt_id)
+    row.status = TransactionStatus.PENDING.value
+    row.provider_ref = "receipt-1"
+    row.updated_at = datetime.now(UTC) - timedelta(minutes=30)
+    await session.commit()
+    provider.status_answer = TransactionStatus.PENDING
+
+    assert await orders_service.reconcile_payments(session) == 0
+    assert (await _attempt(session, attempt_id)).status == "pending"

@@ -419,6 +419,18 @@ async def charge_card(
     )
 
 
+async def charge_status(
+    session: AsyncSession, code: PaymentProviderCode, *, transaction_ref: str
+) -> ChargeResult:
+    """Ask the provider what became of one charge — the reconciliation path.
+
+    ``transaction_ref`` is the **provider's** id, not ours: it is their record
+    being asked after, and ours would mean nothing to them.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.status(transaction_ref=transaction_ref)
+
+
 async def forget_card(
     session: AsyncSession, code: PaymentProviderCode, *, token: CardToken
 ) -> None:
@@ -441,6 +453,7 @@ __all__ = [
     "CardToken",
     "add_card",
     "callback",
+    "charge_status",
     "charge_card",
     "delete_card",
     "forget_card",

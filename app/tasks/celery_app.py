@@ -85,6 +85,14 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.orders.expire_unpaid",
         "schedule": 60.0,
     },
+    # Abandoned checkouts and charges that never answered. Five minutes rather
+    # than one: nothing here is a customer waiting — a stale attempt is one
+    # nobody came back to, and a charge that has not answered in five minutes
+    # will not answer in six either (order-system/03-design.md §3.7).
+    "orders-sweep-payments-every-five-minutes": {
+        "task": "app.tasks.orders.sweep_payments",
+        "schedule": 300.0,
+    },
     "heartbeat-every-five-minutes": {
         "task": "app.tasks.heartbeat.heartbeat",
         "schedule": 300.0,
