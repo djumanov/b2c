@@ -379,16 +379,18 @@ GTS javoblarini o'girish va status xaritasi — [ARCHITECTURE.md](ARCHITECTURE.m
 |---|---|
 | Auth (`login`, `password/reset`) | 5 / daqiqa / IP |
 | Qidiruv | 30 / daqiqa / foydalanuvchi |
-| **To'lov va karta** (tranzaksiya boshlash, karta qo'shish) | **10 / daqiqa / foydalanuvchi** |
+| **To'lov va karta** (urinishning har bir qadami, karta qo'shish) | **10 / daqiqa / foydalanuvchi** |
 | Boshqa public | 120 / daqiqa / foydalanuvchi |
 | Admin | 300 / daqiqa / xodim |
 
 Oshib ketganda `429 rate_limited` va `Retry-After` header'i.
 Tizimga kirmagan foydalanuvchi uchun chegara **IP bo'yicha** hisoblanadi.
 
-> To'lov chegarasi qolganlaridan qattiqroq: tranzaksiya boshlash o'rnatmaning
-> **merchant credential'i bilan** provayderga chiqadi, karta qo'shish esa xom karta
-> ma'lumoti bilan ishlaydi — ikkalasi ham keng ochiq turishi kerak bo'lgan yo'l emas.
+> To'lov chegarasi qolganlaridan qattiqroq: urinishning `card/`, `confirm/` va
+> `resend-otp/` qadamlari o'rnatmaning **merchant credential'i bilan** provayderga
+> chiqadi va ulardan biri **SMS yuborishga buyuradi**; karta qo'shish esa xom karta
+> ma'lumoti bilan ishlaydi. Hech biri keng ochiq turishi kerak bo'lgan yo'l emas.
+> `resend-otp/` ustiga urinish darajasidagi cooldown ham bor (§22).
 
 ---
 
@@ -455,8 +457,7 @@ qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
       { "code": "transfer",  "enabled": true }
     ],
     "payment_methods": [
-      { "code": "payme", "title": "Payme", "logo_url": "…" },
-      { "code": "click", "title": "Click", "logo_url": "…" }
+      { "code": "payme", "title": "Payme", "logo_url": "…" }
     ],
     "menu": [ { "title": "Aksiyalar", "url": "/promotions", "children": [] } ],
     "features": { "blog": true, "loyalty": false }
@@ -467,9 +468,12 @@ qayta build talab qilmaydi ([PROJECT.md](PROJECT.md) §7).
 Javob keshlanadi (`Cache-Control` + `ETag`); paneldan o'zgarish kiritilganda kesh tozalanadi.
 
 `payment_methods` — `products` dan farqli o'laroq **`enabled` maydoni yo'q**, va bu ataylab:
-bu yerda faqat **yoqilgan** provayderlar bo'ladi. Sayt bu ro'yxatni tugmalarga aylantiradi,
-o'chirilgan provayder esa bosilmaydigan tugma bo'lardi. Tartib ham shu massivning o'zida —
-paneldagi `sort_order` bo'yicha, teng bo'lsa `code` bo'yicha (§29).
+bu yerda faqat **yoqilgan** provayder bo'ladi.
+
+**Bu tanlov ro'yxati emas.** To'lov faqat karta bilan bo'ladi va provayderni
+o'rnatma tanlaydi (§22, `O15`), shuning uchun massivda **nol yoki bitta** yozuv
+turadi: karta formasining tepasida ko'rsatiladigan nom va logotip. Massiv bo'sh
+bo'lsa o'rnatma hozircha to'lov qabul qila olmaydi.
 
 Karta saqlash provayderga bog'liq emas (§19) — shuning uchun bu yerda karta bilan
 bog'liq bayroq yo'q.
@@ -1476,10 +1480,12 @@ Bron o'zi hech narsani to'lamaydi. `booking/` dan keyin klient **darhol**
 to'lovga o'tadi — `ticket_time_limit_at` o'tsa bron o'zi bekor bo'ladi:
 
 ```
-POST /public/orders/{id}/transactions/   → redirect_url  (§22)
-GET  /public/transactions/{id}/          → holat
-GET  /public/orders/{id}/                → buyurtma holati
-POST /public/orders/{id}/cancel/         → to'lanmagan bronni bo'shatish (§21)
+POST /public/orders/{id}/transactions/     → urinish ochiladi        (§22)
+POST /public/transactions/{id}/card/      → karta, provayder SMS yuboradi
+POST /public/transactions/{id}/confirm/   → otp_code — to'lov yechiladi
+GET  /public/transactions/{id}/           → holat
+GET  /public/orders/{id}/                 → buyurtma holati
+POST /public/orders/{id}/cancel/          → to'lanmagan bronni bo'shatish (§21)
 ```
 
 `{id}` — bron javobidagi **`order.id`**, `gts_order_number` emas.
@@ -1642,19 +1648,29 @@ provayderga qaytariladi, `status` `cancelled` va `cancellation_reason`
 ## 22. To'lov
 
 > **Bu bo'lim [`order-system/03-design.md`](order-system/03-design.md) ga
-> bo'ysunadi va 2026-08-18 da qayta yozildi.** Sabab: modelda `payment`
-> degan alohida obyekt yo'q. Bir buyurtmaga bitta summa va bitta valyuta
-> to'g'ri keladi, ular esa buyurtmaning o'z ustunlarida (`O12`) — demak
-> `payment_id` hech narsani nomlamaydi. Saqlanadigan narsa — **urinishlar**.
+> bo'ysunadi va 2026-08-19 da qayta yozildi.** Sabab: to'lov endi **faqat
+> karta bilan** bo'ladi (`O14`). Mijoz karta ma'lumotini bizga yuboradi,
+> server esa Payme yoki Click'ning karta API'sini yuritadi — hech kim
+> provayderning sahifasiga ketmaydi. `redirect`, `return_url` va `flow`
+> kontraktdan chiqdi.
+>
+> *(Avvalgi tahrir, 2026-08-18: modelda `payment` degan alohida obyekt yo'q —
+> bir buyurtmaga bitta summa to'g'ri keladi va u buyurtmaning o'z ustunlarida
+> (`O12`), demak `payment_id` hech narsani nomlamaydi. Saqlanadigan narsa —
+> **urinishlar**.)*
 
 | Metod | Yo'l | Auth | Izoh |
 |---|---|---|---|
-| `GET` | `/public/payments/methods/` | — | Yoqilgan to'lov usullari |
-| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini boshlaydi. **Idempotent** — kalitni server hosil qiladi (§10), limit 10/daq |
+| `GET` | `/public/payments/methods/` | — | Qaysi provayder orqali ishlaymiz |
+| `POST` | `/public/orders/{id}/transactions/` | ✓ | To'lov urinishini **ochadi** |
+| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumoti yoki `card_id` — provayder SMS yuboradi |
+| `POST` | `/public/transactions/{id}/confirm/` | ✓ | `otp_code` bilan tasdiq va **yechish** |
+| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish |
 | `GET` | `/public/transactions/{id}/` | ✓ | Urinish holati |
-| `POST` | `/public/transactions/{id}/card/` | ✓ | Karta ma'lumotini yuborish — **hali qurilmagan** |
-| `POST` | `/public/transactions/{id}/confirm/` | ✓ | OTB bilan tasdiqlash — **hali qurilmagan** |
-| `POST` | `/public/transactions/{id}/resend-otp/` | ✓ | Kodni qayta yuborish — **hali qurilmagan** |
+
+To'rttala `POST` ham `RateLimit("payment")` chelagida — **10/daqiqa/
+foydalanuvchi** (§14). Chegara mijozni emas, o'rnatmaning merchant akkauntini
+himoya qiladi.
 
 To'lanishi kerak bo'lgan summa buyurtmadan o'qiladi — `booking/` javobidagi
 `payment` bloki va `GET /public/orders/{id}/` shuni ko'rsatadi:
@@ -1668,44 +1684,162 @@ To'lanishi kerak bo'lgan summa buyurtmadan o'qiladi — `booking/` javobidagi
 `pay_before` — provayder o'rinni ushlab turadigan muddat. Ticketing uchun
 qoldiriladigan zaxira vaqt keyingi bo'lakda undan ayriladi.
 
-**Urinishni boshlash:**
+### Uchta qadam
+
+```
+transactions/  →  awaiting_card
+card/          →  awaiting_otp     provayder kartani oldi va kod yubordi
+confirm/       →  pending → paid   tasdiq va yechish
+```
+
+**1. Urinishni ochish.** Tana bo'sh: provayderni o'rnatma tanlaydi (quyida),
+qaytib keladigan manzil esa endi yo'q.
 
 ```json
 POST /public/orders/3f1c…/transactions/
-{ "method": "payme",
-  "return_url": "https://brand.uz/checkout/done" }
+{}
 
 → 201 { "status": "success",
         "data": { "id": "9a2e…",
                   "order_id": "3f1c…",
                   "provider": "payme",
-                  "status": "pending",
-                  "flow": "redirect",
+                  "status": "awaiting_card",
                   "amount": { "amount": "1250000.00", "currency": "UZS" },
-                  "redirect_url": "https://checkout.paycom.uz/…",
+                  "card": null,
+                  "otp": null,
                   "paid_at": null,
                   "error_message": null,
                   "created_at": "…", "updated_at": "…" } }
 ```
 
-`method` — `GET /public/payments/methods/` bergan kodlardan biri.
-`return_url` — **o'rnatmaning o'z domeni** bo'lishi shart (§17 dagi `domain`
-dan olinadi): so'rov tanlagan manzilni to'lov provayderiga uzatish —
-o'rnatmaning merchant akkaunti nomi bilan qilingan ochiq redirect.
+**2. Kartani yuborish.** Ikki shakldan **aynan bittasi**: yangi karta uchun
+raqam va amal muddati, saqlangan karta uchun `card_id`. Ikkalasi ham yoki
+hech biri — `422`.
 
-| `flow` | Qachon | Keyin nima bo'ladi |
+```json
+POST /public/transactions/9a2e…/card/
+{ "number": "8600 4907 4466 4608", "expire": "0329" }
+{ "card_id": "7c1a…" }
+
+→ 200 { "data": { "id": "9a2e…",
+                  "status": "awaiting_otp",
+                  "card": { "masked_pan": "860049******4608",
+                            "last4": "4608", "brand": "uzcard" },
+                  "otp": { "sent_to": "+9989**1234",
+                           "expires_at": "2026-08-19T10:33:00Z",
+                           "resend_after": "2026-08-19T10:31:00Z",
+                           "attempts_left": 3 },
+                  … } }
+```
+
+`number` va `expire` — **faqat yozish uchun**: ular hech qanday javobda
+qaytmaydi va hech qanday `GET` da ko'rinmaydi. `expire` — `MMYY`. Tekshiruv
+§19 dagidek: 13–19 raqam, Luhn, `MMYY`. **CVV so'ralmaydi.**
+
+`card_id` berilsa server raqamni bazadagi **AES-GCM shifrlangan** nusxadan
+o'zi ochadi (§19) — mijoz uni qayta terishi shart emas. Undan keyingi yo'l
+ikkala holatda ham bir xil.
+
+Kartani **qayta yuborish mumkin**: mijoz raqamni xato tergan bo'lsa,
+`awaiting_otp` holatidagi urinishga yangi karta yuboriladi va oldingi token
+provayderdan bo'shatiladi, kod hisoblagichi nolga qaytadi.
+
+**3. Tasdiqlash.** Maydon nomi `code` emas, **`otp_code`** — `code` jurnalda
+redaksiya qilinmaydigan nom (u provayder kodi, xato kodi va valyuta kodi
+ham), va kod o'sha nom bilan kelsa har bir SMS jurnalga tushardi.
+
+```json
+POST /public/transactions/9a2e…/confirm/
+{ "otp_code": "123456" }
+
+→ 200 { "data": { "id": "9a2e…",
+                  "status": "paid",
+                  "paid_at": "2026-08-19T10:30:41Z",
+                  "otp": null,
+                  "card": { … },
+                  … } }
+```
+
+Javob qaytganda buyurtma allaqachon `paid` va chipta chiqarish navbatga
+tushgan — yechish **shu so'rovning ichida** bajariladi (`O16`).
+
+**Kodni qayta yuborish** — tanasiz, javobi yangilangan `otp` bloki bilan
+o'sha urinish:
+
+```json
+POST /public/transactions/9a2e…/resend-otp/
+→ 200 { "data": { "status": "awaiting_otp", "otp": { … }, … } }
+```
+
+### Urinishning holatlari
+
+| Status | Ma'nosi |
+|---|---|
+| `awaiting_card` | Urinish ochilgan, karta hali yuborilmagan |
+| `awaiting_otp` | Provayderda karta bor, mijozga kod ketgan |
+| `pending` | Yechish yuborildi, provayderning javobi hali noma'lum |
+| `paid` | Pul yechildi |
+| `failed` | Karta rad etildi, kod urinishlari tugadi yoki provayder yechmadi |
+| `cancelled` | Buyurtma bekor bo'ldi yoki muddati o'tdi, urinish ochiq qolgandi |
+
+### OTP qoidalari
+
+Kodni **biz tekshirmaymiz** — uni provayder yuboradi va provayder tasdiqlaydi.
+Bizdagi hisoblagich faqat mijoz provayderni (ya'ni o'rnatmaning merchant
+akkauntini) urishda davom etmasligi uchun.
+
+* Kod **3 daqiqa** yashaydi. Muddati o'tgan kod — `400`, lekin urinish
+  `awaiting_otp` da **qoladi**: `resend-otp/` uni tiklaydi.
+* Qayta yuborish **60 soniyada bir marta**; provayderning o'z kutishi
+  kattaroq bo'lsa o'sha amal qiladi. Ertaroq so'ralsa — `429` va
+  `Retry-After`.
+* **Uchta xato kod** urinishni `failed` qiladi. Buyurtma `booked` da qoladi,
+  ya'ni mijoz yangi urinish ochib qayta boshlashi mumkin.
+* Qayta yuborish xato hisoblagichini **nolga qaytarmaydi**.
+* Xato kod, muddati o'tgan kod va tugagan urinishlar — **bir xil xabar**.
+
+### Bir buyurtmada bitta ochiq urinish
+
+**Bir buyurtmaga bir nechta urinish bo'lishi mumkin, lekin bir vaqtda faqat
+bittasi ochiq.** Mijoz kodni kiritmasdan chiqib ketib qaytsa, ikkinchi
+`transactions/` **yangi qator ochmaydi** — o'sha ochiq urinishni qaytaradi.
+Urinish `pending` bo'lsa yangisi `409` oladi: pul harakatlangan bo'lishi
+mumkin va uning ustiga ikkinchi yechish yuborilmaydi.
+
+Rad etilgan urinish esa yopiladi va keyingisi yangi qator bo'ladi: nima sinab
+ko'rilgani ham yozuvning bir qismi.
+
+> **Bu yo'llarda `Idempotency-Key` yo'q** — bron va bekor qilishdan farqli
+> (§10). Ikki sabab: kalit so'rov **tanasidan** hosil bo'ladi, ya'ni karta
+> raqami va kod digest bo'lib Redis'ga tushardi; `transactions/` tanasi esa
+> bo'sh, ya'ni kalit doim bir xil bo'lib, yiqilgan birinchi urinishdan keyin
+> 24 soat davomida eski javobni qaytaraverardi. Himoya buning o'rniga
+> bazada: ochiq urinish bo'yicha unique indeks va `confirm/` da
+> `SELECT … FOR UPDATE`. Allaqachon to'langan urinishda takroriy `confirm/`
+> o'sha javobni qaytaradi.
+
+### Qaysi provayder yechadi
+
+**Mijoz tanlamaydi — o'rnatma tanlaydi** (`O15`). Panelda bir vaqtda faqat
+bitta to'lov provayderi yoqilgan bo'ladi (§29), va aynan o'sha yechadi;
+`transactions/` javobidagi `provider` uning kodi.
+
+`GET /public/payments/methods/` shu sababdan **tanlov ro'yxati emas**: u
+karta formasining tepasida ko'rsatiladigan nom va logotipni beradi va nol
+yoki bitta yozuv qaytaradi. `site-config` dagi `payment_methods` ham
+shunday (§17).
+
+### Xatolar
+
+| Holat | Kod | HTTP |
 |---|---|---|
-| `redirect` | Hosted usul | `redirect_url` ga o'tiladi; yakun webhook orqali keladi (§40) |
-| `card` | Karta bilan to'lash — **hali qurilmagan** | `card/` → `confirm/` qadamlari shu urinish ustida bajariladi |
-
-**Bir buyurtmaga bir nechta urinish bo'lishi mumkin.** Payme rad etsa mijoz
-Click bilan qayta urinadi — bu ikkita urinish va bitta buyurtma. Har biri
-alohida yozuv bo'lib qoladi: nima sinab ko'rilgani ham yozuvning bir qismi.
-
-**Urinish provayder chaqiruvidan oldin yoziladi.** Jarayon o'rtada o'lsa,
-`provider_ref` siz qolgan urinish solishtirish uchun dalil bo'ladi; hech nima
-yozilmasa, hech kim topa olmaydigan to'lov qoladi
-([ARCHITECTURE.md](ARCHITECTURE.md) §8).
+| Boshqa mijozning buyurtmasi, urinishi yoki kartasi | `not_found` | 404 |
+| Buyurtma `booked` emas · ochiq urinish `pending` · urinish bu qadam uchun noto'g'ri holatda · buyurtma valyutasi `UZS` emas | `conflict` | 409 |
+| Raqam yoki amal muddati shakli · `number`+`card_id` birga yoki ikkalasi ham yo'q · noma'lum maydon | `validation` | 422 |
+| Karta rad etildi · kod xato · kod muddati o'tdi · mablag' yetarli emas · urinishlar tugadi | `payment_failed` | 400 |
+| Cooldown ichida `resend-otp/` | `rate_limited` | 429 |
+| Provayder sozlanmagan yoki xato qaytardi | `upstream_error` | 502 |
+| Provayder javobni ulgurmadi | `upstream_timeout` | 504 |
 
 **To'lov o'tgach** buyurtma `paid` holatiga o'tadi va chipta chiqarish navbatga
 tushadi. Summa buyurtmanikiga **mos kelmasa** buyurtma `paid` emas,
@@ -1714,14 +1848,16 @@ puli emas ([`order-system/03-design.md`](order-system/03-design.md) T5).
 
 **Bo'lib to'lash** (`installment/…`) — §41, birinchi relizga kirmaydi.
 
-> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Karta yo'li
-> qurilganda raqam so'rov tanasidan adapterga, adapterdan provayderga o'tadi va
-> shu yerda tugaydi; saqlangan kartada esa bazadagi **AES-GCM shifrlangan**
-> nusxadan ochilib uzatiladi ([PROJECT.md](PROJECT.md) §13, D7). **CVV umuman
-> so'ralmaydi.**
+> **Karta raqami ochiq matnda saqlanmaydi va log'ga tushmaydi.** Raqam so'rov
+> tanasidan adapterga, adapterdan provayderga o'tadi va shu yerda tugaydi;
+> saqlangan kartada esa bazadagi **AES-GCM shifrlangan** nusxadan ochilib
+> uzatiladi ([PROJECT.md](PROJECT.md) §13, D7). **CVV umuman so'ralmaydi.**
+> Urinish qatorida faqat maskalangan nusxa qoladi — kvitansiya karta
+> unutilgandan keyin ham o'qiladi.
 
-> **Valyuta.** Karta yo'li (`card`) faqat **UZS** ni qabul qiladi — ikkala
-> provayder ham karta API'sida boshqa valyuta bermaydi.
+> **Valyuta.** Karta yo'li faqat **UZS** ni qabul qiladi — ikkala provayder
+> ham karta API'sida boshqa valyuta bermaydi. Boshqa valyutadagi buyurtma
+> `409` oladi.
 
 ---
 
@@ -1734,12 +1870,15 @@ puli emas ([`order-system/03-design.md`](order-system/03-design.md) T5).
 
 ```json
 POST /public/promo/apply/
-{ "code": "SUMMER25", "payment_id": "…" }
+{ "code": "SUMMER25", "order_id": "3f1c…" }
 
 → { "status": "success",
     "data": { "discount": { "amount": "50000.00", "currency": "UZS" },
               "total": { "amount": "1200000.00", "currency": "UZS" } } }
 ```
+
+> `payment_id` emas, `order_id`: `O12` dan keyin bunday resurs qolmadi — bir
+> buyurtmada bitta summa bor va u buyurtmaning o'zida (§22).
 
 ---
 
@@ -2094,13 +2233,18 @@ ko'rmasdi. Bu SMTP bilan bir naqsh, faqat singleton emas.
 - `title` va `logo_id` — sayt to'lov usulini qanday ko'rsatishini belgilaydi;
   ikkalasi ham §17 ga tushadi. `logo_id` — `payment_logo` purpose'i bilan
   yuklangan fayl (§11).
-- `sort_order` — §29 jadvalidagi "tartib". §17 dagi massiv shu bo'yicha
-  saralanadi (teng bo'lsa `code` bo'yicha), ya'ni saytdagi tugmalar tartibi
-  paneldan boshqariladi.
+- `sort_order` — §29 jadvalidagi "tartib". Bugun deyarli ishsiz: §17 dagi
+  massivda nol yoki bitta yozuv bo'ladi (§22, `O15`). Ustun saqlanadi, chunki
+  bir vaqtda bir nechta provayder kerak bo'lgan kun kelsa u yana ma'no
+  kasb etadi.
 - **`enabled: true`** qilish uchun `credentials` bo'sh bo'lmasligi shart, aks
   holda `422 validation` — SMTP dagi bir xil qoida (`host` + `from_address`).
-  Qaysi kalitlar aynan kerakligini **adapter biladi**, u esa 2-bosqichda
-  keladi; shu sababli hozircha faqat "bo'sh emas" tekshiriladi.
+- **Bir vaqtda faqat bittasi yoqilgan bo'ladi.** Bittasini yoqish
+  qolganlarini o'sha tranzaksiyada o'chiradi (har biriga audit yozuvi bilan) —
+  `409` bilan rad etish bir bosishlik niyatni ikki qadamli topishmoqqa
+  aylantirardi. Yoqilgan provayder — **yechadigan** provayder (§22).
+  Credential o'chirilgan qatorda ham qoladi, ya'ni ikkinchi provayderni
+  tayyor va o'chiq holda saqlash mumkin.
 - `credentials` — **erkin obyekt**, sxemasi qat'iy emas. Payme va Click turli
   kalitlar so'raydi va ularning ro'yxati provayder hujjatidan keladi, kontrakt
   esa uni belgilamaydi. Adapter kutadigan kalitlar (panel ularni placeholder
@@ -2108,8 +2252,14 @@ ko'rmasdi. Bu SMTP bilan bir naqsh, faqat singleton emas.
 
   | Provayder | Kalitlar |
   |---|---|
-  | `payme` | `merchant_id`, `key` · ixtiyoriy `checkout_url` (test yoki prod) |
-  | `click` | `service_id`, `merchant_id`, `merchant_user_id`, `secret_key` |
+  | `payme` | `merchant_id`, `key`, **`account_field`** · ixtiyoriy `checkout_url` (test yoki prod) |
+  | `click` | `service_id`, `merchant_id`, `merchant_user_id`, `secret_key` · ixtiyoriy `base_url` |
+
+  ⚠ **`account_field`** — Payme'ning `receipts.create` chaqiruvi
+  `account: {<kalit>: qiymat}` oladi va o'sha kalitning nomi **merchant
+  kabinetida** tanlanadi. Default `order_id`, lekin uni kodga qotirib
+  bo'lmaydi: boshqacha sozlangan merchantda to'lov birinchi chaqiruvdayoq
+  sinardi.
 
 - `POST /{code}/test/` credential'ni tekshiradi va natijani `last_tested_at` /
   `last_test_ok` / `last_test_error` ga yozadi:
@@ -2542,9 +2692,11 @@ Bu yo'llarning hammasi `admin` uchun **faqat o'qish** (§5, *Tizim va audit* sat
   oshiriladi. Autentifikatsiya — HTTP Basic, foydalanuvchi `Paycom`, parol merchant kaliti.
 - Click esa `application/x-www-form-urlencoded` yuboradi va ikkita amali bor: `action=0`
   (Prepare) va `action=1` (Complete). Imzo — so'rov maydonlaridan yig'ilgan `md5`.
-- **Saqlangan karta bilan to'langan tranzaksiya ham callback oladi.** To'lov so'rov ichida
-  yakunlangan bo'lsa ham Payme protokoli chekni o'z yo'li bilan yopadi — shuning uchun
-  callback "bu allaqachon to'langan" holatini xatoga aylantirmasligi kerak.
+- **Callback — ikkinchi eshik, asosiysi emas.** Karta oqimida to'lov `confirm/`
+  so'rovining o'zida yakunlanadi (§22, `O16`), lekin Payme protokoli chekni baribir
+  o'z yo'li bilan yopadi va callback yuboradi. Shuning uchun "bu allaqachon
+  to'langan" holat **xato emas**: callback `paid` urinishni topadi va buyurtmaga
+  tegmasdan muvaffaqiyat qaytaradi.
 - Envelope qoidasi bu yerda **qo'llanmaydi**: javob shakli provayder protokoli talab qilgan
   ko'rinishda bo'ladi.
 
@@ -2571,16 +2723,18 @@ Bu yerda faqat **endpoint darajasidagi** ro'yxat.
 Kontrakt **hozirdan** to'liq belgilangan: bu endpointlar API'da mavjud, lekin birinchi relizda
 ulanmaydi. Chaqirilganda `404 not_found` qaytaradi.
 
-> **Ro'yxatdan chiqqan:** `/public/transactions/{id}/card/`, `/confirm/` va `/resend-otp/`
-> endi ulanadi. D7 qayta ko'rib chiqildi — saqlangan kartalar talab qilingani uchun Payme va
-> Click'ning karta-token API'lari ishlatiladi ([PROJECT.md](PROJECT.md) §11, §13). Bu
-> yo'llar 2-fazada, to'lov moduli bilan birga keladi.
-
-> **Yana qayta ko'rildi (2026-08-11):** saqlangan kartalar endi provayder karta-token
-> API'lariga tayanmaydi — ular **lokal, shifrlangan autofill yozuvlari** (§19,
-> [PROJECT.md](PROJECT.md) §13, D7). Kartani saqlash bir qadam, tasdiqlashsiz; to'lovda
-> `card_id` berilsa karta qadamini server bazadagi shifrlangan nusxadan o'zi to'ldiradi
-> (§22). `verify/`, `resend-otp/` va `default/` yo'llari kontraktdan chiqarildi.
+> **Ro'yxatdan chiqqan (2026-08-19):** `/public/transactions/{id}/card/`,
+> `/confirm/` va `/resend-otp/` **ulanadi va to'liq belgilandi** (§22) — ular
+> endi yagona to'lov yo'li. Buning o'rniga ro'yxatga hech nima qo'shilmadi:
+> hosted redirect qamrovdan chiqarilmadi, **butunlay olib tashlandi**
+> ([`order-system/03-design.md`](order-system/03-design.md) `O14`).
+>
+> *Bu yo'llarning tarixi uchta tahrirdan iborat va ikkitasi bir-biriga zid
+> bo'lib qolgan edi — ular shu bilan almashtirildi. Dastlab yo'llar
+> saqlangan kartalarni provayderning karta-token API'si orqali yaratish
+> uchun kiritilgan edi; 2026-08-11 da saqlangan kartalar **lokal shifrlangan
+> autofill yozuvlariga** aylandi (§19, D7) va yo'llar maqsadsiz qoldi.
+> Endi ular o'z maqsadini topdi: bu — **to'lovning o'zi**, saqlash emas.*
 
 > **Ro'yxatdan chiqqan:** statik sahifalar ham ulanadi — `privacy-policy`, `terms`
 > va `about` har biri o'z endpointi bilan, ikkala sirtda ham (§24, §30 "Sahifa
