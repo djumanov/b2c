@@ -15,6 +15,7 @@ whoever handed over the id.
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Final
 
 from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -162,6 +163,34 @@ async def attempt_by_provider_ref(
             OrderPayment.provider_ref == provider_ref,
         )
     )
+    return row
+
+
+#: The statuses that make an attempt "open" — the same list the partial unique
+#: index uses, kept in one place so the two cannot drift apart.
+OPEN_ATTEMPT_STATUSES: Final = (
+    TransactionStatus.AWAITING_CARD.value,
+    TransactionStatus.AWAITING_OTP.value,
+    TransactionStatus.PENDING.value,
+)
+
+
+async def open_attempt(
+    session: AsyncSession, order_id: uuid.UUID, *, lock: bool = False
+) -> OrderPayment | None:
+    """The attempt this order is in the middle of, if any.
+
+    At most one can exist — ``uq_order_payments_open`` says so — which is what
+    lets a customer who wandered off mid-checkout come back to the attempt they
+    left instead of opening a second one against the same order.
+    """
+    stmt = select(OrderPayment).where(
+        OrderPayment.order_id == order_id,
+        OrderPayment.status.in_(OPEN_ATTEMPT_STATUSES),
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+    row: OrderPayment | None = await session.scalar(stmt)
     return row
 
 

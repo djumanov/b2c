@@ -28,11 +28,6 @@ class _Adapter:
     code: PaymentProviderCode = PaymentProviderCode.CLICK
     credentials: Mapping[str, str] = field(default_factory=dict)
 
-    async def create_payment(
-        self, *, order_id: str, amount: Decimal, currency: str, return_url: str
-    ) -> str:
-        return "https://example.invalid/pay"
-
     async def register_card(self, card: CardCredentials) -> RegisteredCard:
         return RegisteredCard(token="t")
 

@@ -46,21 +46,19 @@ class PaymentStatus(StrEnum):
     PARTIALLY_REFUNDED = "partially_refunded"
 
 
-class TransactionFlow(StrEnum):
-    """How one attempt at a payment is being made (API.md §22)."""
-
-    #: Hosted page; the answer arrives by webhook.
-    REDIRECT = "redirect"
-    #: The card flow — ``card/`` then ``confirm/``. With a saved card the
-    #: server fills the card step itself from the stored encrypted number.
-    CARD = "card"
-
-
 class TransactionStatus(StrEnum):
-    CREATED = "created"
+    """Where one attempt has got to (API.md §22).
+
+    No ``created``: the row exists because ``transactions/`` opened it, and at
+    that instant it is already waiting for a card.
+    """
+
     AWAITING_CARD = "awaiting_card"
     AWAITING_OTP = "awaiting_otp"
-    #: The customer is away at the provider (redirect flow).
+    #: **The charge went out and the answer is unknown.** The one genuinely
+    #: dangerous state: a timed-out charge may have moved money, so calling it
+    #: ``failed`` would be a lie that invites a second one. ``payments.reconcile``
+    #: asks the provider and closes it.
     PENDING = "pending"
     PAID = "paid"
     FAILED = "failed"
@@ -186,17 +184,6 @@ class PaymentProvider(Protocol):
     """The card flow plus the callback half. Every payment adapter implements it."""
 
     code: PaymentProviderCode
-
-    async def create_payment(
-        self, *, order_id: str, amount: Decimal, currency: str, return_url: str
-    ) -> str:
-        """Start a hosted payment; returns the URL to send the customer to.
-
-        **Being removed.** The hosted redirect leaves the contract with the card
-        flow (``O14``); it is still here so this slice changes no behaviour, and
-        goes with the endpoints that call it.
-        """
-        ...
 
     async def register_card(self, card: CardCredentials) -> RegisteredCard:
         """Hand the card to the provider and get the customer texted a code.
@@ -353,7 +340,6 @@ __all__ = [
     "RefundResult",
     "RefundStatus",
     "RegisteredCard",
-    "TransactionFlow",
     "TransactionStatus",
     "VerifiedCard",
     "registry",

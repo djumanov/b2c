@@ -37,6 +37,11 @@ from app.modules.orders.schemas import (
     TransactionStartIn,
 )
 
+# The card body belongs to ``payments``: it is the only module allowed to hold a
+# number in the clear, and the validation a saved card is held to is the same
+# validation a card being spent is held to (ARCHITECTURE.md §5).
+from app.modules.payments.schemas import CardPaymentIn, OtpConfirmIn
+
 router = enveloped_router(
     prefix="/orders",
     tags=["orders"],
@@ -145,35 +150,100 @@ async def cancel_order(
 )
 async def start_transaction(
     id: uuid.UUID,
-    payload: TransactionStartIn,
     customer: CurrentCustomer,
     session: SessionDep,
-    idempotency: IdempotencyKey,
+    payload: TransactionStartIn | None = None,
 ) -> TransactionOut:
-    """Open one attempt at paying, and say where to send the customer.
+    """Open one attempt at paying for this order, or return the one already open.
 
-    The attempt row is written **before** the provider is called, so a process
-    that dies mid-call leaves evidence rather than an unmatched charge
-    (ARCHITECTURE.md §8). If the provider then refuses to start, the row stays
-    as a failed attempt: what was tried is part of the record.
+    The body is empty: the provider is the installation's choice and there is
+    nowhere to come back from (API.md §22). It is still declared, and still
+    ``extra: forbid``, so a client that has not caught up and sends
+    ``{"method": "payme"}`` is told the contract moved rather than quietly
+    ignored.
 
-    Idempotent for the same reason as booking — a dropped response and a
-    double-tapped button look identical, and one of them must not become two
-    charges (API.md §10). The key is derived from the request when the client
-    sends none, so the protection does not depend on the client remembering to
-    ask for it.
+    **No ``Idempotency-Key``**, and that is not an omission. The key would be
+    derived from the request, and with an empty body every call from one
+    customer for one order would hash to the same one — a first attempt that
+    failed would then replay for twenty-four hours and the customer could never
+    pay. The guard is in the database instead: one open attempt per order
+    (``uq_order_payments_open``), so a double tap lands on the attempt it
+    already made.
     """
-    if idempotency.replayed is not None:
-        return TransactionOut.model_validate(idempotency.replayed)
-    try:
-        answer = await service.start_transaction(
-            session, customer_id=customer.id, order_id=id, data=payload
-        )
-    except UpstreamError:
-        await idempotency.release()
-        raise
-    await idempotency.store(answer.model_dump(mode="json"))
-    return answer
+    return await service.start_transaction(
+        session, customer_id=customer.id, order_id=id
+    )
+
+
+@transactions_router.post(
+    "/{id}/card/",
+    summary="Send the card for a payment",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def submit_card(
+    id: uuid.UUID,
+    payload: CardPaymentIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+) -> TransactionOut:
+    """Give the provider the card; it texts the customer a code.
+
+    Either a typed number and expiry, or the id of a card this customer already
+    saved — the server opens the stored ciphertext itself and the client never
+    handles the number (API.md §19, §22).
+
+    **This is the one path that carries a card number, and it deliberately has
+    no ``Idempotency-Key``.** The key is a hash of the request body, and it is
+    stored as a Redis key; a PAN-derived digest at rest would contradict the
+    rule that the number reaches the adapter and stops there (PROJECT.md §13).
+    What stands in for it is the attempt's own state, held under
+    ``SELECT … FOR UPDATE``.
+    """
+    return await service.submit_card(
+        session, customer_id=customer.id, attempt_id=id, data=payload
+    )
+
+
+@transactions_router.post(
+    "/{id}/confirm/",
+    summary="Confirm a payment with the code",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def confirm_payment(
+    id: uuid.UUID,
+    payload: OtpConfirmIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+) -> TransactionOut:
+    """Verify the code and take the money.
+
+    The whole payment happens inside this request (``O16``): when it answers,
+    the order is already ``paid`` and ticketing is queued. A repeat on an
+    attempt that is already paid returns the same answer instead of charging
+    again — replay by state, which is what an endpoint carrying a one-time
+    password uses in place of an idempotency key.
+    """
+    return await service.confirm_payment(
+        session, customer_id=customer.id, attempt_id=id, data=payload
+    )
+
+
+@transactions_router.post(
+    "/{id}/resend-otp/",
+    summary="Send the code again",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def resend_otp(
+    id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
+) -> TransactionOut:
+    """Ask the provider to text the code again.
+
+    Rate-limited twice over: the payment bucket, and a cooldown on the attempt
+    itself. The second one is on the row rather than in Redis because it belongs
+    to this payment and has to outlive a flushed cache — otherwise a customer
+    could spend the installation's merchant account on messages.
+    """
+    return await service.resend_code(session, customer_id=customer.id, attempt_id=id)
 
 
 @transactions_router.get("/{id}/", summary="One payment attempt")
@@ -181,8 +251,11 @@ async def get_transaction(
     id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
 ) -> TransactionOut:
     """Someone else's attempt answers 404, the same as one that does not exist."""
+    attempt = await service.owned_attempt(
+        session, customer_id=customer.id, attempt_id=id
+    )
     return TransactionOut.from_attempt(
-        await service.owned_attempt(session, customer_id=customer.id, attempt_id=id)
+        attempt, otp_max_attempts=service.CARD_OTP_MAX_ATTEMPTS
     )
 
 

@@ -27,18 +27,19 @@ from app.providers.payments.base import PaymentProviderCode
 from tests.integration.conftest import customer_headers_for
 from tests.integration.test_payments import (
     ORDERS,
-    RETURN_URL,
     RecordingProvider,
     _booked,
+    enable_provider,
 )
 
 WEBHOOK = "/api/v1/webhooks/payments/payme/"
 
 
 @pytest.fixture
-async def provider() -> Any:
+async def provider(session: AsyncSession) -> Any:
     pinned = RecordingProvider()
     set_provider(PaymentProviderCode.PAYME, pinned)
+    await enable_provider(session)
     yield pinned
     clear_overrides()
 
@@ -56,20 +57,32 @@ async def installation() -> None:
 
 
 async def _paying(
-    api: AsyncClient, session: AsyncSession, customer: Customer
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    provider: RecordingProvider,
 ) -> tuple[Order, dict[str, Any]]:
-    """A booked order with one attempt open at the provider."""
+    """A booked order with a charge in flight and no answer yet.
+
+    ``pending`` and unreferenced is the state a callback can genuinely arrive
+    into: the charge went out, and the provider called back before — or instead
+    of — answering us. Everything in this file is about what the callback is
+    allowed to do to an order in that position.
+    """
     order = await _booked(session, customer)
     started = await api.post(
-        f"{ORDERS}{order.id}/transactions/",
-        json={"method": "payme", "return_url": RETURN_URL},
-        headers={
-            **customer_headers_for(customer),
-            "Idempotency-Key": str(uuid.uuid4()),
-        },
+        f"{ORDERS}{order.id}/transactions/", headers=customer_headers_for(customer)
     )
-    assert started.status_code == 201
-    return order, started.json()["data"]
+    assert started.status_code == 201, started.text
+    body: dict[str, Any] = started.json()["data"]
+
+    attempt = await session.get(OrderPayment, uuid.UUID(body["id"]))
+    assert attempt is not None
+    attempt.status = "pending"
+    await session.commit()
+    # What the provider will quote back: the order handle it was given.
+    provider.reference = str(order.id)
+    return order, body
 
 
 async def _events(session: AsyncSession, order: Order) -> list[str]:
@@ -89,7 +102,7 @@ async def test_a_callback_settles_the_order(
     installation: None,
     provider: RecordingProvider,
 ) -> None:
-    order, attempt = await _paying(api, session, customer)
+    order, attempt = await _paying(api, session, customer, provider)
 
     response = await api.post(WEBHOOK, json={"method": "PerformTransaction"})
 
@@ -128,7 +141,7 @@ async def test_a_repeated_callback_settles_once(
     """Providers resend. "This is already paid" is a fact, not a failure — and
     the guard that makes it harmless is the unique index on
     ``(provider, provider_ref)``, not the handler's care (X6)."""
-    order, _ = await _paying(api, session, customer)
+    order, _ = await _paying(api, session, customer, provider)
 
     first = await api.post(WEBHOOK, json={"method": "PerformTransaction"})
     second = await api.post(WEBHOOK, json={"method": "PerformTransaction"})
@@ -151,7 +164,7 @@ async def test_a_bad_signature_changes_nothing(
     """Unconditional rule (API.md §40). The answer's shape is the provider's —
     Payme wants a 200 with a JSON-RPC error, because it reads a 401 as a reason
     to retry blindly — but what is checked is that nothing moved."""
-    order, attempt = await _paying(api, session, customer)
+    order, attempt = await _paying(api, session, customer, provider)
     provider.signature_ok = False
 
     response = await api.post(WEBHOOK, json={"method": "PerformTransaction"})
@@ -182,7 +195,7 @@ async def test_money_for_a_different_amount_needs_a_person(
     between settles against a sum nobody agreed to. There is nowhere safe to
     stand: the money has moved, and buying a ticket with it would compound the
     problem."""
-    order, _ = await _paying(api, session, customer)
+    order, _ = await _paying(api, session, customer, provider)
     order.amount_total = Decimal("1300000.00")
     await session.commit()
 
@@ -230,7 +243,7 @@ async def test_a_callback_that_settles_nothing_moves_nothing(
     """Payme's protocol takes several exchanges before the money is real, and
     only one of them means it moved. The rest are answered without anything
     changing."""
-    order, _ = await _paying(api, session, customer)
+    order, _ = await _paying(api, session, customer, provider)
     provider.settles = False
 
     response = await api.post(WEBHOOK, json={"method": "CheckPerformTransaction"})

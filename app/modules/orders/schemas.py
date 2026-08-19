@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from app.core.money import Money
 from app.modules.orders.models import Order, OrderPayment
+from app.providers.payments.base import TransactionStatus
 
 
 class OrderOut(BaseModel):
@@ -185,6 +186,31 @@ class OrderListOut(BaseModel):
         )
 
 
+class CardView(BaseModel):
+    """The card an attempt is being paid with, as the customer may see it.
+
+    Derived from the digits before they were sent and stored on the attempt, so
+    it survives the card being forgotten — a receipt is read afterwards
+    (PROJECT.md §13).
+    """
+
+    masked_pan: str
+    last4: str
+    brand: str | None
+
+
+class OtpView(BaseModel):
+    """Where the code went and what the customer may still do about it."""
+
+    #: Masked by the provider. We never see the whole number.
+    sent_to: str | None
+    #: Our own guard. Past it the attempt stays open and a resend recovers it.
+    expires_at: datetime | None
+    #: Before this, ``resend-otp/`` answers ``429``.
+    resend_after: datetime | None
+    attempts_left: int
+
+
 class TransactionOut(BaseModel):
     """One attempt at paying for an order (API.md §22).
 
@@ -197,14 +223,15 @@ class TransactionOut(BaseModel):
     order_id: uuid.UUID
     #: ``payme`` · ``click``.
     provider: str
-    #: ``pending`` · ``paid`` · ``failed`` · ``cancelled``.
+    #: ``awaiting_card`` · ``awaiting_otp`` · ``pending`` · ``paid`` ·
+    #: ``failed`` · ``cancelled``.
     status: str
-    #: ``redirect`` today. The card flow fills the rest of the vocabulary.
-    flow: str
     amount: Money
-    #: Where to send the customer. ``null`` once the provider has answered, or
-    #: on a flow that does not leave the site.
-    redirect_url: str | None
+    #: ``null`` until the card step has been taken.
+    card: CardView | None
+    #: ``null`` unless a code is outstanding — so it is ``null`` again once the
+    #: attempt is paid, and the client has nothing to count down.
+    otp: OtpView | None
     paid_at: datetime | None
     #: Why it did not work, when it did not.
     error_message: str | None
@@ -212,15 +239,36 @@ class TransactionOut(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def from_attempt(cls, attempt: OrderPayment) -> "TransactionOut":
+    def from_attempt(
+        cls, attempt: OrderPayment, *, otp_max_attempts: int
+    ) -> "TransactionOut":
+        card = (
+            CardView(
+                masked_pan=attempt.card_masked,
+                last4=attempt.card_last4 or "",
+                brand=attempt.card_brand,
+            )
+            if attempt.card_masked is not None
+            else None
+        )
+        otp = (
+            OtpView(
+                sent_to=attempt.otp_sent_to,
+                expires_at=attempt.otp_expires_at,
+                resend_after=attempt.otp_resend_after,
+                attempts_left=max(0, otp_max_attempts - attempt.otp_attempts),
+            )
+            if attempt.status == TransactionStatus.AWAITING_OTP.value
+            else None
+        )
         return cls(
             id=attempt.id,
             order_id=attempt.order_id,
             provider=attempt.provider,
             status=attempt.status,
-            flow=attempt.flow,
             amount=Money(amount=attempt.amount, currency=attempt.currency),
-            redirect_url=attempt.redirect_url,
+            card=card,
+            otp=otp,
             paid_at=attempt.paid_at,
             error_message=attempt.error_message,
             created_at=attempt.created_at,
@@ -229,21 +277,23 @@ class TransactionOut(BaseModel):
 
 
 class TransactionStartIn(BaseModel):
-    """Starting a payment: which method, and where to come back to."""
+    """Opening a payment attempt — and there is nothing to say.
+
+    The provider is the installation's choice rather than the request's
+    (``O15``), and with the hosted redirect gone (``O14``) there is nowhere to
+    come back from. The model is kept, empty, rather than deleted: ``extra:
+    forbid`` is what tells a client still sending ``{"method": "payme"}`` that
+    the contract moved, instead of silently ignoring it.
+    """
 
     model_config = {"extra": "forbid"}
 
-    #: One of the codes ``GET /public/payments/methods/`` published.
-    method: str
-    #: Where the provider sends the customer afterwards. Checked against the
-    #: installation's own origins — a redirect target chosen by a request is
-    #: otherwise an open redirect with our merchant account's name on it.
-    return_url: str
-
 
 __all__ = [
+    "CardView",
     "OrderListOut",
     "OrderOut",
+    "OtpView",
     "TransactionOut",
     "TransactionStartIn",
 ]

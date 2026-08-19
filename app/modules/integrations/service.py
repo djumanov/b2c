@@ -713,6 +713,8 @@ async def update_payment_provider(
                 field="enabled",
             )
         row.enabled = data.enabled
+        if data.enabled:
+            await _switch_others_off(session, code)
 
     await session.commit()
     await session.refresh(row)
@@ -720,6 +722,31 @@ async def update_payment_provider(
     audit_context.describe(changes=audit_context.diff(before, _payments_aud(row)))
     logger.info("payment_provider_updated", code=row.code.value, enabled=row.enabled)
     return await _payments_out(session, row)
+
+
+async def _switch_others_off(session: AsyncSession, keep: PaymentProviderCode) -> None:
+    """Only one provider may be enabled, and it is the one that charges (``O15``).
+
+    Switching one on switches the rest off, in this transaction, rather than
+    refusing with a ``409``: the owner said which provider should take the
+    money, and turning that one intent into a two-step puzzle would help nobody.
+    Each row that changes is described to the audit journal on its own, so the
+    panel can show what a single click did.
+
+    Credentials are left where they are — an installation may keep a second
+    provider configured and dark, ready for the day it switches.
+    """
+    for row in await repository.payment_providers(session):
+        if row.code is keep or not row.enabled:
+            continue
+        row.enabled = False
+        audit_context.describe(
+            changes={
+                "enabled": {"before": True, "after": False},
+                "code": row.code.value,
+            }
+        )
+        logger.info("payment_provider_switched_off", code=row.code.value, reason=keep)
 
 
 async def _attach_logo(
@@ -787,6 +814,29 @@ async def payment_providers(
         for row in await repository.payment_providers(session)
         if row.enabled and row.credentials
     ]
+
+
+async def active_payment_provider(
+    session: AsyncSession,
+) -> ConfiguredPaymentProvider | None:
+    """The provider that charges, or ``None`` if this installation cannot yet.
+
+    One provider is enabled at a time (``O15``), so "which one is on" and "which
+    one takes the money" are the same question and there is only one place to
+    answer it. ``sort_order`` decides if an older installation still has two
+    rows enabled from before the rule — a tie-break rather than a policy, and
+    the panel closes the gap the next time anything is saved.
+
+    Returning ``None`` is not an error here. The caller turns it into a ``502``
+    and, deliberately, writes no attempt row: an attempt is evidence of a
+    conversation with a provider, and there was no conversation.
+    """
+    configured = await payment_providers(session)
+    if session.in_transaction():
+        await session.commit()
+    return min(
+        configured, key=lambda row: (row.sort_order, row.code.value), default=None
+    )
 
 
 async def payment_provider_adapter(

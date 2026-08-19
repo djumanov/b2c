@@ -684,12 +684,18 @@ resend-otp/                        kodni qayta yuborish
 | `awaiting_otp` | Provayderda token bor, mijozga kod ketgan |
 | `pending` | **Yechish yuborildi, javob noma'lum** |
 | `paid` | Pul yechildi; `settle_attempt` T5 ni yuritdi |
-| `failed` | Karta rad etildi, kod urinishlari tugadi yoki provayder yechmadi |
+| `failed` | Kod urinishlari tugadi yoki provayder yechishni rad etdi |
 | `cancelled` | Buyurtma bekor bo'ldi yoki muddati o'tdi, urinish ochiq qolgandi |
 
 `pending` — yagona **haqiqatan xavfli** holat: timeout bo'lgan yechish pulni
 harakatlantirgan bo'lishi mumkin. Uni `failed` deb belgilash yolg'on bo'lardi
 va ikkinchi yechishga chaqirardi. Uni `payments.reconcile` yechadi (§3.7).
+
+> **Rad etilgan karta urinishni yoqmaydi.** Mijoz raqamni xato tergan bo'lsa
+> `400` oladi va o'sha urinishga boshqa karta yuboradi — `card/` shu sababdan
+> `awaiting_otp` dan ham qabul qilinadi, oldingi ro'yxatdan o'tish o'rniga
+> yangisi qo'yiladi. Aks holda har bir xato raqam `transactions/` orqali
+> qaytishni va tarixda bitta `failed` qatorni talab qilardi.
 
 **OTP qoidalari.** Kodni **biz tekshirmaymiz** — uni provayder yuboradi va
 provayder tasdiqlaydi. Bizdagi hisoblagich faqat mijoz o'rnatmaning merchant
@@ -724,9 +730,16 @@ bitta provayder chaqiruvi, bitta holat o'tishi. Raqam so'rov tanasidan yoki
 ustundan adapterga, adapterdan provayderga o'tadi va shu yerda tugaydi.
 
 **Ochiq urinish buyurtma bilan birga yopiladi.** Buyurtma bekor bo'lganda yoki
-muddati o'tganda ochiq urinish `cancelled` ga o'tadi, `card_token` `NULL`
-bo'ladi va provayderdagi token bo'shatiladi — best effort, uning yiqilishi
-bekor qilishni to'xtatmaydi (bron bo'shatish bilan bir xil qoida).
+muddati o'tganda ochiq urinish `cancelled` ga o'tadi va `card_token` `NULL`
+bo'ladi — **o'sha tranzaksiyada**, ya'ni yopilgan buyurtma va hali kartani
+kutayotgan to'lov bir vaqtda mavjud bo'la olmaydi. Provayderga bu yerdan
+chiqilmaydi: token bir martalik va ikkala provayderda ham qisqa umrli, bekor
+qilish ichidagi tarmoq chaqiruvi esa mijoz bilan uning bo'shatilgan o'rni
+orasiga provayderni qo'yardi.
+
+`pending` urinish esa **tegilmaydi**: yechish yuborilgan va javob noma'lum, uni
+`cancelled` deb belgilash sodir bo'lgan bo'lishi mumkin bo'lgan to'lovni sodir
+bo'lmagan deb yozib qo'yish bo'lardi. Uni `payments.reconcile` yopadi.
 
 ### Admin
 
