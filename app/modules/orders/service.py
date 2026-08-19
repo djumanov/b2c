@@ -89,6 +89,7 @@ from app.providers.products.orders import (
     BookingResult,
     CancelResult,
     OrderOperations,
+    PartialBooking,
     TicketingResult,
     order_operations,
 )
@@ -311,35 +312,96 @@ async def confirm_booking(
     )
 
 
-async def record_unreadable_booking(
-    session: AsyncSession, order: Order, response: dict[str, Any]
-) -> Order:
-    """The provider agreed in words we cannot parse — T4.
+def _salvaged(partial: PartialBooking) -> dict[str, Any]:
+    """The columns an unconfirmed answer can still fill.
 
-    Not a failure to report: a real seat is probably held. The key is **kept**,
-    so a retry cannot open a second one, and the whole answer goes onto the
-    event where a person can read it.
+    Only what actually read. ``None`` is not written over a value a previous
+    pass established: reconciliation calls this on a row that may already carry
+    an order number, and forgetting one would cost the ability to cancel.
+    """
+    fields: dict[str, Any] = {"provider_response": partial.raw}
+    named = {
+        "provider_order_number": partial.provider_order_number,
+        "provider_order_uid": partial.provider_order_uid,
+        "provider_pnr": partial.provider_pnr,
+        "provider_status": partial.provider_status,
+        "ticket_time_limit_at": partial.ticket_time_limit_at,
+        "travel_start_at": partial.travel_start_at,
+        "travel_end_at": partial.travel_end_at,
+        "route_summary": partial.route_summary,
+    }
+    fields.update({name: value for name, value in named.items() if value is not None})
+    if partial.total is not None:
+        fields["amount_total"] = partial.total.amount
+        fields["currency"] = partial.total.currency
+    if partial.route is not None:
+        fields["route"] = partial.route.as_dict()
+    if partial.travelers:
+        fields["travelers"] = [person.as_dict() for person in partial.travelers]
+    return fields
+
+
+async def record_unresolved_booking(
+    session: AsyncSession, order: Order, partial: PartialBooking, *, reason: str
+) -> Order:
+    """The provider answered and we will not call it a reservation — T2x.
+
+    Not a failure to report and not a queue for a person either: a real seat is
+    probably held, so the order stays ``created`` — which is exactly what that
+    status means, *we asked and do not know* — and reconciliation settles it
+    with GTS. ``needs_attention`` is the wrong home for this: no money has
+    moved, and that state is one only a person leaves (03-design.md §3.3).
+
+    The idempotency key is **kept**, so a retry cannot open a second seat.
+
+    Everything that did read is written even though the order is not booked. An
+    order with no ``provider_order_number`` cannot be cancelled at all
+    (``cancel_order``), which is how a real seat leaks upstream with nothing in
+    our database pointing at it.
     """
     logger.warning(
-        "order_answer_unreadable",
+        "order_booking_unresolved",
         order_id=str(order.id),
         order_no=order.order_no,
         product=order.product,
-        fields=sorted(response),
+        detail=reason,
+        provider_status=partial.provider_status,
+        provider_order_number=partial.provider_order_number,
     )
-    return await transition(
-        session,
-        order.id,
-        to=OrderStatus.NEEDS_ATTENTION,
-        actor=Actor.system("orders.booking"),
-        action=EventAction.BOOKING_UNRESOLVED,
-        reason="The booking answer could not be read",
-        meta=response,
-        fields={
-            "provider_response": response,
-            "attention_reason": "unreadable_booking_answer",
-        },
-    )
+    try:
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.CREATED,
+            actor=Actor.system("orders.booking"),
+            action=EventAction.BOOKING_UNRESOLVED,
+            reason=reason[:255],
+            meta=partial.raw,
+            fields=_salvaged(partial),
+        )
+    except IntegrityError as clash:
+        # ``uq_orders_provider_number_live``: the number we just read already
+        # belongs to a live order. Salvaging it is worth doing and never worth
+        # a 500, so the row keeps the answer and loses only the identifier.
+        await session.rollback()
+        logger.warning(
+            "order_provider_number_taken",
+            order_id=str(order.id),
+            provider_order_number=partial.provider_order_number,
+            error=str(clash.orig),
+        )
+        fields = _salvaged(partial)
+        fields.pop("provider_order_number", None)
+        return await transition(
+            session,
+            order.id,
+            to=OrderStatus.CREATED,
+            actor=Actor.system("orders.booking"),
+            action=EventAction.BOOKING_UNRESOLVED,
+            reason=reason[:255],
+            meta=partial.raw,
+            fields=fields,
+        )
 
 
 async def fail_booking(session: AsyncSession, order: Order, *, reason: str) -> Order:
@@ -1572,7 +1634,7 @@ __all__ = [
     "payment_state",
     "reconcile_attempt",
     "reconcile_payments",
-    "record_unreadable_booking",
+    "record_unresolved_booking",
     "resend_code",
     "retry_refund",
     "retry_ticketing",

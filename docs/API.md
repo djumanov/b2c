@@ -1414,13 +1414,21 @@ maydon yo'qolgan yo'lovchiga aylanmaydi.
 > bo'lmaydi** — `order` va `payment` esa har doim bor. Bu rostini aytadi:
 > javob bizda hali yo'q.
 
-> **`status: "needs_attention"` bo'lsa nima qilish kerak.** GTS javob berdi,
-> lekin biz undan buyurtma raqami yoki narxni o'qiy olmadik. O'rin **band
-> bo'lishi ehtimoli yuqori**, shuning uchun klient **qayta bron qilmasin** —
-> ikkinchi o'rin band bo'ladi. Javob `200` qaytadi, `amount` `null` bo'ladi,
-> buyurtma esa operator ro'yxatiga tushadi. Klient foydalanuvchiga
-> "buyurtmangiz tekshirilmoqda" deb ko'rsatadi va `GET /public/orders/{id}/`
-> ni kuzatadi.
+> **`status: "created"` bo'lsa nima qilish kerak.** GTS javob berdi, lekin biz
+> undan buyurtma raqami yoki narxni o'qiy olmadik — yoki javobdagi holat
+> **band o'rin** degani emas. O'rin band bo'lishi ehtimoli yuqori, shuning
+> uchun klient **qayta bron qilmasin**: ikkinchi o'rin band bo'ladi va
+> `Idempotency-Key` ham shu qatorda qolgan.
+>
+> Javob `200` qaytadi, `amount` `null` bo'ladi, va o'qilgan hamma narsa —
+> `gts_order_number`, `gts_pnr`, `route`, `passengers` — qatorda turadi.
+> Klient foydalanuvchiga "buyurtmangiz tekshirilmoqda" deb ko'rsatadi va
+> `GET /public/orders/{id}/` ni kuzatadi: sinxronizatsiya GTS'dan qayta
+> so'raydi va buyurtma `booked` yoki `failed` ga o'tadi.
+>
+> Bu holat `needs_attention` **emas**. U — pul harakatlangan, avtomatik
+> kompensatsiya bajarilmagan holat; bu yerda esa pul umuman
+> harakatlanmagan.
 
 #### Xatolar
 
@@ -1680,10 +1688,13 @@ Ro'yxatdagi maydonlarga qo'shimcha:
 | `booked_at`, `paid_at`, `ticketed_at`, `cancelled_at` | Har bir muhim o'tish qachon sodir bo'lgani |
 | `data` | **Provayderning oxirgi javobi to'liq**, ichi o'girilmasdan (§20) |
 
-Provayder javobini o'qib bo'lmasa buyurtma **`needs_attention`** holatida
-yoziladi: `gts_order_number` va `amount` `null` bo'ladi, javobning o'zi esa
+Provayder javobidan buyurtma raqami yoki narx o'qilmasa — yoki javobdagi
+holat band o'rin degani bo'lmasa — buyurtma **`created`** holatida qoladi:
+`amount` `null` bo'ladi, o'qilgani (`gts_order_number`, `gts_pnr`, `route`,
+`passengers`, `ticket_time_limit_at`) esa qatorga yoziladi va javobning o'zi
 buyurtma tarixidagi hodisaga biriktiriladi. Bron yo'qolmaydi, lekin "bron
-qilindi" deb ham ko'rsatilmaydi.
+qilindi" deb ham ko'rsatilmaydi. Sinxronizatsiya GTS'dan qayta so'rab uni
+`booked` yoki `failed` ga chiqaradi.
 Boshqa mijozning buyurtmasi `404` beradi, "yo'q" bilan bir xil (§18).
 
 **Bekor qilish** — `POST /public/orders/{id}/cancel/`. Tanasi yo'q: buyurtma

@@ -228,6 +228,22 @@ TRANSITIONS: Final[tuple[Transition, ...]] = (
     Transition(
         "T3", OrderStatus.CREATED, OrderStatus.FAILED, EventAction.BOOKING_REJECTED
     ),
+    # The provider answered and we will not call it a reservation: a field the
+    # row cannot do without would not read, or the status is not a held seat.
+    # It stays ``created`` — which is exactly what that status means, "we asked
+    # and do not know" — and the reconciliation sweep settles it with GTS. Not
+    # ``needs_attention``: no money has moved, and that state is the one a
+    # person has to work through (03-design.md §3.3).
+    Transition(
+        "T2x",
+        OrderStatus.CREATED,
+        OrderStatus.CREATED,
+        EventAction.BOOKING_UNRESOLVED,
+    ),
+    # The end of that road. Reconciliation asked GTS repeatedly and could
+    # neither confirm the order nor be told it does not exist; an order nobody
+    # can account for is a person's problem, and leaving it ``created`` for
+    # ever would only hide it.
     Transition(
         "T4",
         OrderStatus.CREATED,
