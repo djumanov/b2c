@@ -421,10 +421,33 @@ async def _expire_unpaid() -> None:
         logger.info("orders_expired", count=len(expiring))
 
 
+async def _sweep_payments() -> None:
+    """Close the checkouts nobody came back to, and chase the charges that hang.
+
+    Two queries rather than two beat entries: they run on the same minute, they
+    touch the same table, and a second schedule would be a second thing to
+    notice was not running (order-system/03-design.md §3.7).
+
+    The order matters a little. Stale attempts are closed first because that is
+    cheap and local; reconciliation talks to a provider and is allowed to be
+    slow, and a stale sweep held up behind it would leave orders unable to open
+    a second payment.
+    """
+    async with get_sessionmaker()() as session:
+        await orders_service.expire_stale_attempts(session)
+        await orders_service.reconcile_payments(session)
+
+
 @celery_app.task(name="app.tasks.orders.expire_unpaid")
 def expire_unpaid() -> None:
     """Release the holds whose payment window has closed."""
     asyncio.run(_expire_unpaid())
+
+
+@celery_app.task(name="app.tasks.orders.sweep_payments")
+def sweep_payments() -> None:
+    """Close abandoned checkouts and resolve charges that never answered."""
+    asyncio.run(_sweep_payments())
 
 
 @celery_app.task(name="app.tasks.orders.refund")
@@ -445,4 +468,4 @@ def run_due() -> None:
     asyncio.run(_run_due())
 
 
-__all__ = ["expire_unpaid", "refund", "run_due", "ticket"]
+__all__ = ["expire_unpaid", "refund", "run_due", "sweep_payments", "ticket"]

@@ -770,6 +770,101 @@ def _out(attempt: OrderPayment) -> TransactionOut:
     return TransactionOut.from_attempt(attempt, otp_max_attempts=CARD_OTP_MAX_ATTEMPTS)
 
 
+#: How long an attempt may sit waiting for a card or a code before the sweep
+#: closes it. Generous next to ``CARD_OTP_TTL`` on purpose: the customer may be
+#: asking for a second code, and the cost of waiting is a row, while the cost of
+#: being early is a checkout that closes under somebody's hands.
+STALE_ATTEMPT_AFTER: Final = timedelta(minutes=30)
+
+#: How long a charge may go unanswered before the provider is asked about it.
+#: Long enough that an ordinary slow call is not mistaken for a lost one.
+UNANSWERED_CHARGE_AFTER: Final = timedelta(minutes=5)
+
+
+async def expire_stale_attempts(session: AsyncSession, *, limit: int = 50) -> int:
+    """Close the checkouts nobody came back to.
+
+    An abandoned attempt is not harmless: it holds the order's one open slot,
+    so the customer who returns tomorrow could not start again until it went.
+    The token goes with it, which the CHECK on the table insists on anyway.
+    """
+    cutoff = datetime.now(UTC) - STALE_ATTEMPT_AFTER
+    stale = await repository.stale_attempts(session, before=cutoff, limit=limit)
+    for attempt in stale:
+        _release_token(attempt)
+        attempt.status = TransactionStatus.CANCELLED.value
+        attempt.error_code = "abandoned"
+    if stale:
+        await session.commit()
+        logger.info("payment_attempts_expired", count=len(stale))
+    return len(stale)
+
+
+async def reconcile_attempt(session: AsyncSession, attempt: OrderPayment) -> bool:
+    """Ask the provider what happened to a charge that never answered.
+
+    The reason ``pending`` exists rather than being called ``failed``: the money
+    may have moved, and the only party that knows is the one that moved it. A
+    provider still saying "pending" is left alone — being asked twice costs
+    nothing, and guessing costs a customer their money or their seat.
+
+    Returns whether the attempt was resolved.
+    """
+    if attempt.provider_ref is None:  # pragma: no cover - the query excludes these
+        return False
+    code = PaymentProviderCode(attempt.provider)
+    try:
+        answer = await payments_service.charge_status(
+            session, code, transaction_ref=attempt.provider_ref
+        )
+    except AppError as unreachable:
+        logger.warning(
+            "payment_reconcile_failed",
+            attempt_id=str(attempt.id),
+            reason=str(unreachable),
+        )
+        return False
+
+    if answer.status is TransactionStatus.PAID:
+        await settle_attempt(
+            session,
+            provider=code.value,
+            provider_ref=attempt.provider_ref,
+            order_id=attempt.order_id,
+            provider_state=(
+                {"state": answer.provider_state}
+                if answer.provider_state is not None
+                else None
+            ),
+        )
+        logger.info("payment_reconciled_as_paid", attempt_id=str(attempt.id))
+        return True
+    if answer.status in (TransactionStatus.FAILED, TransactionStatus.CANCELLED):
+        await abandon_attempt(
+            session,
+            attempt,
+            message=answer.failure_message or "The provider did not take the money",
+            code=answer.failure_code or "charge_declined",
+        )
+        return True
+    return False
+
+
+async def reconcile_payments(session: AsyncSession, *, limit: int = 50) -> int:
+    """Every charge that went out and never came back."""
+    cutoff = datetime.now(UTC) - UNANSWERED_CHARGE_AFTER
+    unanswered = await repository.reconcilable_attempts(
+        session, before=cutoff, limit=limit
+    )
+    resolved = 0
+    for attempt in unanswered:
+        if await reconcile_attempt(session, attempt):
+            resolved += 1
+    if unanswered:
+        logger.info("payments_reconciled", asked=len(unanswered), resolved=resolved)
+    return resolved
+
+
 async def start_transaction(
     session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
 ) -> TransactionOut:
@@ -1459,6 +1554,7 @@ __all__ = [
     "due_for_expiry",
     "ensure_cancellable",
     "expire_booking",
+    "expire_stale_attempts",
     "fail_booking",
     "finish_ticketing",
     "get_order",
@@ -1467,6 +1563,8 @@ __all__ = [
     "owned_by_provider_number",
     "owned_order",
     "payment_state",
+    "reconcile_attempt",
+    "reconcile_payments",
     "record_unreadable_booking",
     "resend_code",
     "retry_refund",

@@ -66,6 +66,8 @@ class RecordingProvider:
     #: Raised by ``charge_card`` when set — a decline at the last step.
     charge_refuses: Exception | None = None
     charge_status: TransactionStatus = TransactionStatus.PAID
+    #: What ``status`` answers when reconciliation asks after a charge.
+    status_answer: TransactionStatus = TransactionStatus.PAID
     otp_wait_seconds: int | None = 0
     #: What ``refund`` answers. ``None`` means it succeeded.
     refund_refuses: Exception | None = None
@@ -76,6 +78,7 @@ class RecordingProvider:
     charged: list[dict[str, Any]] = field(default_factory=list)
     resent: list[str] = field(default_factory=list)
     forgotten: list[str] = field(default_factory=list)
+    asked_after: list[str] = field(default_factory=list)
     refunded: list[dict[str, Any]] = field(default_factory=list)
     reference: str | None = None
 
@@ -187,7 +190,16 @@ class RecordingProvider:
         )
 
     async def status(self, *, transaction_ref: str) -> ChargeResult:
-        return ChargeResult(status=TransactionStatus.PAID)
+        self.asked_after.append(transaction_ref)
+        return ChargeResult(
+            status=self.status_answer,
+            provider_ref=transaction_ref,
+            failure_message=(
+                None
+                if self.status_answer is not TransactionStatus.FAILED
+                else "the card was declined"
+            ),
+        )
 
     async def verify(self) -> ProviderCheck:
         return ProviderCheck(ok=True)

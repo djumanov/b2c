@@ -194,6 +194,60 @@ async def open_attempt(
     return row
 
 
+async def stale_attempts(
+    session: AsyncSession, *, before: datetime, limit: int
+) -> Sequence[OrderPayment]:
+    """Attempts still waiting for a card or a code long after anyone would.
+
+    Measured from ``updated_at`` rather than ``created_at``: a customer who asks
+    for a second code is still at the checkout, and closing that attempt under
+    them would be the sweep picking a fight with a live customer.
+
+    ``pending`` is **not** here. A charge whose answer is unknown is not stale,
+    it is unresolved, and it belongs to ``reconcilable_attempts`` below.
+    """
+    rows = await session.scalars(
+        select(OrderPayment)
+        .where(
+            OrderPayment.status.in_(
+                (
+                    TransactionStatus.AWAITING_CARD.value,
+                    TransactionStatus.AWAITING_OTP.value,
+                )
+            ),
+            OrderPayment.updated_at < before,
+        )
+        .order_by(OrderPayment.updated_at.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return rows.all()
+
+
+async def reconcilable_attempts(
+    session: AsyncSession, *, before: datetime, limit: int
+) -> Sequence[OrderPayment]:
+    """Charges that went out and never answered.
+
+    The one state worth asking a provider about: the money may have moved, and
+    nothing on our side knows. ``provider_ref IS NOT NULL`` because a charge we
+    never got a name for cannot be asked after — ``on_reference`` is what makes
+    that case vanishingly rare, and what remains of it is a person's job.
+    """
+    rows = await session.scalars(
+        select(OrderPayment)
+        .where(
+            OrderPayment.status == TransactionStatus.PENDING.value,
+            OrderPayment.provider_ref.is_not(None),
+            OrderPayment.updated_at < before,
+        )
+        .order_by(OrderPayment.updated_at.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return rows.all()
+
+
 async def unreferenced_attempt(
     session: AsyncSession, order_id: uuid.UUID, provider: str
 ) -> OrderPayment | None:
