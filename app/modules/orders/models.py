@@ -214,8 +214,20 @@ class Order(Entity):
     #: The journey, product-agnostic: a flight's departure, a hotel's check-in,
     #: a tour's start. Reports and reminders read these, never the blob.
     travel_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Where the journey ends — the last direction's arrival, the check-out,
+    #: the tour's last day.
+    travel_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: ``TAS-IST-TAS`` — enough to render a list row without opening anything.
     route_summary: Mapped[str | None] = mapped_column(String(128))
+    #: The same journey with its dates, one object per direction
+    #: (``RouteRef.as_dict()``). Here for the same reason ``travelers`` is here
+    #: rather than in the blob: a list row must not cost a JSONB read of the
+    #: provider's whole answer. Everything below the direction — flight
+    #: numbers, airlines, terminals — stays in ``provider_response``.
+    #:
+    #: Nullable, and null on every row booked before it existed; the wire
+    #: falls back to ``route_summary`` there.
+    route: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     # --- deadlines and the queue ---------------------------------------------
 

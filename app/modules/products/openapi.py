@@ -739,10 +739,50 @@ _BOOKED_ORDER: Final[dict[str, Any]] = {
             "nullable": True,
             "description": "Departure — for the list row, nothing depends on it.",
         },
+        "travel_end_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+            "description": "The last direction's arrival. One-way: the same instant.",
+        },
         "route_summary": {
             "type": "string",
             "nullable": True,
-            "description": "`TAS → IST`, for display.",
+            "description": "`TAS-IST / IST-TAS`, for display.",
+        },
+        "route": {
+            "type": "object",
+            "nullable": True,
+            "description": (
+                "The journey at **direction level** — where from, where to, "
+                "when, how many stops. Flight numbers, airlines and terminals "
+                "are one level down and stay in `data`."
+            ),
+            "properties": {
+                "summary": {"type": "string", "nullable": True},
+                "directions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string", "nullable": True},
+                            "to": {"type": "string", "nullable": True},
+                            "departure_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": True,
+                            },
+                            "arrival_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": True,
+                            },
+                            "duration_minutes": {"type": "integer", "nullable": True},
+                            "stops": {"type": "integer", "nullable": True},
+                        },
+                    },
+                },
+            },
         },
         "cancellation_reason": {"type": "string", "nullable": True},
         "created_at": {"type": "string", "format": "date-time"},
@@ -1041,7 +1081,22 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                 }
             ],
             "ticket_time_limit_at": "2026-08-21T09:14:22Z",
-            "route_summary": "TAS → IST",
+            "route": {
+                "summary": "TAS-IST",
+                "directions": [
+                    {
+                        "from": "TAS",
+                        "to": "IST",
+                        "departure_at": "2026-09-14T10:40:00+05:00",
+                        "arrival_at": "2026-09-14T12:15:00+03:00",
+                        "duration_minutes": 335,
+                        "stops": 0,
+                    }
+                ],
+            },
+            "travel_start_at": "2026-09-14T05:40:00Z",
+            "travel_end_at": "2026-09-14T09:15:00Z",
+            "route_summary": "TAS-IST",
             "booked_at": "2026-08-18T09:14:22Z",
             "paid_at": None,
             "ticketed_at": None,

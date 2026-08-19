@@ -5,9 +5,16 @@ card in "my orders" needs and nothing else; ``OrderOut`` is the whole record.
 The list used to be the whole record too, on the reasoning that ``data`` — the
 provider's answer — dominated the payload anyway so trimming our own columns
 would save nothing. That reasoning ended when ``data`` itself left the list:
-twenty booking answers on one page is hundreds of kilobytes, and every one of
-them carries passport numbers past a screen that only wants a route and a
-price (PROJECT.md §13).
+twenty booking answers on one page is hundreds of kilobytes nobody on a list
+screen reads.
+
+The line between the two shapes is **the field, not the object**. A card does
+want the route, the dates, the price and who is flying — going to ``{id}/``
+for each of twenty rows to render a name is worse for everyone. What it must
+not carry is the traveller's document, birth date and contact details, which
+would otherwise fly past on every list request (PROJECT.md §13). So the list
+publishes ``passengers`` too, trimmed to five fields by ``PassengerCardOut``,
+and ``route`` at direction level while the segments stay in ``data``.
 
 **The wire says ``gts_``, the columns say ``provider_``.** Inside, the system
 is product-agnostic and GTS is one provider among the ones that may follow;
@@ -30,11 +37,128 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.core.logging import get_logger
 from app.core.money import Money
 from app.modules.orders.models import Order, OrderPayment
 from app.providers.payments.base import TransactionStatus
+
+logger = get_logger(__name__)
+
+
+class RouteDirectionOut(BaseModel):
+    """One leg of the journey — out and back are two of these.
+
+    ``from`` is a Python keyword, so the field is ``origin`` and the wire
+    spelling is restored by ``alias``. It has to be ``alias`` and not
+    ``serialization_alias``: this object is read back **out of the column** as
+    well as written, and the column holds the wire spelling.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    #: Airport codes, from the direction's first and last segment — a
+    #: connection does not show up here.
+    origin: str | None = Field(default=None, alias="from")
+    destination: str | None = Field(default=None, alias="to")
+    #: Local to the airport, with the offset GTS stated; UTC when it did not.
+    departure_at: datetime | None = None
+    arrival_at: datetime | None = None
+    #: The whole direction, not one segment of it.
+    duration_minutes: int | None = None
+    #: ``0`` is a direct flight.
+    stops: int | None = None
+
+
+class RouteOut(BaseModel):
+    """The journey as a list row needs it: where, when, how many stops.
+
+    Deliberately stops at the direction. Flight numbers, airlines, terminals
+    and aircraft are one level down and stay in the provider's answer, which
+    the detail endpoint publishes whole as ``data`` (API.md §20).
+    """
+
+    #: ``TAS-IST / IST-TAS`` — the same string as ``route_summary``.
+    summary: str | None = None
+    directions: list[RouteDirectionOut] = Field(default_factory=list)
+
+
+class PassengerCardOut(BaseModel):
+    """A traveller as a **card** shows one: who, which fare, which ticket.
+
+    The five fields left after removing everything PROJECT.md §13 calls
+    personal data — document type and number, birth date, citizenship, gender,
+    email, phone. Those are one ``{id}/`` away, where they arrive once for one
+    order rather than twenty times per page.
+
+    Not a different object from the detail's traveller: same keys, fewer of
+    them. A client that renders a name from the list renders it from the
+    detail with the same code.
+    """
+
+    first_name: str | None = None
+    last_name: str | None = None
+    middle_name: str | None = None
+    #: ``ADT`` · ``CHD`` · ``INF`` · ``INS``.
+    type: str | None = None
+    #: ``null`` until the ticket is issued.
+    ticket_number: str | None = None
+
+
+def _route_out(order: Order) -> RouteOut | None:
+    """The stored route, or one built from the summary.
+
+    Three cases, and the fallback is the reason this is a function rather than
+    a ``model_validate`` call at each site:
+
+    * a row booked since the column existed — the object, as stored;
+    * a row booked before it — ``route_summary`` and no directions, which is
+      exactly what that row knows;
+    * neither — ``None``.
+
+    Stored JSON that does not fit the shape falls back to the summary as well.
+    The column is written by one adapter and read here, so a mismatch means a
+    row from an older spelling — and an old order must not make the whole page
+    fail to render.
+    """
+    stored = order.route
+    if isinstance(stored, dict):
+        try:
+            return RouteOut.model_validate(stored)
+        except ValidationError:
+            logger.warning(
+                "order_route_unreadable", order_id=str(order.id), keys=sorted(stored)
+            )
+    if order.route_summary is None:
+        return None
+    return RouteOut(summary=order.route_summary, directions=[])
+
+
+def _passenger_cards(travelers: list[dict[str, Any]]) -> list[PassengerCardOut]:
+    """The travellers, trimmed to what a card shows.
+
+    Built key by key rather than by ``model_validate``: the stored traveller
+    carries passport numbers, and a constructor that took the whole object and
+    relied on the model to drop the extras would put one ``model_config``
+    change between us and leaking them.
+    """
+    return [
+        PassengerCardOut(
+            first_name=_str(person, "first_name"),
+            last_name=_str(person, "last_name"),
+            middle_name=_str(person, "middle_name"),
+            type=_str(person, "type"),
+            ticket_number=_str(person, "ticket_number"),
+        )
+        for person in travelers
+    ]
+
+
+def _str(person: dict[str, Any], key: str) -> str | None:
+    """One traveller field, if it is text. Stored JSON is not typed."""
+    value = person.get(key)
+    return value if isinstance(value, str) else None
 
 
 class OrderOut(BaseModel):
@@ -67,8 +191,13 @@ class OrderOut(BaseModel):
     #: Not the same object the booking request sends under the same name — the
     #: phone is one string here, and four fields are added (API.md §20).
     passengers: list[dict[str, Any]]
+    #: The journey at direction level; the segments underneath stay in
+    #: ``data``. ``null`` only when the order names no journey at all.
+    route: RouteOut | None
     #: Departure, check-in, tour start — whatever the vertical calls it.
     travel_start_at: datetime | None
+    #: The last direction's arrival. Equal to the departure's arrival one-way.
+    travel_end_at: datetime | None
     route_summary: str | None
     #: When the provider stops holding the seat.
     ticket_time_limit_at: datetime | None
@@ -111,7 +240,9 @@ class OrderOut(BaseModel):
             offer_id=order.offer_id,
             amount=amount,
             passengers=order.travelers,
+            route=_route_out(order),
             travel_start_at=order.travel_start_at,
+            travel_end_at=order.travel_end_at,
             route_summary=order.route_summary,
             ticket_time_limit_at=order.ticket_time_limit_at,
             cancellation_reason=order.cancellation_reason,
@@ -128,18 +259,21 @@ class OrderOut(BaseModel):
 class OrderListOut(BaseModel):
     """One row of "my orders" — what a card renders, and nothing more.
 
-    Eleven fields chosen by asking what is on the screen: which trip, what it
-    costs, where it stands, and how long is left to pay. Two things are
+    Chosen by asking what is on the screen: which trip, when, who is on it,
+    what it costs, where it stands, and how long is left to pay. Two things are
     deliberately **absent**, and both are the point of having this class:
 
     * ``data``, the provider's whole booking answer. It is by far the largest
-      thing an order carries — routes, segments, fare rules, baggage — and a
-      page of twenty of them is hundreds of kilobytes nobody on a list screen
-      reads. ``list_orders`` does not even fetch the column.
-    * ``passengers``, which carry passport numbers (PROJECT.md §13). A list is
-      the wrong place to spray them, and a card only needs the count.
+      thing an order carries — segments, fare rules, baggage — and a page of
+      twenty of them is hundreds of kilobytes nobody on a list screen reads.
+      ``list_orders`` does not even fetch the column.
+    * every traveller field that PROJECT.md §13 calls personal data: document
+      type and number, birth date, citizenship, gender, email, phone. A list
+      request is the wrong place to spray passport numbers; a card needs a
+      name and a ticket number.
 
-    Both are one ``{id}/`` away for the screen that actually wants them.
+    Both are one ``{id}/`` away for the screen that actually wants them, where
+    they arrive once for one order instead of twenty times for a page.
     """
 
     id: uuid.UUID
@@ -151,11 +285,20 @@ class OrderListOut(BaseModel):
     status: str
     #: ``null`` until the provider has priced it.
     amount: Money | None
-    #: ``TAS → IST``. The reason this is a column at all: rendering a list row
-    #: must not mean opening the provider's answer.
+    #: Where, when, how many stops — one object per direction. The reason this
+    #: is a column at all: rendering a list row must not mean opening the
+    #: provider's answer.
+    route: RouteOut | None
+    #: Who is travelling, **without** their documents — see
+    #: ``PassengerCardOut``.
+    passengers: list[PassengerCardOut]
+    #: ``TAS-IST / IST-TAS``. The same string as ``route.summary``, kept beside
+    #: it because clients have been reading it since before ``route`` existed.
     route_summary: str | None
     travel_start_at: datetime | None
-    #: How many are travelling. The travellers themselves are on ``{id}/``.
+    travel_end_at: datetime | None
+    #: How many are travelling. ``len(passengers)``, and cheaper to read when
+    #: the card only counts them.
     passenger_count: int
     #: The airline record locator, once there is one.
     gts_pnr: str | None
@@ -177,8 +320,11 @@ class OrderListOut(BaseModel):
             product=order.product,
             status=order.status,
             amount=amount,
+            route=_route_out(order),
+            passengers=_passenger_cards(order.travelers),
             route_summary=order.route_summary,
             travel_start_at=order.travel_start_at,
+            travel_end_at=order.travel_end_at,
             passenger_count=len(order.travelers),
             gts_pnr=order.provider_pnr,
             ticket_time_limit_at=order.ticket_time_limit_at,

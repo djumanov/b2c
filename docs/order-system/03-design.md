@@ -293,7 +293,9 @@ nomlash konvensiyasi `db/base.py` dan.
 | `provider_response` | `JSONB` | Provayderning **oxirgi** javobi. Tarixi `order_events.meta` da |
 | `ticket_time_limit_at` | `timestamptz` | Bron muddati. `ticket_deadline` shundan hisoblanadi |
 | `travel_start_at` | `timestamptz` | Mahsulotdan qat'i nazar: reys/kirish/tur sanasi |
-| `route_summary` | `String(128)` | `TAS-IST-TAS`. Ro'yxatni blob ochmasdan ko'rsatish uchun |
+| `travel_end_at` | `timestamptz` | Sayohatning tugashi: qaytish reysining qo'nishi, mehmonxonadan chiqish, tur oxiri |
+| `route_summary` | `String(128)` | `TAS-IST-TAS`. Blob ochmasdan bitta satrda ko'rsatish uchun; `route` bo'lmagan eski qatorda ham bor |
+| `route` | `JSONB` | **Marshrut yo'nalish darajasida**, bizning shaklimizda — quyida. Segmentlar bu yerda emas |
 | `idempotency_key` | `String(255)` | **Haqiqiy dublikat qo'riqchisi** (O8) |
 | `attempts` | `SmallInteger` | Joriy qadamning urinishlari |
 | `next_attempt_at` | `timestamptz` | **Poller shuni oladi** (O13). `NULL` — hozircha ish yo'q |
@@ -356,6 +358,30 @@ hisobga olinadi, lekin uni hech bir kod yozmaydi.
 > ism, hujjat va kontaktni tozalab, chipta raqami bilan yo'lovchi turini qoldirish
 > mumkin. Alohida jadval buni yaxshiroq qilmaydi — faqat `JOIN` va migratsiya
 > qo'shadi (v1 da yo'lovchi bo'yicha qidiruv talabi yo'q).
+
+### `orders.route` — bizning shaklimiz
+
+```json
+{ "summary": "TAS-VKO / VKO-TAS",
+  "directions": [
+    { "from": "TAS", "to": "VKO",
+      "departure_at": "2026-03-29T10:00:00+05:00",
+      "arrival_at":   "2026-03-29T14:00:00+03:00",
+      "duration_minutes": 360, "stops": 0 },
+    { "from": "VKO", "to": "TAS", "…": "…" } ] }
+```
+
+> **Yo'nalish darajasi, segment darajasi emas.** Ro'yxat ekrani "qayerdan qayerga,
+> qachon, necha to'xtash bilan" degan savolga javob beradi; reys raqami,
+> aviakompaniya, terminal va samolyot esa **blobda qoladi** — ular faqat tafsilotda
+> kerak. `from`/`to` birinchi segmentning `departure_airport_code` va oxirgisining
+> `arrival_airport_code` idan olinadi: `direction` (`"TAS-VKO"`) — zaxira yo'l,
+> `departure_city_code` esa jonli javobda **bo'sh satr** bo'lib keladi.
+>
+> Har bir maydon `null` bo'lishi mumkin va butun ustun ham `null` bo'lishi mumkin:
+> marshrutni o'qib bo'lmagani bronni rad etish uchun sabab emas (faqat
+> `order_number` va narx majburiy). `route` bo'lmagan qatorda javob
+> `route_summary` dan `{summary, directions: []}` yasaydi.
 
 ### `order_events` — append-only
 
@@ -468,10 +494,12 @@ bilmasligi kerak.** Buning uchun ikkita ajratish:
 | `ticket_time_limit_at` | Muddat supurgichi mahsulotni bilmaydi |
 | `travel_start_at`/`travel_end_at` | Reys sanasi · mehmonxonaga kirish · tur boshlanishi — bitta ma'no |
 | `route_summary` | Ro'yxatda ko'rsatiladigan qisqa satr |
+| `route` — **yo'nalish darajasi** | Qayerdan qayerga, qachon, necha to'xtash: ro'yxat kartasi shu to'rt savoldan iborat, va ularga javob berish uchun blobni ochish 20 ta buyurtmada 20 ta blob degani |
 | Yo'lovchi/mehmon + hujjat + chipta raqami | Har bir mahsulotda odam bor |
 
-Qolgani — `routes`/`segments`, xona turi, tur dasturi — `orders.provider_response`
-blobida. Ular faqat **ko'rsatish** uchun kerak, mantiq uchun emas.
+Qolgani — **segmentlar** (reys raqami, aviakompaniya, terminal, samolyot), tarif
+qoidalari, bagaj, xona turi, tur dasturi — `orders.provider_response` blobida. Ular
+faqat **tafsilotda ko'rsatish** uchun kerak, mantiq uchun emas.
 
 ### 2. `OrderOperations` porti
 
@@ -523,6 +551,7 @@ class BookingResult:
     travel_start_at: datetime | None
     travel_end_at: datetime | None
     route_summary: str | None
+    route: RouteRef | None  # yo'nalishlar, bizning shaklimizda
     raw: dict[str, Any]  # order_events.meta uchun
 ```
 
@@ -622,6 +651,9 @@ qoladi, ustiga ikkita kalit qo'shiladi:
       "amount": { "amount": "1250000.00", "currency": "UZS" },
       "gts_order_number": "61453", "gts_pnr": "UBPLKW",
       "passengers": [ … ],
+      "route": { "summary": "TAS-VKO", "directions": [ … ] },
+      "travel_start_at": "2026-03-29T05:00:00Z",
+      "travel_end_at": "2026-03-29T11:00:00Z",
       "ticket_time_limit_at": "2026-08-20T09:14:22Z" },
     "payment": {                              ← qo'shildi
       "status": "pending",
@@ -630,9 +662,9 @@ qoladi, ustiga ikkita kalit qo'shiladi:
   "errors": [], "meta": null }
 ```
 
-`data.data` — GTS javobi **o'zgarmasdan**. U qoladi, chunki marshrut,
-segmentlar va tarif tafsilotlari faqat shu yerda va biz ularni ustunga
-chiqarmaymiz. So'rov tanasi ham, GTS maydonlarining **joyi ham
+`data.data` — GTS javobi **o'zgarmasdan**. U qoladi, chunki segmentlar va
+tarif tafsilotlari faqat shu yerda; `route` ustuni marshrutning yo'nalish
+darajasini oladi, undan pastini emas. So'rov tanasi ham, GTS maydonlarining **joyi ham
 o'zgarmaydi** — bugungi mijozlar uchun bu **qo'shimcha**, buzilish emas
 (2026-08-18 qarori: klientlar bir marta buzilgan edi, ikkinchi marta emas).
 
@@ -644,10 +676,23 @@ Keyingi qadam mijoz uchun: `POST /public/orders/{id}/transactions/`
 (`API.md` §22).
 
 **`GET /public/orders/{id}/` javobi** — yuqoridagi `order` ning o'zi, to'liq.
-**`GET /public/orders/` esa qisqartirilgan**: `data` (GTS blobi) va
-`passengers` unda **yo'q**, o'rniga `passenger_count` bor. Sabab —
-sahifadagi 20 ta blob va har so'rovda uchadigan pasport raqamlari
-(`PROJECT.md` §13). To'liq ro'yxat: `API.md` §21.
+**`GET /public/orders/` esa qisqartirilgan**, lekin kartani chizishga yetadi:
+`route` (yo'nalishlar, sanalari bilan), `passengers`, `amount`, `status` va
+muddatlar unda **bor**. Ikki narsa ataylab yo'q:
+
+* **`data`** — GTS blobi. Bir sahifada 20 tasi yuz kilobaytga aylanadi va
+  ro'yxat ekranida hech kim o'qimaydi; so'rov uni Postgres'dan ham tortmaydi
+  (`defer(provider_response)`).
+* **Yo'lovchining shaxsiy ma'lumoti** — hujjat turi va raqami, tug'ilgan
+  sana, fuqarolik, jins, email va telefon. Ro'yxatdagi `passengers[]` da
+  faqat ism, familiya, ota ismi, yo'lovchi turi va chipta raqami bor.
+  Pasport raqami har bir ro'yxat so'rovida uchmasligi kerak
+  (`PROJECT.md` §13), tafsilotda esa u bir marta va bitta buyurtma uchun
+  keladi.
+
+Ya'ni ro'yxatdagi `passengers[]` — tafsilotdagining **qisqartmasi**, boshqa
+obyekt emas: kalitlar bir xil nomlanadi, soni kamroq. `passenger_count`
+o'z joyida qoladi. To'liq ro'yxat: `API.md` §21.
 
 `notice` — mijozga ko'rsatiladigan ogohlantirish. `ticketing`/`paid` holatida:
 *"Chipta chiqarilmoqda. Agar chipta chiqmasa, to'lov to'liq qaytariladi."*
