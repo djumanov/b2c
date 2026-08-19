@@ -85,6 +85,32 @@ async def order_by_idempotency_key(
     return row
 
 
+async def unsettled_orders(
+    session: AsyncSession, *, before: datetime, limit: int
+) -> Sequence[Order]:
+    """Orders still in ``created``, locked for one reconciliation pass.
+
+    ``created`` means one of two things and the sweep does not need to tell
+    them apart: the booking call never came back, or it came back in words we
+    would not call a reservation (T2x). Either way GTS is the only place the
+    answer is.
+
+    ``before`` keeps a booking that is still in flight out of the pass — the
+    row is written before GTS is called, so a fresh ``created`` row is usually
+    a request in progress rather than one that failed.
+
+    ``SKIP LOCKED`` so several workers may sweep at once.
+    """
+    rows = await session.scalars(
+        select(Order)
+        .where(Order.status == OrderStatus.CREATED.value, Order.created_at <= before)
+        .order_by(Order.created_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return rows.all()
+
+
 async def expiring_orders(
     session: AsyncSession, *, deadline: datetime, fallback_before: datetime, limit: int
 ) -> Sequence[Order]:

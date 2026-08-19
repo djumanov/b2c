@@ -718,6 +718,152 @@ async def test_what_did_read_is_kept_even_when_the_booking_is_not_confirmed(
     assert order["amount"] is None
 
 
+def _mock_order_list(*orders: dict[str, Any]) -> respx.Route:
+    """GTS's own order list — what reconciliation asks."""
+    return respx.get(f"{GTS}/v1/orders/list/").mock(
+        return_value=httpx.Response(
+            200,
+            json=_envelope(
+                {
+                    "count": len(orders),
+                    "next": None,
+                    "previous": None,
+                    "results": [*orders],
+                }
+            ),
+        )
+    )
+
+
+#: The same reservation as ``GTS_BOOKING``, in the shape the order list uses:
+#: a flat ``price``/``currency`` and the journey under ``offer``.
+GTS_LISTED: dict[str, Any] = {
+    "order_number": 61453,
+    "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+    "status": "STATUS_BOOK",
+    "gds_pnr": "UBPLKW",
+    "price": 52.39,
+    "currency": "EUR",
+    "offer": {"routes": GTS_BOOKING["data"]["routes"]},
+}
+
+
+async def _age(session: AsyncSession, order: Order, minutes: int) -> None:
+    """Push a row back in time, past the sweep's grace window."""
+    await session.execute(
+        text(
+            "UPDATE orders SET created_at = created_at - make_interval(mins => :m)"
+            " WHERE id = :id"
+        ),
+        {"m": minutes, "id": order.id},
+    )
+    await session.commit()
+
+
+@respx.mock
+async def test_reconciliation_settles_an_order_gts_confirms(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The other half of T2x, and the reason ``created`` is a waiting room
+    rather than a dead end.
+
+    The booking answered without a price, so the order stayed ``created`` with
+    the number salvaged off it. Reconciliation asks GTS by that number, gets a
+    held reservation back — in the list's own shape, not the booking's — and
+    the order becomes ``booked`` with everything the card needs.
+    """
+    await _installation(session)
+    _mock_signin()
+    _mock_booking({**GTS_BOOKING, "data": {**GTS_BOOKING["data"], "price_info": None}})
+    await _book(api, headers)
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    assert row["status"] == "created"
+
+    order = await session.get(Order, uuid.UUID(row["id"]))
+    assert order is not None
+    await _age(session, order, minutes=5)
+    _mock_order_list(GTS_LISTED)
+
+    assert await orders_service.sync_open(session) == 1
+
+    (settled,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    assert settled["status"] == "booked"
+    assert settled["amount"] == {"amount": "52.39", "currency": "EUR"}
+    assert settled["gts_pnr"] == "UBPLKW"
+    assert settled["route_summary"] == "BOM-MAD"
+
+
+@respx.mock
+async def test_reconciliation_leaves_a_booking_still_in_flight_alone(
+    session: AsyncSession, customer: Customer
+) -> None:
+    """The row is written **before** GTS is called, so a fresh ``created`` row
+    is usually a request in progress. Asking about it would be asking about a
+    booking that has not been made yet."""
+    await _installation(session)
+    _mock_signin()
+    listed = _mock_order_list(GTS_LISTED)
+
+    await _order(session, customer, status=OrderStatus.CREATED.value)
+
+    assert await orders_service.sync_open(session) == 0
+    assert listed.call_count == 0
+
+
+@respx.mock
+async def test_an_order_nobody_can_account_for_becomes_a_persons_problem(
+    session: AsyncSession, customer: Customer
+) -> None:
+    """The end of the road, and the only one left from ``created`` to
+    ``needs_attention`` (T4).
+
+    GTS neither confirms the order nor says it does not exist, pass after pass.
+    Leaving it ``created`` for ever would only hide it; ``failed`` would be a
+    lie about a seat that may be real. So it goes to the queue a person works
+    through — but only after the attempts run out, never on one silence.
+    """
+    await _installation(session)
+    _mock_signin()
+    _mock_order_list()
+
+    order = await _order(
+        session,
+        customer,
+        status=OrderStatus.CREATED.value,
+        attempts=orders_service.SYNC_MAX_ATTEMPTS - 1,
+    )
+    await _age(session, order, minutes=5)
+
+    assert await orders_service.sync_open(session) == 0
+
+    await session.refresh(order)
+    assert order.status == "needs_attention"
+    assert order.attention_reason == "unaccounted_booking"
+
+
+@respx.mock
+async def test_one_silence_is_not_enough_to_give_up(
+    session: AsyncSession, customer: Customer
+) -> None:
+    """Same situation, one pass in: the order waits and the attempt is
+    counted."""
+    await _installation(session)
+    _mock_signin()
+    _mock_order_list()
+
+    order = await _order(session, customer, status=OrderStatus.CREATED.value)
+    await _age(session, order, minutes=5)
+
+    assert await orders_service.sync_open(session) == 0
+
+    await session.refresh(order)
+    assert order.status == "created"
+    assert order.attempts == 1
+
+
 @respx.mock
 async def test_a_write_that_fails_never_reaches_gts(
     api: AsyncClient,

@@ -812,6 +812,72 @@ def test_an_airport_name_is_never_read_as_a_code() -> None:
     assert (leg.origin, leg.destination) == ("IST", "ESB")
 
 
+# --- asking again ---------------------------------------------------------------------
+
+
+def _page(*orders: dict[str, Any]) -> dict[str, Any]:
+    """A ``/v1/orders/list/`` page around the given rows."""
+    return {"count": len(orders), "next": None, "previous": None, "results": [*orders]}
+
+
+async def _retrieve(page: dict[str, Any], number: str = "1") -> Any:
+    return await FlightAdapter().retrieve(RecordingClient(page), number)
+
+
+async def test_retrieving_reads_the_order_out_of_the_page() -> None:
+    """The same reader as ``book``. That is the point of it being one function:
+    the two answers have the same shape and reading them in two places is how
+    spellings drift apart."""
+    held = {**GTS_LIVE_ORDER, "status": "STATUS_BOOK"}
+
+    result = await _retrieve(_page(held))
+
+    assert result is not None
+    assert result.provider_order_number == "1"
+    assert result.provider_pnr == "L9J87M"
+    assert result.total.amount == Decimal("320.12")
+    assert result.status is OrderStatus.BOOKED
+
+
+async def test_retrieving_asks_by_number_and_checks_the_answer_again() -> None:
+    """A filter GTS quietly ignores would hand back the first order on the
+    page. Confirming a booking against somebody else's reservation is the one
+    mistake this sweep exists to prevent, so the number is matched here too."""
+    client = RecordingClient(_page({**GTS_LIVE_ORDER, "status": "STATUS_BOOK"}))
+
+    assert await FlightAdapter().retrieve(client, "999") is None
+    (path, params, _) = client.calls[0]
+    assert path == "/v1/orders/list/"
+    assert params["order_number"] == 999
+
+
+async def test_an_order_gts_does_not_list_is_not_a_refusal() -> None:
+    """``None``, not an exception. GTS may simply not list it yet, and calling
+    a booking dead on a silence is how a paid-for seat disappears."""
+    assert await _retrieve(_page()) is None
+
+
+async def test_a_retrieved_order_that_is_not_held_still_carries_its_identifiers() -> (
+    None
+):
+    """The live capture is a voided order. Refusing it is right; losing the
+    number while refusing it would leave the sweep nothing to ask about."""
+    with pytest.raises(UnreadableAnswer) as refused:
+        await _retrieve(_page(GTS_LIVE_ORDER))
+
+    assert refused.value.partial is not None
+    assert refused.value.partial.provider_order_number == "1"
+    assert refused.value.partial.provider_status == "STATUS_VOID"
+
+
+def test_rereading_gets_an_identifier_back_out_of_a_stored_answer() -> None:
+    """No call at all. An order recorded before a spelling was known has the
+    whole answer on the row, and today's reader can name the seat that
+    yesterday's could not (STATUS.md §8.15)."""
+    assert FlightAdapter().reread(GTS_LIVE_ORDER).provider_order_number == "1"
+    assert FlightAdapter().reread({"nothing": "useful"}).provider_order_number is None
+
+
 # --- cancelling -----------------------------------------------------------------------
 
 

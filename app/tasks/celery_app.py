@@ -58,7 +58,6 @@ celery_app.conf.update(
 # module that owns its task — a beat entry pointing at a task that does not
 # exist yet crashes the beat process on startup:
 #
-#   * sync open orders from GTS            -> modules/orders
 #   * sweep expired idempotency keys       -> api/idempotency   (Redis TTL does
 #                                             most of this already)
 #   * refresh the static catalogues        -> modules/catalog
@@ -83,6 +82,14 @@ celery_app.conf.beat_schedule = {
     # have bought (order-system/03-design.md §3.7).
     "orders-expire-unpaid-every-minute": {
         "task": "app.tasks.orders.expire_unpaid",
+        "schedule": 60.0,
+    },
+    # Orders GTS answered in words we would not call a reservation, and orders
+    # whose booking call never came back. A minute, because until this runs the
+    # customer is looking at "tekshirilmoqda" and the seat is unclaimed
+    # (order-system/03-design.md §3.9).
+    "orders-sync-open-every-minute": {
+        "task": "app.tasks.orders.sync_open",
         "schedule": 60.0,
     },
     # Abandoned checkouts and charges that never answered. Five minutes rather

@@ -69,6 +69,21 @@ class RecordingClient:
     ) -> dict[str, Any]:
         raise AssertionError("the search flow never GETs")
 
+    async def get_envelope(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None,
+    ) -> dict[str, Any]:
+        """A read whose page is not under ``data`` — the orders list."""
+        self.calls.append((path, params or {}, timeout))
+        if self.raises is not None:
+            raise self.raises
+        if not self.envelope:
+            return self.data
+        return {"status": self.status, "message": "…", "code": 0, "data": self.data}
+
     async def post(
         self, path: str, *, json: dict[str, Any], timeout: float | None
     ) -> dict[str, Any]:
