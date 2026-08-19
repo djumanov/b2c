@@ -78,11 +78,11 @@ async def list_orders(
     product: ProductParam = None,
     status: StatusParam = None,
 ) -> Page[OrderListOut]:
-    """A card, not the record: route, price, status and the countdown.
+    """A card, not the record: route, dates, travellers, price and status.
 
-    ``data`` and ``passengers`` are on ``{id}/`` — the first because a page of
-    twenty provider answers is hundreds of kilobytes, the second because a list
-    screen has no use for passport numbers (API.md §21).
+    ``data`` is on ``{id}/`` — a page of twenty provider answers is hundreds of
+    kilobytes. So is every traveller field §13 calls personal data: the card
+    names who is flying, not what is in their passport (API.md §21).
     """
     return await service.list_orders(
         session,

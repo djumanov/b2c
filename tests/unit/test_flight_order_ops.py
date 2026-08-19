@@ -241,6 +241,119 @@ async def test_the_route_and_departure_come_off_the_first_segment() -> None:
     )
 
 
+async def test_one_direction_per_route_with_its_own_dates() -> None:
+    """What a card renders: where from, where to, when, how long, how many
+    stops — and nothing from below the direction."""
+    result = await _book(
+        _answer(
+            routes=[
+                {
+                    "direction": "TAS-VKO",
+                    "stops": 0,
+                    "trip_time_minutes": 360,
+                    "segments": [
+                        {
+                            "departure_airport_code": "TAS",
+                            "departure_date": "2026-03-29",
+                            "departure_time": "10:00",
+                            "departure_timezone": "UTC+5",
+                            "arrival_airport_code": "VKO",
+                            "arrival_date": "2026-03-29",
+                            "arrival_time": "14:00",
+                            "arrival_timezone": "UTC+3",
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+
+    assert result.route is not None
+    assert result.route.summary == "TAS-VKO"
+    (leg,) = result.route.directions
+    assert leg.origin == "TAS"
+    assert leg.destination == "VKO"
+    assert leg.departure_at == dt.datetime(
+        2026, 3, 29, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=5))
+    )
+    # The two ends carry different offsets, which is why the arrival is read
+    # rather than derived from the departure plus the duration.
+    assert leg.arrival_at == dt.datetime(
+        2026, 3, 29, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=3))
+    )
+    assert leg.duration_minutes == 360
+    assert leg.stops == 0
+    assert result.travel_start_at == leg.departure_at
+    assert result.travel_end_at == leg.arrival_at
+
+
+async def test_a_direction_is_named_by_its_ends_not_its_transfer() -> None:
+    """One stop in the middle must not become the destination."""
+    result = await _book(
+        _answer(
+            routes=[
+                {
+                    "direction": "TAS-MAD",
+                    "segments": [
+                        {
+                            "departure_airport_code": "TAS",
+                            "arrival_airport_code": "IST",
+                            "departure_date": "2026-10-01",
+                            "departure_time": "06:55",
+                            "arrival_date": "2026-10-01",
+                            "arrival_time": "09:30",
+                        },
+                        {
+                            "departure_airport_code": "IST",
+                            "arrival_airport_code": "MAD",
+                            "departure_date": "2026-10-01",
+                            "departure_time": "11:40",
+                            "arrival_date": "2026-10-01",
+                            "arrival_time": "14:15",
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+
+    assert result.route is not None
+    (leg,) = result.route.directions
+    assert (leg.origin, leg.destination) == ("TAS", "MAD")
+    assert leg.departure_at == dt.datetime(2026, 10, 1, 6, 55, tzinfo=dt.UTC)
+    assert leg.arrival_at == dt.datetime(2026, 10, 1, 14, 15, tzinfo=dt.UTC)
+
+
+async def test_the_ends_fall_back_to_the_direction_label() -> None:
+    """The recorded booking leaves ``departure_city_code`` empty and older
+    answers name no airport code at all; ``direction`` still says where."""
+    result = await _book(GTS_BOOKING)
+
+    assert result.route is not None
+    (leg,) = result.route.directions
+    assert (leg.origin, leg.destination) == ("BOM", "MAD")
+
+
+async def test_a_direction_that_names_no_arrival_says_so() -> None:
+    """A half-read journey stays half-read — no invented landing time."""
+    result = await _book(
+        _answer(
+            routes=[
+                {
+                    "direction": "TAS-IST",
+                    "segments": [{"departure_date": "2026-09-14"}],
+                }
+            ]
+        )
+    )
+
+    assert result.route is not None
+    (leg,) = result.route.directions
+    assert leg.arrival_at is None
+    assert leg.duration_minutes is None
+    assert result.travel_end_at is None
+
+
 async def test_a_missing_timezone_is_read_as_utc() -> None:
     """The column is for ordering and reminders, not for a boarding pass: the
     exact local time stays in ``raw``."""
@@ -272,6 +385,11 @@ async def test_two_routes_read_as_one_line() -> None:
 
     assert result.route_summary == "TAS-IST / IST-TAS"
     assert result.travel_start_at is None
+    assert result.route is not None
+    assert [(leg.origin, leg.destination) for leg in result.route.directions] == [
+        ("TAS", "IST"),
+        ("IST", "TAS"),
+    ]
 
 
 @pytest.mark.parametrize("routes", [None, [], "later", [{"segments": None}]])
@@ -280,6 +398,12 @@ async def test_a_journey_we_cannot_read_costs_nothing(routes: Any) -> None:
     result = await _book(_answer(routes=routes))
 
     assert result.provider_order_number == "61453"
+    assert result.route_summary is None
+    assert result.travel_start_at is None
+    assert result.travel_end_at is None
+    # ``None`` and not an empty route: a caller must be able to tell "no
+    # journey named" from "a journey we could not read".
+    assert result.route is None
 
 
 # --- travellers -----------------------------------------------------------------------

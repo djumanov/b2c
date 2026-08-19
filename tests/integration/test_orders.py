@@ -17,6 +17,7 @@ The state machine itself is ``test_order_transitions.py``'s subject; what is
 checked here is that the two write paths go through it.
 """
 
+import datetime as dt
 import json as jsonlib
 import uuid
 from typing import Any
@@ -80,6 +81,38 @@ GTS_BOOKING: dict[str, Any] = {
         "supplier_pnr": ["UBPLKW"],
         "trip_type": "OW",
         "price_info": {"price": 46.89, "currency": "EUR", "fee_amount": 5.5},
+        "routes": [
+            {
+                "route_index": 1,
+                "direction": "BOM-MAD",
+                "stops": 1,
+                "trip_time_minutes": 440,
+                "segments": [
+                    {
+                        "leg": "BOM-IST",
+                        "departure_airport_code": "BOM",
+                        "departure_date": "2026-10-01",
+                        "departure_time": "06:55",
+                        "departure_timezone": "UTC+5",
+                        "arrival_airport_code": "IST",
+                        "arrival_date": "2026-10-01",
+                        "arrival_time": "09:30",
+                        "arrival_timezone": "UTC+3",
+                    },
+                    {
+                        "leg": "IST-MAD",
+                        "departure_airport_code": "IST",
+                        "departure_date": "2026-10-01",
+                        "departure_time": "11:40",
+                        "departure_timezone": "UTC+3",
+                        "arrival_airport_code": "MAD",
+                        "arrival_date": "2026-10-01",
+                        "arrival_time": "14:15",
+                        "arrival_timezone": "UTC+2",
+                    },
+                ],
+            }
+        ],
     },
 }
 
@@ -102,7 +135,9 @@ ORDER_FIELDS = {
     "offer_id",
     "amount",
     "passengers",
+    "route",
     "travel_start_at",
+    "travel_end_at",
     "route_summary",
     "ticket_time_limit_at",
     "cancellation_reason",
@@ -122,12 +157,39 @@ LIST_FIELDS = {
     "product",
     "status",
     "amount",
+    "route",
+    "passengers",
     "route_summary",
     "travel_start_at",
+    "travel_end_at",
     "passenger_count",
     "gts_pnr",
     "ticket_time_limit_at",
     "created_at",
+}
+
+#: The five keys a card's traveller carries. Everything PROJECT.md §13 calls
+#: personal data is missing on purpose, and the test below names the missing
+#: keys rather than only this set — a leak would show up as an extra key.
+PASSENGER_CARD_FIELDS = {
+    "first_name",
+    "last_name",
+    "middle_name",
+    "type",
+    "ticket_number",
+}
+
+#: What a card's traveller must never carry (PROJECT.md §13).
+PASSENGER_PRIVATE_FIELDS = {
+    "document",
+    "birth_date",
+    "citizenship",
+    "gender",
+    "email",
+    "phone",
+    "provider_traveler_id",
+    "position",
+    "anonymized_at",
 }
 
 
@@ -332,9 +394,12 @@ async def test_the_list_is_a_card_and_the_detail_is_the_record(
     headers: dict[str, str],
 ) -> None:
     """The list used to be the whole row. It stopped being one when ``data``
-    left it: twenty provider answers on a page is hundreds of kilobytes, and
-    every one of them carries passport numbers past a screen that wants a
-    route and a price (API.md §21, PROJECT.md §13)."""
+    left it: twenty provider answers on a page is hundreds of kilobytes nobody
+    on a list screen reads (API.md §21).
+
+    What stayed is the card: route, dates, travellers, price. The line is the
+    **field**, not the object — the traveller's document, birth date and
+    contacts are what must not fly past on every request (PROJECT.md §13)."""
     await _installation(session)
     _mock_signin()
     _mock_booking()
@@ -343,20 +408,140 @@ async def test_the_list_is_a_card_and_the_detail_is_the_record(
     (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
 
     assert set(row) == LIST_FIELDS
-    # The two heavy ones are gone, and the count stands in for the travellers.
+    # The heavy one is gone; the count stands beside the travellers it counts.
     assert "data" not in row
-    assert "passengers" not in row
     assert row["passenger_count"] == 1
+    assert len(row["passengers"]) == row["passenger_count"]
     assert row["amount"] == {"amount": EXPECTED_TOTAL, "currency": "EUR"}
     assert row["gts_pnr"] == "UBPLKW"
+    assert row["route"]["summary"] == row["route_summary"]
 
     # Every field the card shows means the same thing on the record, so the
-    # two cannot drift into disagreeing about one.
+    # two cannot drift into disagreeing about one. ``passengers`` is exempt:
+    # it is the same object with fewer keys, which the next test pins down.
+    shared = set(row) - {"passenger_count", "passengers"}
     detail = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
-    assert {key: detail[key] for key in row if key != "passenger_count"} == {
-        key: value for key, value in row.items() if key != "passenger_count"
+    assert {key: detail[key] for key in shared} == {
+        key: value for key, value in row.items() if key in shared
     }
     assert len(detail["passengers"]) == row["passenger_count"]
+
+
+@respx.mock
+async def test_a_card_names_the_traveller_and_not_their_passport(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The guard PROJECT.md §13 asks for: a list request may say who is
+    flying, and may not say what is in their document.
+
+    Written as "these keys are absent" and not only as a set comparison,
+    because the failure this exists to catch is a key **appearing** — a
+    ``model_config`` that stopped dropping extras, or a builder switched to
+    copying the stored traveller whole."""
+    await _installation(session)
+    _mock_signin()
+    _mock_booking()
+    await _book(api, headers)
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    (person,) = row["passengers"]
+
+    assert set(person) == PASSENGER_CARD_FIELDS
+    assert not set(person) & PASSENGER_PRIVATE_FIELDS
+    assert person["first_name"] == "Azimjon"
+    assert person["last_name"] == "Yusufov"
+    assert person["type"] == "ADT"
+    # Not issued yet, and the key is still there: a card renders one shape.
+    assert person["ticket_number"] is None
+
+    # The detail is where the document lives, for one order at a time.
+    detail = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
+    (full,) = detail["passengers"]
+    assert full["document"]["number"] == "FA2145157"
+
+
+async def test_an_order_booked_before_route_existed_still_has_one(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """No backfill ran, so every row booked before the column exists carries
+    ``route IS NULL``. The card is built from what that row does know — which
+    is the summary, and no directions."""
+    await _order(session, customer, route=None, route_summary="TAS-IST")
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+
+    assert row["route"] == {"summary": "TAS-IST", "directions": []}
+
+
+async def test_an_order_that_names_no_journey_says_null(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """Not an empty object: a row with nothing to say about the journey says
+    nothing rather than an object of empty fields."""
+    await _order(session, customer, route=None, route_summary=None)
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+
+    assert row["route"] is None
+
+
+async def test_a_route_stored_in_a_shape_we_cannot_read_falls_back(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """One unreadable row must not take the whole page down with it — the
+    list is twenty orders and nineteen of them are fine."""
+    await _order(
+        session,
+        customer,
+        route={"summary": "TAS-IST", "directions": "later"},
+        route_summary="TAS-IST",
+    )
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+
+    assert row["route"] == {"summary": "TAS-IST", "directions": []}
+
+
+@respx.mock
+async def test_a_card_carries_the_journey_without_the_segments(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """Direction level and no further: where from, where to, when. Flight
+    numbers and airlines stay in ``data`` (API.md §21)."""
+    await _installation(session)
+    _mock_signin()
+    _mock_booking()
+    await _book(api, headers)
+
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+
+    assert row["route"]["summary"] == "BOM-MAD"
+    (leg,) = row["route"]["directions"]
+    assert leg["from"] == "BOM"
+    assert leg["to"] == "MAD"
+    assert "segments" not in leg
+
+    # The same instant twice, and deliberately not the same string: the column
+    # comes back from Postgres in UTC, while the stored direction keeps the
+    # airport's local time and the offset beside it.
+    assert dt.datetime.fromisoformat(leg["departure_at"]) == dt.datetime.fromisoformat(
+        row["travel_start_at"]
+    )
 
 
 @respx.mock

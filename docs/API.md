@@ -1331,8 +1331,16 @@ uchun **hech narsa o'zgarmaydi**; buyurtmani boshqarish uchun `order` bor.
           "provider_traveler_id": "1", "ticket_number": null,
           "anonymized_at": null }
       ],
+      "route": {
+        "summary": "TAS-IST",
+        "directions": [
+          { "from": "TAS", "to": "IST",
+            "departure_at": "2026-09-14T10:40:00+05:00",
+            "arrival_at": "2026-09-14T12:15:00+03:00",
+            "duration_minutes": 335, "stops": 0 } ] },
       "travel_start_at": "2026-09-14T05:40:00Z",
-      "route_summary": "TAS → IST",
+      "travel_end_at": "2026-09-14T09:15:00Z",
+      "route_summary": "TAS-IST",
       "ticket_time_limit_at": "2026-08-21T09:14:22Z",
       "cancellation_reason": null,
       "created_at": "2026-08-18T09:14:20Z",
@@ -1347,8 +1355,10 @@ uchun **hech narsa o'zgarmaydi**; buyurtmani boshqarish uchun `order` bor.
       "pay_before": "2026-08-21T09:14:22Z" } } }
 ```
 
-**GTS qismi — aynan va to'liq.** Marshrut, segmentlar, tarif qoidalari va
-bagaj **faqat shu yerda** — biz ularni ustunga chiqarmaymiz. **Ikki qavatli:**
+**GTS qismi — aynan va to'liq.** Segmentlar (reys raqami, aviakompaniya,
+terminal, samolyot), tarif qoidalari va bagaj **faqat shu yerda** — biz
+marshrutdan faqat yo'nalish darajasini `route` ga chiqaramiz, undan pastini
+emas. **Ikki qavatli:**
 biz GTS envelope'ining ichini beramiz, uning ichida yana `data` bor —
 buyurtmaning o'zi. Ya'ni buyurtma raqami `data.data.order_number`, statusi
 `data.data.status`. `search_status` bu yerda **yo'q**: bron oqimida "In
@@ -1369,7 +1379,8 @@ process" holati yo'q.
 | `amount` | To'lanadigan summa, miqdor **satr** (§1) |
 | `passengers` | Yo'lovchilar **bizning shaklda** — pastga qarang |
 | `ticket_time_limit_at` | GTS o'rinni shu vaqtgacha ushlab turadi (ISO, UTC). **To'lov shundan oldin tugashi kerak**; keyin bron o'zi bekor bo'ladi |
-| `travel_start_at`, `route_summary` | Ro'yxatda ko'rsatish uchun |
+| `route` | Marshrut **yo'nalish darajasida** — `{summary, directions[]}` (§21). Segmentlar bu yerda emas, `data` da |
+| `travel_start_at`, `travel_end_at`, `route_summary` | Ro'yxatda ko'rsatish uchun |
 | `data` | GTS javobi — yuqoridagi uchta GTS kalitining nusxasi. Bittasini o'qing |
 
 > ⚠ **`passengers` ikki joyda, ikki xil shaklda.** So'rovdagi `passengers` —
@@ -1530,11 +1541,17 @@ uchun, filtr uchun emas. O'tishlar jadvali va har bir statusning ma'nosi:
 
 ### Ro'yxat — kartaga yetadigan narsa
 
-**Ro'yxat qisqartirilgan.** Unda `data` (GTS'ning butun bron javobi) ham,
-`passengers` ham **yo'q**: birinchisi bir sahifada yuz kilobaytlarga aylanadi,
-ikkinchisi esa har bir so'rovda pasport raqamlarini uchiradi
-([PROJECT.md](PROJECT.md) §13). Ro'yxat ekranida ikkalasi ham kerak emas.
-Ularni ko'rish uchun `{id}/` ga boriladi.
+**Ro'yxat kartani chizishga yetadi**: marshrut, sanalar, yo'lovchilar, narx,
+status va muddat. Ikki narsa ataylab **yo'q**:
+
+* **`data`** — GTS'ning butun bron javobi. Bir sahifada 20 tasi yuz
+  kilobaytlarga aylanadi va ro'yxat ekranida hech kim o'qimaydi.
+* **Yo'lovchining shaxsiy ma'lumoti** — hujjat turi va raqami, tug'ilgan
+  sana, fuqarolik, jins, email, telefon. Pasport raqami har bir ro'yxat
+  so'rovida uchmasligi kerak ([PROJECT.md](PROJECT.md) §13).
+
+Ikkalasi ham `{id}/` da. Ro'yxatdagi `passengers[]` — tafsilotdagining
+**qisqartmasi**: kalitlar bir xil nomlanadi, soni kamroq.
 
 ```json
 GET /public/orders/?product=flight&status=booked&page=1&page_size=20
@@ -1545,8 +1562,25 @@ GET /public/orders/?product=flight&status=booked&page=1&page_size=20
                 "product": "flight",
                 "status": "booked",
                 "amount": { "amount": "52.39", "currency": "EUR" },
-                "route_summary": "TAS → IST",
+                "route": {
+                  "summary": "TAS-IST / IST-TAS",
+                  "directions": [
+                    { "from": "TAS", "to": "IST",
+                      "departure_at": "2026-09-14T05:40:00Z",
+                      "arrival_at": "2026-09-14T09:15:00Z",
+                      "duration_minutes": 335, "stops": 0 },
+                    { "from": "IST", "to": "TAS",
+                      "departure_at": "2026-09-21T15:20:00Z",
+                      "arrival_at": "2026-09-21T22:05:00Z",
+                      "duration_minutes": 285, "stops": 0 } ] },
+                "passengers": [ { "first_name": "AZIMJON",
+                                  "last_name": "YUSUFOV",
+                                  "middle_name": null,
+                                  "type": "ADT",
+                                  "ticket_number": "7653081297644" } ],
+                "route_summary": "TAS-IST / IST-TAS",
                 "travel_start_at": "2026-09-14T05:40:00Z",
+                "travel_end_at": "2026-09-21T22:05:00Z",
                 "passenger_count": 1,
                 "gts_pnr": "UBPLKW",
                 "ticket_time_limit_at": "2026-08-20T09:14:22Z",
@@ -1561,12 +1595,32 @@ GET /public/orders/?product=flight&status=booked&page=1&page_size=20
 | `product` | Vertikal kodi — ikonka va bo'lim uchun |
 | `status` | **Kanonik** status (yuqoridagi ro'yxat) |
 | `amount` | To'lanadigan summa — `{amount, currency}`, summa **satr** (§1). Provayder narxlamaguncha `null` |
-| `route_summary` | `TAS → IST` — `data` ni ochmasdan ko'rsatish uchun |
-| `travel_start_at` | Sayohat sanasi |
-| `passenger_count` | Nechta yo'lovchi. **Yo'lovchilarning o'zi ro'yxatda yo'q** |
+| `route` | Marshrut **yo'nalish darajasida** — quyidagi jadval. Butunlay `null` bo'lishi mumkin |
+| `passengers` | Yo'lovchilar, **qisqartirilgan**: `first_name`, `last_name`, `middle_name`, `type` (`ADT`/`CHD`/`INF`/`INS`), `ticket_number`. Boshqa hech narsa — qolgani `{id}/` da |
+| `route_summary` | `TAS-IST / IST-TAS` — bitta satrli ko'rinish. `route.summary` bilan bir xil qiymat, eski klientlar uchun qoladi |
+| `travel_start_at` | Sayohat boshlanishi — birinchi yo'nalishning uchishi |
+| `travel_end_at` | Sayohat tugashi — oxirgi yo'nalishning qo'nishi. Bir tomonlama reysda `arrival_at` bilan bir xil |
+| `passenger_count` | Nechta yo'lovchi. `passengers` uzunligi bilan bir xil; kartada faqat son kerak bo'lganda arzonroq |
 | `gts_pnr` | Aviakompaniya lokatori (`gds_pnr`) — chipta chiqqach ko'rsatiladi |
 | `ticket_time_limit_at` | To'lanmagan buyurtmada sanoq: shu vaqtdan keyin bron o'zi bekor bo'ladi |
 | `created_at` | Qachon bron qilingan. Saralash faqat shu maydon bo'yicha (`?ordering=-created_at`) |
+
+**`route` va `route.directions[]`:**
+
+| Maydon | Nima |
+|---|---|
+| `summary` | `TAS-IST / IST-TAS` — yo'nalishlar `" / "` bilan qo'shilgan |
+| `directions[].from`, `.to` | Aeroport IATA kodlari: yo'nalishning birinchi segmenti qayerdan uchadi va oxirgisi qayerga qo'nadi. Oradagi transferlar bu yerda ko'rinmaydi |
+| `directions[].departure_at`, `.arrival_at` | Uchish va qo'nish — **mahalliy vaqt, ofseti bilan**. GTS ofsetni aytmasa UTC deb olinadi |
+| `directions[].duration_minutes` | Yo'nalishning to'liq davomiyligi, daqiqada |
+| `directions[].stops` | Nechta to'xtash. `0` — to'g'ridan-to'g'ri |
+
+> Segmentlar — reys raqami, aviakompaniya, terminal, samolyot — `route` da
+> **yo'q**. Ular `{id}/` javobining `data` sida (§20).
+>
+> `route` ning har bir maydoni `null` bo'lishi mumkin, `route` ning o'zi ham:
+> marshrutni o'qib bo'lmagani bron rad etilishi uchun sabab emas. Bunday
+> holatda `route` `route_summary` dan yasaladi va `directions` bo'sh bo'ladi.
 
 ### Tafsilot — butun yozuv
 
@@ -1590,8 +1644,11 @@ GET /public/orders/3f1c…/
               "offer_id": "9689fa0a-6a7c-4604-afb9-4de663de887b",
               "amount": { "amount": "52.39", "currency": "EUR" },
               "passengers": [ … ],
+              "route": { "summary": "TAS-IST / IST-TAS",
+                         "directions": [ … ] },
               "travel_start_at": "2026-09-14T05:40:00Z",
-              "route_summary": "TAS → IST",
+              "travel_end_at": "2026-09-21T22:05:00Z",
+              "route_summary": "TAS-IST / IST-TAS",
               "ticket_time_limit_at": "2026-08-20T09:14:22Z",
               "cancellation_reason": null,
               "created_at": "2026-08-17T09:14:22Z",
@@ -1611,7 +1668,7 @@ Ro'yxatdagi maydonlarga qo'shimcha:
 | `gts_order_number` | GTS raqami — **bekor qilish shuni oladi**. GTS'da butun son, bizda satr (§1) |
 | `gts_order_uid` | GTS ichidagi barqaror kalit. Hech bir chaqiruv olmaydi, GTS texnik yordami so'raydi |
 | `request_id`, `offer_id` | Buyurtmani kelib chiqqan qidiruv va taklifga bog'laydi |
-| `passengers` | Yo'lovchilar **bizning shaklimizda**, chipta chiqqach har birida `ticket_number` bilan (§20) |
+| `passengers` | Yo'lovchilar **bizning shaklimizda va to'liq** — hujjat, tug'ilgan sana, kontakt bilan; chipta chiqqach har birida `ticket_number` (§20). Ro'yxatda bu obyektning faqat besh maydoni bor |
 | `cancellation_reason` | `customer` · `admin` · `timelimit` · `payment_failed` |
 | `updated_at` | Yozuv oxirgi marta qachon o'zgargani |
 | `booked_at`, `paid_at`, `ticketed_at`, `cancelled_at` | Har bir muhim o'tish qachon sodir bo'lgani |

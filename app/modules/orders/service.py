@@ -300,7 +300,9 @@ async def confirm_booking(
             "travelers": [person.as_dict() for person in result.travelers],
             "ticket_time_limit_at": result.ticket_time_limit_at,
             "travel_start_at": result.travel_start_at,
+            "travel_end_at": result.travel_end_at,
             "route_summary": result.route_summary,
+            "route": result.route.as_dict() if result.route is not None else None,
         },
     )
 
@@ -385,7 +387,11 @@ def booking_answer(order: Order) -> dict[str, Any]:
                 order_no=order.order_no,
                 key=key,
             )
-    answer["order"] = OrderOut.from_order(order).model_dump(mode="json")
+    # ``by_alias`` because this is the one place the schema is serialised by
+    # hand: FastAPI passes it for every response it builds itself, and without
+    # it the route's legs would come back as ``origin``/``destination`` here
+    # and ``from``/``to`` on ``/orders/{id}/`` — one object, two spellings.
+    answer["order"] = OrderOut.from_order(order).model_dump(mode="json", by_alias=True)
     answer["payment"] = payment_state(order)
     return answer
 
@@ -1074,10 +1080,11 @@ async def list_orders(
 ) -> Page[OrderListOut]:
     """This customer's orders, newest first (API.md §21).
 
-    ``OrderListOut``, not ``OrderOut``: a card wants a route, a price and a
-    status, and the two heaviest fields on the row — the provider's answer and
-    the travellers — are neither. The provider's answer is not even read out of
-    Postgres, which is what ``defer`` is doing on the query below.
+    ``OrderListOut``, not ``OrderOut``: the heaviest field on the row — the
+    provider's whole answer — is not on a card, and is not even read out of
+    Postgres, which is what ``defer`` is doing on the query below. ``route``
+    and ``travelers`` are read: they are why the card can be drawn without the
+    blob, and the schema trims the travellers to the five fields a card shows.
 
     No ``apply_search`` yet: searching by PNR and passenger name is an admin
     need and arrives with that surface (API.md §31).

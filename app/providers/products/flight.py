@@ -30,6 +30,7 @@ than producing a row that claims to be booked and cannot say for how much.
 import datetime as dt
 import re
 from collections.abc import Mapping
+from dataclasses import astuple
 from decimal import InvalidOperation
 from typing import Any, Final
 
@@ -47,6 +48,8 @@ from app.providers.products.orders import (
     CancelResult,
     FailureClass,
     RepriceResult,
+    RouteDirectionRef,
+    RouteRef,
     TicketingResult,
     TravelerRef,
     UnreadableAnswer,
@@ -312,29 +315,126 @@ def _departure(segment: Mapping[str, Any]) -> dt.datetime | None:
     return naive.replace(tzinfo=_zone(segment.get("departure_timezone")))
 
 
-def _routes(body: Mapping[str, Any]) -> tuple[dt.datetime | None, str | None]:
-    """Departure and a one-line route, out of ``routes[].segments[]``.
+def _arrival(segment: Mapping[str, Any]) -> dt.datetime | None:
+    """When the last flight lands. ``_departure`` in a mirror.
 
-    ``TAS-IST / IST-TAS`` — enough to render a list row without opening the
-    answer, which is the only reason either of these is a column.
+    Same treatment and the same caveat: the pair are local times with the
+    offset beside them, so the two ends of one direction can carry different
+    offsets — which is correct, and why the arrival is not derived by adding
+    ``duration_minutes`` to the departure.
+    """
+    date = _text(segment, "arrival_date", limit=32)
+    if date is None:
+        return None
+    time = _text(segment, "arrival_time", limit=32) or "00:00"
+    try:
+        naive = dt.datetime.fromisoformat(f"{date}T{time}")
+    except ValueError:
+        return None
+    return naive.replace(tzinfo=_zone(segment.get("arrival_timezone")))
+
+
+def _endpoint(segment: object, *keys: str) -> str | None:
+    """One end of a direction, as an airport code."""
+    if not isinstance(segment, dict):
+        return None
+    return _text(segment, *keys, limit=8)
+
+
+def _ends(
+    route: Mapping[str, Any], segments: list[Any]
+) -> tuple[str | None, str | None]:
+    """Where a direction starts and finishes.
+
+    The airport codes off the first and last segments, so a direction with a
+    connection still reads ``TAS → IST`` rather than naming the transfer. GTS's
+    own ``direction`` (``"TAS-VKO"``) is the fallback and not the first choice:
+    it is a display string, while the codes are fields. ``departure_city_code``
+    is **not** consulted at all — it arrives as an empty string in the recorded
+    booking (EASY_GATEWAY, ``/content/Booking``).
+    """
+    origin = _endpoint(segments[0] if segments else None, "departure_airport_code")
+    destination = _endpoint(segments[-1] if segments else None, "arrival_airport_code")
+    if origin is not None and destination is not None:
+        return origin, destination
+
+    label = _text(route, "direction", "leg", limit=32)
+    if label is not None and label.count("-") == 1:
+        left, right = (part.strip() or None for part in label.split("-"))
+        return origin or left, destination or right
+    return origin, destination
+
+
+def _leg(route: Mapping[str, Any]) -> RouteDirectionRef:
+    """One entry of ``routes[]`` as a direction of ours."""
+    raw = route.get("segments")
+    segments = (
+        [item for item in raw if isinstance(item, dict)]
+        if isinstance(raw, list)
+        else []
+    )
+    origin, destination = _ends(route, segments)
+    return RouteDirectionRef(
+        origin=origin,
+        destination=destination,
+        departure_at=_departure(segments[0]) if segments else None,
+        arrival_at=_arrival(segments[-1]) if segments else None,
+        duration_minutes=_count(route, "trip_time_minutes", "flight_time_minutes"),
+        stops=_count(route, "stops"),
+    )
+
+
+#: A direction that read as nothing at all. Compared by value rather than by
+#: checking six attributes, so a seventh field cannot be forgotten here.
+_EMPTY_LEG: Final = astuple(RouteDirectionRef())
+
+
+def _count(source: Mapping[str, Any], *keys: str) -> int | None:
+    """The first key that holds a whole number.
+
+    ``bool`` is excluded for the same reason ``_text`` excludes it: it is an
+    ``int`` in Python and never a count in JSON. Floats are refused rather than
+    rounded — GTS states minutes as integers, and a fractional one would mean
+    the field is not what we think it is.
+    """
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        return value
+    return None
+
+
+def _route(body: Mapping[str, Any]) -> RouteRef | None:
+    """The journey out of ``routes[]`` — directions and the one-line summary.
+
+    ``TAS-IST / IST-TAS`` plus one object per direction: enough to render a
+    list row without opening the answer, which is the only reason any of this
+    is a column. What stays behind in ``raw`` is everything below the
+    direction — flight numbers, airlines, terminals, aircraft.
+
+    Returns ``None`` rather than an empty route when the answer names no
+    journey at all: a caller that has to tell "no routes" from "a route we
+    could not read" would otherwise have to inspect the summary. A direction
+    every field of which came back empty is dropped for the same reason — an
+    object of nulls on the wire says less than its absence.
     """
     routes = body.get("routes")
-    if not isinstance(routes, list) or not routes:
-        return None, None
-    legs = [
-        _text(route, "direction", limit=32)
-        for route in routes
-        if isinstance(route, dict)
-    ]
-    summary = " / ".join(leg for leg in legs if leg) or None
-
-    first = routes[0]
-    segments = first.get("segments") if isinstance(first, dict) else None
-    if not isinstance(segments, list) or not segments:
-        return None, summary
-    if not isinstance(segments[0], dict):
-        return None, summary
-    return _departure(segments[0]), summary
+    if not isinstance(routes, list):
+        return None
+    entries = [route for route in routes if isinstance(route, dict)]
+    summary = (
+        " / ".join(
+            label
+            for label in (_text(route, "direction", limit=32) for route in entries)
+            if label
+        )
+        or None
+    )
+    legs = tuple(leg for leg in map(_leg, entries) if astuple(leg) != _EMPTY_LEG)
+    if summary is None and not legs:
+        return None
+    return RouteRef(summary=summary, directions=legs)
 
 
 def _phone(source: Mapping[str, Any]) -> str | None:
@@ -585,7 +685,8 @@ class FlightAdapter:
                 "the GTS booking answer names no order or no price", raw=raw
             )
         code = _text(body, "status", limit=16)
-        departure, route = _routes(body)
+        route = _route(body)
+        legs = route.directions if route is not None else ()
         return BookingResult(
             provider_order_number=number,
             provider_order_uid=_text(body, "order_uid", limit=64),
@@ -599,8 +700,10 @@ class FlightAdapter:
             ticket_time_limit_at=_deadline(
                 body.get("ticket_time_limit"), now=dt.datetime.now(dt.UTC)
             ),
-            travel_start_at=departure,
-            route_summary=route,
+            travel_start_at=legs[0].departure_at if legs else None,
+            travel_end_at=legs[-1].arrival_at if legs else None,
+            route_summary=route.summary if route is not None else None,
+            route=route,
             raw=raw,
         )
 

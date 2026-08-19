@@ -120,6 +120,66 @@ class TravelerRef:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteDirectionRef:
+    """One leg of the journey — out and back are two of these.
+
+    **Direction level, not segment level.** A list card answers four questions
+    — where from, where to, when, and how many stops — and every one of them is
+    a property of the direction as a whole. Flight numbers, airlines and
+    terminals belong to the segments underneath, and those stay in ``raw``: an
+    order with two connections each way would otherwise put six objects on a
+    screen that shows one line.
+
+    ``origin``/``destination`` rather than ``from``/``to`` because ``from`` is a
+    Python keyword; the wire spelling is restored in ``schemas.py``.
+    """
+
+    origin: str | None = None
+    destination: str | None = None
+    departure_at: datetime | None = None
+    arrival_at: datetime | None = None
+    duration_minutes: int | None = None
+    stops: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """The JSON stored inside ``orders.route``.
+
+        Datetimes become ISO strings here rather than at the edge: JSONB has no
+        datetime, and a column that sometimes holds one shape and sometimes
+        another is worse than a column that always holds text.
+        """
+        return {
+            "from": self.origin,
+            "to": self.destination,
+            "departure_at": (
+                self.departure_at.isoformat() if self.departure_at else None
+            ),
+            "arrival_at": self.arrival_at.isoformat() if self.arrival_at else None,
+            "duration_minutes": self.duration_minutes,
+            "stops": self.stops,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RouteRef:
+    """The journey, product-agnostic: directions plus the one-line summary.
+
+    A hotel would have one direction and a tour none; the shape does not
+    presume flights, which is the point of it being here rather than in the
+    flight adapter.
+    """
+
+    summary: str | None
+    directions: tuple[RouteDirectionRef, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "summary": self.summary,
+            "directions": [leg.as_dict() for leg in self.directions],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BookingResult:
     """A reservation, said in our words.
 
@@ -141,7 +201,13 @@ class BookingResult:
     #: the caller falls back to a configured window rather than guessing.
     ticket_time_limit_at: datetime | None
     travel_start_at: datetime | None
+    #: The end of the journey — the last direction's arrival. Equal to the
+    #: departure's arrival on a one-way.
+    travel_end_at: datetime | None
     route_summary: str | None
+    #: The journey at direction level. ``None`` when the answer's route could
+    #: not be read, which is a cosmetic loss and never refuses a booking.
+    route: RouteRef | None
     #: The provider's answer, whole. Published on the wire and stored as the
     #: order's ``provider_response``.
     raw: dict[str, Any]
@@ -275,6 +341,8 @@ __all__ = [
     "CancelResult",
     "FailureClass",
     "RepriceResult",
+    "RouteDirectionRef",
+    "RouteRef",
     "TicketingResult",
     "OrderOperations",
     "TravelerRef",
