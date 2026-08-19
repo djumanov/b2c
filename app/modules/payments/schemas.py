@@ -22,6 +22,24 @@ _SEPARATORS = re.compile(r"[\s-]")
 _EXPIRE = re.compile(r"(0[1-9]|1[0-2])\d{2}$")
 
 
+def _luhn_ok(number: str) -> bool:
+    """The check digit every card carries.
+
+    Cheap, and it turns the commonest typo into a ``422`` before anything is
+    stored.
+    """
+    total, odd = 0, False
+    for char in reversed(number):
+        digit = int(char)
+        if odd:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+        odd = not odd
+    return total % 10 == 0
+
+
 class CardOut(BaseModel):
     """A saved card as the customer sees it. Never carries the number."""
 
@@ -54,7 +72,11 @@ class CardCreateIn(BaseModel):
     @classmethod
     def _valid_number(cls, value: SecretStr) -> SecretStr:
         digits = _SEPARATORS.sub("", value.get_secret_value())
-        if not _DIGITS.fullmatch(digits):
+        if not _DIGITS.fullmatch(digits) or not _luhn_ok(digits):
+            # Deliberately does not say which of the two failed: length and
+            # check digit are both "this is not a card number" to the person
+            # typing it, and naming the check digit only helps somebody
+            # generating candidates.
             raise ValueError("This does not look like a card number")
         return SecretStr(digits)
 
