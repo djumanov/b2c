@@ -61,7 +61,7 @@ infratuzilma. Ikkitasi bundan mustasno va ular alohida ko'rsatilgan.
 | 19 | Profil | **1** | ◐ | `profile/` (avatar kodi shu yerda), `password/`, `passengers/` — 6b-bo'lakda qurildi. `cards/` — oddiy CRUD sifatida qurildi (§2.7 qayta ko'rildi). Chetlanish: `notifications/` → **4** (§2.8) |
 | 20 | Mahsulotlar | **2** + **3** | — | `flight` → 2-faza; `railway`, `insurance`, `esim`, `transfer` → 3-faza (`PROJECT.md` §15) |
 | 21 | Buyurtmalar | **2** | ◐ | `ARCHITECTURE.md` §15: `orders` 2-fazada. Ro'yxat va tafsilot 6-bo'lakda qurildi; `receipt/`, `{id}/cancel/`, kanonik status va `available_actions` → **9-bo'lak** |
-| 22 | To'lov | **2** | — | Redirect oqimi. `card/`, `confirm/`, `resend-otp/`, `installment/…` → §41 |
+| 22 | To'lov | **2** | — | **Karta oqimi** — `transactions/`, `card/`, `confirm/`, `resend-otp/`: hammasi shu fazada (§2.7). Redirect oqimi **umuman qurilmaydi** (`O14`). Faqat `installment/…` → §41 |
 | 23 | Promokod | **2** | — | Shu hujjatdagi qaror (§2.3), `PROJECT.md` §15 ga yozib qo'yilgan |
 | 24 | Kontent (o'qish) | **4** | ◐ | `cms` moduli bilan birga; 5-faza uni **iste'mol qiladi**, qayta qurmaydi. `faq/` va statik sahifalar (`privacy-policy/`, `terms/`, `about/`) oldinga tortildi (§2.14) |
 | 25 | Murojaat va aloqa | **4** | ◐ | `leads` va `feedback` modullari bilan (§2.5). `leads` soddalashib oldinga tortildi (§2.14) |
@@ -173,9 +173,13 @@ orqali yaratilar edi. Bu qaror bekor qilindi: karta — **lokal autofill yozuvi*
 provayder saqlashda qatnashmaydi (`PROJECT.md` D7). `API.md` §19 endi faqat oddiy
 CRUD: list/qo'shish/ko'rish/o'chirish; `verify/`, `resend-otp/` va `default/`
 kontraktdan chiqdi. Raqam bazada AES-GCM shifrlangan holda turadi va 2-fazada
-to'lov uni `reveal_card()` orqali oladi. §41 dan chiqqan
-`transactions/{id}/card|confirm|resend-otp/` o'z joyida qoladi — ular yangi karta
-bilan to'lash oqimi (2-faza).
+to'lov uni `reveal_card()` orqali oladi.
+
+**Yana bir marta aniqlashtirildi (2026-08-19).** `transactions/{id}/card|confirm|
+resend-otp/` — bu **to'lovning o'zi**, kartani saqlash emas, va u 2-fazada
+quriladi (`API.md` §22, `O14`). Yuqoridagi §22 qatori ularni §41 ga yuborar edi:
+o'sha ziddiyat shu bilan yopildi. Hosted redirect esa 2-fazaga ham qolmadi —
+u qurilmaydi.
 
 ⚠ **PCI majburiyatini kim oladi** savoli ochiq (`PROJECT.md` §16.7) — endi u
 saqlash nazoratini (PCI 3-talab) ham qamraydi, chunki shifrlangan raqam saqlanadi.
@@ -439,9 +443,9 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 | 6 | `orders` — lokal yozuv — **✅ 2026-08-17 (yozuv va egalik)** | `orders` jadvali, `booking/` dan keyin GTS javobi `JSONB` bo'lib saqlanadi, `GET /public/orders/` va `/{id}/`, `cancel/` da egalik tekshiruvi (§8.14 yopildi). **Status xaritasi va `available_actions` bu bo'lakdan chiqarildi va 9-bo'lakka ko'chdi**: bugun qatorda GTS kodi kelganicha turadi ([API.md](API.md) §21). Sabab — xaritaning birinchi haqiqiy iste'molchisi bekor qilish/qaytarish qoidalari, ular esa saga bilan keladi; iste'molchisiz xarita taxmin bo'lardi. Admin yuzasi (§31) ham bu bo'lakka kirmadi |
 | 7a | `PaymentProvider` porti + registry | Migratsiyasiz, marshrutsiz. Port **hozir** loyihalanadi: `dict` qaytishlar dataclass'ga, `handle_callback` xom baytlarni oladi, `verify()` qo'shiladi (§2.13) |
 | 7b | `payments` yadrosi — jadvallar, o'qish endpointlari, admin ro'yxati | Provayder chaqiruvisiz, nol adapter bilan yashil |
-| 7c | Payme va Click adapterlari | Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13). ⚠ Pul birligi: Payme **tiyin**, Click **so'm** — ikkalasi ham pinlangan test bilan |
-| 7d | Redirect oqimi + webhook'lar | Takroriy callback ikki marta yechmaydi; imzo yomon bo'lsa holat o'zgarmaydi (`API.md` §40) |
-| 7e | **Saqlangan karta bilan to'lov** — checkout karta qadamini bazadagi shifrlangan raqamdan `reveal_card()` orqali to'ldiradi (§2.7) | Kartalarning o'zi 1-fazada oddiy CRUD sifatida qurilgan. Karta raqami **ochiq matnda** hech bir jadvalga tushmasligi **regressiya testi** bilan qo'riqlanadi |
+| 7c | **Karta oqimi** — portni kengaytirish, `order_payments` ustunlari, `card/`+`confirm/`+`resend-otp/`, provayder tanlash | Redirect shu bo'lakda **olib tashlanadi** (`O14`, `O15`). Saqlangan karta (`card_id`) shu yerda — `reveal_card()` allaqachon bor va bitta `if` uchun alohida bo'lak arzimaydi. Karta raqami **ochiq matnda** hech bir jadvalga va Redis'ga tushmasligi **regressiya testi** bilan qo'riqlanadi |
+| 7d | Payme va Click adapterlari | Bu yerda `POST /admin/integrations/payments/{code}/test/` ham ulanadi (§2.13). ⚠ Pul birligi: Payme **tiyin**, Click **so'm** — ikkalasi ham pinlangan test bilan. ⚠ Payme'ning `account_field` i merchant kabinetidan keladi (`API.md` §29) |
+| 7e | Webhook'lar **ikkinchi eshik** sifatida + eskirgan urinishlarni supurish + `payments.reconcile` | Takroriy callback ikki marta yechmaydi; imzo yomon bo'lsa holat o'zgarmaydi (`API.md` §40); so'rov ichida yechilgan urinishga kelgan callback xato **emas** (`O16`) |
 | 8 | `promo` minimal (§2.3) | To'lov summasiga ta'sir qiladi, shuning uchun shu yerda |
 | 9 | **`booking` sagasi** | Transactional outbox + Celery; eng yuqori xavfli modul. `POST /public/{product}/booking/` **allaqachon ishlaydi** (4/5-bo'lak, sof passthrough) va buyurtma qatorini ham yozadi (6-bo'lak) — bu bo'lak ularni almashtirmaydi, ustiga `payment_id`, outbox va holat mashinasini qo'yadi. Shu yerda **status xaritasi** (BO/PW/TI→kanonik, 6-bo'lakdan ko'chdi), `available_actions` va `409 offer_expired` xaritasi ham qo'shiladi. `cancel` ning egalik tekshiruvi **6-bo'lakda yopildi** (STATUS.md §8.14) |
 | 10 | `jobs` + `GET /admin/jobs/{id}/` | Async ish reyestri (`API.md` §9) |
@@ -465,7 +469,7 @@ Modullar: `providers/gts/`, `catalog`, `products`, `booking`, `orders`,
 |---|---|
 | `PROJECT.md` §16.3 — qisman qaytarish siyosati | 9-bo'lak (`refund/`) |
 | `ARCHITECTURE.md` §14 A9 — GTS qaysi `sort`/filtrni qo'llaydi | 5-bo'lak; javob kelmasa `API.md` §20 qisqartiriladi |
-| **`PROJECT.md` §16.7 — PCI SAQ D majburiyatini kim oladi** | Tijoriy javob hali ochiq; texnik qaror qabul qilingan (shifrlangan raqam saqlanadi, §2.7). Javob "yo'q" bo'lsa kartalar provayderning o'z formasi orqali ro'yxatdan o'tadi; 7a–7d o'zgarmaydi |
+| **`PROJECT.md` §16.7 — PCI SAQ D majburiyatini kim oladi** | Tijoriy javob hali ochiq; texnik qaror qabul qilingan (shifrlangan raqam saqlanadi, §2.7, va 2026-08-19 dan boshlab to'lovning o'zi ham karta orqali — `O14`). Javob "yo'q" bo'lsa kartalar **ham** to'lov **ham** provayderning o'z formasiga ko'chadi va `O14` bekor qilinadi — ya'ni endi bu javob 7c ni ham qayta yozdiradi, faqat 7e ni emas |
 
 ---
 

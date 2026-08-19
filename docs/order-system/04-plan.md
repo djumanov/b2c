@@ -20,7 +20,8 @@ ishlatadi, va pul yo'lida "yarim ulangan" holat eng qimmat xato.
 | S2 | `OrderOperations` porti + flight adapteri | yo'q | yo'q (fixture) | S1 |
 | S3 | Bron niyati + `Idempotency-Key` | yo'q | GTS booking | S1, S2 |
 | S4a | To'lov yadrosi: `order_payments`, urinish endpointlari, webhook routeri | `order_payments` | yo'q (double) | S3 |
-| S4b | Payme va Click adapterlari | yo'q | provayder | S4a |
+| S4b | **Karta oqimi**: portni kengaytirish, `order_payments` ustunlari, `card/`+`confirm/`+`resend-otp/`, provayder tanlash | `order_payments` (ustunlar) | yo'q (double) | S4a |
+| S4c | Payme va Click adapterlari + `test/` probe'i | yo'q | provayder | S4b |
 | S5 | Ticketing + poller + reprice | yo'q | GTS ticketing | S4 |
 | S6a | Avtomatik kompensatsiya | `order_refunds` | GTS + provayder | S5 |
 | S6b | Mijoz so'rovi bo'yicha qaytarish va admin tasdig'i | yo'q | GTS refund-check/commit | S6a |
@@ -135,24 +136,61 @@ hech qayerga tegmaydi (D2 saqlanadi).
 
 ## S4 — To'lov
 
+### S4a — yadro (bajarildi 2026-08-18)
+
 **Shox:** `feat/order-payments`
+
+* `order_payments` modeli va migratsiyasi;
+* `POST /public/orders/{id}/transactions/`, `GET /public/transactions/{id}/`,
+  `GET /public/payments/methods/`;
+* `POST /api/v1/webhooks/payments/{provider}/` — envelope'siz (`API.md` §40),
+  imzo tekshiruvi, `T5` ni chaqirish.
+
+### S4b — karta oqimi
+
+**Shox:** `feat/card-checkout-endpoints`
+
+Bu bo'lak `O14`/`O15`/`O16` ni kodga tushiradi va **redirect'ni olib
+tashlaydi** — ya'ni S4a qurgan hosted yarmi shu yerda o'ladi.
 
 **Quriladi**
 
-* `order_payments` modeli va migratsiyasi;
-* `POST /public/payments/{id}/transactions/`, `GET /public/payments/{id}/`,
-  `GET /public/payments/methods/`;
-* `providers/payments/payme.py`, `click.py` — mavjud port bo'yicha;
-* `POST /api/v1/webhooks/payments/{provider}/` — envelope'siz (`API.md` §40),
-  imzo tekshiruvi, `T5` ni chaqirish;
-* `POST /admin/integrations/payments/{code}/test/` (`verify()`).
+* portni kengaytirish: `CardCredentials`, `RegisteredCard`, `VerifiedCard`,
+  `register_card` · `request_card_code` · `verify_card` · `charge_card` ·
+  `remove_card`. `create_payment` va `TransactionFlow` **o'chadi**;
+* `order_payments` ga karta va OTP ustunlari, `uq_order_payments_open`,
+  `flow`/`redirect_url` ning tushishi, `status` CHECK'ining qayta yozilishi;
+* `POST /public/transactions/{id}/card/` · `/confirm/` · `/resend-otp/`;
+  `TransactionStartIn` bo'shaydi;
+* `integrations.service.active_payment_provider()` va "bir vaqtda bittasi
+  yoqilgan" qoidasi;
+* buyurtma bekor bo'lganda yoki muddati o'tganda **ochiq urinishni yopish**
+  va tokenni provayderdan bo'shatish.
 
-**Testlar** — `tests/integration/test_payments.py`, `test_webhooks.py`:
+**Testlar** — `tests/integration/test_card_checkout.py`,
+`test_payment_provider_selection.py`, `tests/contract/test_pan_confinement.py`:
+uchidan-uchiga oqim · saqlangan karta (`card_id`) yo'li · uchta xato kod
+urinishni `failed` qiladi va buyurtma `booked` da qoladi · cooldown ichida
+`resend-otp/` `429` · `confirm/` ikki marta — **bitta** yechish · ikkinchi
+`transactions/` o'sha ochiq urinishni qaytaradi · `pending` urinish yangisini
+`409` bilan to'sadi · javoblarda PAN yo'q va **Redis'da ham PANdan hosil
+bo'lgan kalit yo'q** · bittasini yoqish qolganini o'chiradi.
+
+### S4c — adapterlar
+
+**Shox:** `feat/payme-card-adapter`, `feat/click-card-adapter`
+
+* `providers/payments/payme.py`, `click.py`, `common.py`;
+* `POST /admin/integrations/payments/{code}/test/` (`verify()`);
+* `payments.reconcile` — `pending` qolgan urinishlarni provayderdan so'raydi.
+
+**Testlar** — `tests/unit/test_payme_adapter.py`, `test_click_adapter.py`,
+`test_provider_amount_units.py`, `tests/integration/test_webhooks.py`:
 takroriy callback ikki marta yechmaydi (`uq_order_payments_provider_ref`) ·
 imzo yomon bo'lsa **hech qanday holat o'zgarmaydi** · Payme yomon imzoga `200`
 + JSON-RPC `-32504` oladi · pul birligi: Payme **tiyin**, Click **so'm** —
 pinlangan test · "allaqachon to'langan" callback xato emas · summa mos
-kelmasa `T5` `needs_attention` ga tushadi.
+kelmasa `T5` `needs_attention` ga tushadi · `verify()` pul qimirlatmaydi.
 
 ---
 
@@ -244,7 +282,8 @@ Shu bo'lakda `STATUS.md` §8.15a (A7) va §8.17 (A8) yopiladi.
 | Qaytarish ham xato → `needs_attention` | shu yerda |
 | Takroriy webhook ikki marta yechmaydi | `tests/integration/test_webhooks.py` |
 | Takliflar hech qayerda saqlanmaydi (D2) | `tests/contract/test_search_passthrough.py` |
-| Karta raqami ochiq matnda hech bir jadvalda yo'q | `tests/integration/test_order_privacy.py` |
+| Karta raqami ochiq matnda hech bir jadvalda **va Redis'da** yo'q | `tests/integration/test_card_pan_never_stored.py` |
+| PAN'ga faqat `payments` moduli tegadi | `tests/contract/test_pan_confinement.py` |
 | **Pul jimgina yo'qolmaydi** | Yuqoridagi uchtasi birgalikda |
 
 ---

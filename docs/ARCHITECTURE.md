@@ -43,7 +43,7 @@ sub'ekti** bilan.
 | **D4** | Xarid uchun **akkaunt majburiy** | Har bir buyurtmada `customer_id` bo'sh bo'lmaydi. Mehmon sifatida xarid yo'q |
 | **D5** | Auth — **email + parol**, qo'shimcha **Google** | Apple/Facebook/VK yo'q. ⚠ Apple qoidalari bo'yicha iOS ilovada uchinchi tomon social login bo'lsa **Sign in with Apple majburiy** — ya'ni Google 6-bosqichda Apple'ni ham talab qiladi. Shuning uchun provayderlar registry sifatida quriladi |
 | **D6** | MVP'da OTP va parol tiklash — **faqat email/SMTP** | Telefon + SMS keyingi bosqichda; `login` maydoni relizda faqat email qabul qiladi ([API.md](API.md) §41) |
-| **D7** | To'lov provayderlari — **Payme + Click**, redirect + webhook. Saqlangan kartalar — **lokal shifrlangan autofill yozuvlari**, provayderga bog'lanmaydi | Ikkala provayder ham redirect + webhook beradi. Saqlangan karta raqami bazada **faqat AES-GCM shifrlangan holda** turadi va to'lov paytida server ichida ochilib provayderga uzatiladi — **ochiq matnda hech qachon saqlanmaydi, log'ga tushmaydi, klientga qaytmaydi → o'rnatma saqlangan karta ma'lumoti bilan SAQ D qamrovida** ([PROJECT.md](PROJECT.md) §13). `transactions/{id}/card\|confirm\|resend-otp/` endi ulanadi. PAN'ga tegadigan hamma narsa `payments` modulida bitta joyda turadi (§5) |
+| **D7** | To'lov provayderlari — **Payme + Click**, ikkalasi ham **karta API'si orqali**: mijoz karta ma'lumotini bizga yuboradi, provayder SMS kod yuboradi, biz yechamiz. Hosted redirect **yo'q**. Saqlangan kartalar — **lokal shifrlangan autofill yozuvlari**, provayderga bog'lanmaydi | Mijozni provayderning sahifasiga yuborish qamrovdan chiqarildi (`order-system/03-design.md` `O14`, 2026-08-19): to'lov formasi bizniki, demak oqim ham bitta. Karta raqami — yangisi so'rov tanasidan, saqlangani bazadagi **AES-GCM shifrlangan** nusxadan — server ichida adapterga, adapterdan provayderga o'tadi va shu yerda tugaydi: **ochiq matnda hech qachon saqlanmaydi, log'ga tushmaydi, klientga qaytmaydi → o'rnatma saqlangan karta ma'lumoti bilan SAQ D qamrovida** ([PROJECT.md](PROJECT.md) §13). `transactions/{id}/card\|confirm\|resend-otp/` — yagona to'lov yo'li. Qaysi provayder yechishini **egasi paneldan tanlaydi** (`O15`): bir vaqtda bittasi yoqilgan. PAN'ga tegadigan hamma narsa `payments` modulida bitta joyda turadi (§5) |
 | **D8** | Tillar — **uz + ru + en** | Bo'sh qolgan tarjima [API.md](API.md) §7 fallback zanjiriga tushadi. Tarjima jadvali emas, `JSONB` (§10) |
 | **D9** | **Beshta vertikal ham birinchi relizda** | `ProductAdapter` porti (§6) spekulyativ emas — birinchi kundanoq beshta turli oqim bilan sinovdan o'tadi |
 | **D10** | O'rnatish, yangilash va zaxira — **clientning zimmasida** | Migratsiya biz nazorat qilmaydigan vaqtda ishga tushadi → **oldinga mos** bo'lishi va bir necha versiya sakrashni ko'tarishi shart (§12) |
@@ -224,14 +224,15 @@ bilan raqobatlashmaydi.
 > ajratiladi — har qanday xato avtomatik qaytarishga olib kelmaydi (`O5`).
 
 ```
-verify → bron (GTS hold, buyurtma=booked) → to'lov yaratiladi → mijoz to'laydi (Payme/Click)
-       → provayder webhook → to'lov=paid → chipta vazifasi → buyurtma=ticketed
-                                                          ↘ xato → avto-qaytarish → refunded
-                                                                 ↘ qaytarish ham xato →
-                                                                   needs_attention
+verify → bron (GTS hold, buyurtma=booked) → urinish ochiladi (awaiting_card)
+       → mijoz kartani bizga yuboradi → provayder tokenni beradi va SMS yuboradi (awaiting_otp)
+       → mijoz kodni yuboradi → tasdiq → yechish (pending) → to'lov=paid
+       → chipta vazifasi → buyurtma=ticketed
+                        ↘ xato → avto-qaytarish → refunded
+                               ↘ qaytarish ham xato → needs_attention
 
-saqlangan karta bilan (card_id berilgan) — karta qadamini server o'zi to'ldiradi:
-       to'lov yaratiladi → reveal_card() → raqam provayderga → to'lov=paid → o'sha outbox qatori
+saqlangan karta bilan (card_id berilgan) — raqamni server o'zi ochadi:
+       card/ → reveal_card() → raqam provayderga → o'sha ikkinchi qadam, o'sha holatlar
 ```
 
 **Transactional outbox + Celery vazifalari** ustida quriladi, saga framework'isiz:
@@ -248,14 +249,22 @@ saqlangan karta bilan (card_id berilgan) — karta qadamini server o'zi to'ldira
 - `Idempotency-Key` ([API.md](API.md) §10) Redis'da 24 soat: so'rov barmoq izi → keshlangan javob.
   Klient kalit yubormasa **server uni so'rovdan hosil qiladi**, ya'ni pul
   endpointi kalitsiz ham idempotent.
+- **Yechish so'rov ichida bajariladi, webhook esa ikkinchi eshik bo'lib qoladi** (`O16`).
+  Karta API'si javobni o'sha chaqiruvda beradi; urinish qatori esa tarmoq chaqiruvidan
+  **oldin** `pending` ga o'tib commit qilinadi — jarayon o'rtada o'lsa, `provider_ref` siz
+  yoki javobsiz qolgan qator solishtirish vazifasi uchun dalil bo'ladi; hech nima
+  yozilmasa, hech kim topa olmaydigan to'lov qoladi. Webhook baribir kerak: Payme protokoli
+  chek qanday to'langanidan qat'i nazar `CreateTransaction`/`PerformTransaction` chaqiradi,
+  va "provayder yechdi" bilan "biz commit qildik" orasidagi oynani boshqa hech narsa
+  yopmaydi.
 - **Saqlangan karta oqimi ham sagadan chetda qolmaydi**: `reveal_card()` bergan raqam bilan
-  qilingan provayder chaqiruvi javobi o'sha holat mashinasiga, o'sha outbox qatoriga tushadi.
-  Tranzaksiya qatori tarmoq
-  chaqiruvidan **oldin** commit qilinadi — jarayon o'rtada o'lsa, `provider_ref` siz qolgan
-  qator solishtirish vazifasi uchun dalil bo'ladi; hech nima yozilmasa, hech kim topa
-  olmaydigan to'lov qoladi. Webhook baribir kerak: Payme protokoli chek qanday to'langanidan
-  qat'i nazar `CreateTransaction`/`PerformTransaction` chaqiradi, va "provayder yechdi" bilan
-  "biz commit qildik" orasidagi oynani boshqa hech narsa yopmaydi.
+  qilingan chaqiruvning javobi o'sha holat mashinasiga tushadi. Yangi karta bilan
+  saqlangani orasidagi farq bitta qadamda — raqam qayerdan kelgani — va undan keyin farq
+  yo'q.
+- **Karta yo'llarida `Idempotency-Key` yo'q** ([API.md](API.md) §22): kalit so'rov
+  tanasidan hosil bo'ladi va karta raqamining digesti Redis'ga tushishi kerak emas.
+  Himoya bazada — ochiq urinish bo'yicha unique indeks va `confirm/` dagi
+  `SELECT … FOR UPDATE`.
 
 > Saga **bron qilingandan keyin** boshlanadi. Undan oldingi qism (qidiruv va takliflar) holatsiz
 > (§9), shuning uchun tiklash mantiqi faqat pul yo'lida kerak — u yerda esa majburiy.
@@ -407,7 +416,7 @@ Uchta router ulanadi: `/api/v1/public`, `/api/v1/admin`, `/api/v1/webhooks`.
 | Stek | Python 3.13, FastAPI, SQLAlchemy 2.0 async + asyncpg, Alembic, Pydantic v2, httpx, argon2, structlog, `uv`, ruff + mypy strict | [GTS.md](GTS.md) §11 dagi tashkilot standartiga mos — jamoa buni allaqachon ishlatadi |
 | Fon vazifalari | **Celery + Redis** (worker + beat) | Tashkilot standarti; buyurtma sinxronizatsiyasi, tozalash va katalog yangilash uchun beat kerak |
 | Kesh / broker | Redis | `site-config`, statik kataloglar, idempotency, GTS sessiyasi, rate limit, Celery brokeri. **Qidiruv uchun emas** (D2, §9) |
-| To'lov | `PaymentProvider` porti, Payme va Click adapterlari | Payme'ning provayder boshqaradigan JSON-RPC protokoli webhook endpoint'i orqali; Click — redirect + callback. Saqlangan kartalar portga tegmaydi — ular `payments` modulining lokal shifrlangan yozuvlari (§5, §10). Registry kod → **factory** saqlaydi, instance emas: adapter dekriptlangan credential'ni ko'taradi, egasi uni paneldan almashtiradi va worker jarayonlari kelishmovchilikda qolmasligi kerak |
+| To'lov | `PaymentProvider` porti, Payme va Click adapterlari | Port **karta oqimini** gapiradi: kartani ro'yxatdan o'tkazish, kod so'rash, tasdiqlash, yechish, tokenni bo'shatish (D7). Payme buni Subscribe API'sining JSON-RPC'si bilan, Click esa `card_token/*` REST'i bilan bajaradi; ikkalasining farqi — jumladan Payme'ning ikki qadamli yechishi va pul birligi (tiyin/so'm) — adapter ichida qoladi. Kiruvchi callback'lar o'sha portning ikkinchi yarmida, webhook endpointi ortida. Saqlangan kartalar portga tegmaydi — ular `payments` modulining lokal shifrlangan yozuvlari (§5, §10). Registry kod → **factory** saqlaydi, instance emas: adapter dekriptlangan credential'ni ko'taradi, egasi uni paneldan almashtiradi va worker jarayonlari kelishmovchilikda qolmasligi kerak |
 | Bildirishnoma | `Notifier` porti + SMTP adapteri | D6; SMS/push adapterlari chaqiruvchi kodga tegmasdan qo'shiladi. **Qaysi adapter ishlatilishini `integrations.service.notifier(session)` hal qiladi** — sozlama DB'da, ya'ni javob modulniki, provayderniki emas (§4). `providers/notifications` da faqat `set_notifier` override'i va `html.render` qobig'i qoladi. Portning `send` metodi `html` ni ham oladi: email uni matn bilan yonma-yon (`multipart/alternative`) yuboradi, SMS/push esa tashlab yuboradi — shuning uchun u ikkinchi metod emas, ixtiyoriy argument. Brend qiymatlari `settings.service.mail_brand()` dan **argument sifatida** beriladi, chunki provayder modulni import qilmaydi (§4) |
 | Fayl saqlash | `Storage` porti + lokal disk adapteri | Bitta serverli o'rnatma; Docker volume — zaxira birligi. Client xohlasa S3 shunchaki adapter almashtirish |
 | **Olinmadi** | Kafka, mikroservis, event sourcing, CQRS, GraphQL, o'z rules/narx mexanizmimiz, rol konstruktori, Kubernetes | Har biri — client boshqarishi kerak bo'lgan haqiqiy infratuzilma. Narx GTS'ga tegishli ([PROJECT.md](PROJECT.md) §5), rollar esa ikkita va [API.md](API.md) §5 da qat'iy belgilangan |
