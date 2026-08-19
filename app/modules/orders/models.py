@@ -331,6 +331,16 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         _in_values("status", TransactionStatus, name="status"),
         _in_values("flow", TransactionFlow, name="flow"),
         CheckConstraint("amount > 0", name="amount"),
+        # The provider's token is a live payment credential: it can be charged.
+        # It exists only while the attempt is open, and this is what makes
+        # "erased when the attempt closes" a property of the table rather than a
+        # promise of the code — the same shape ``customer_cards`` uses to pair a
+        # deleted row with a null ciphertext.
+        CheckConstraint(
+            "card_token IS NULL OR status IN ('awaiting_otp', 'pending')",
+            name="open_attempts_hold_the_token",
+        ),
+        CheckConstraint("otp_attempts >= 0", name="otp_attempts"),
         # **This index is why a repeated callback cannot settle twice.** Not the
         # handler's logic — logic can be raced, a unique index cannot (X6).
         # Partial because the reference arrives with the provider's first
@@ -367,6 +377,41 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     #: Where the customer was sent, for the hosted flow.
     redirect_url: Mapped[str | None] = mapped_column(Text)
+
+    #: Which saved card paid, when one did. **No foreign key**: ``customer_cards``
+    #: belongs to ``payments`` and a constraint across the two would be the
+    #: database importing another module's models (ARCHITECTURE.md §4) — the same
+    #: reasoning that leaves ``customer_cards.customer_id`` unconstrained.
+    card_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    #: What the receipt shows. Kept here rather than read back through
+    #: ``card_id`` because a receipt outlives the card: deleting a saved card
+    #: erases its ciphertext, and a paid attempt must still be able to say which
+    #: card paid (PROJECT.md §13).
+    card_masked: Mapped[str | None] = mapped_column(String(32))
+    card_last4: Mapped[str | None] = mapped_column(String(4))
+    card_brand: Mapped[str | None] = mapped_column(String(24))
+    #: The provider's handle for the card, AES-GCM encrypted — the same pattern
+    #: as every other credential at rest. It lives between ``card/`` and
+    #: ``confirm/`` and is erased the moment the attempt closes; a CHECK above
+    #: enforces that. Not in Redis: an eviction would leave a token nobody could
+    #: release and a pending charge nobody could reconcile.
+    card_token: Mapped[str | None] = mapped_column(Text)
+    card_token_key_version: Mapped[int | None] = mapped_column(Integer)
+
+    #: How many wrong codes this attempt has taken. Counted here rather than in
+    #: Redis for the reason X6 gives about idempotency: a ``FLUSHALL`` must not
+    #: hand somebody unlimited tries against a live card token.
+    otp_attempts: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    #: Our own guard, not the provider's — theirs is the one that rules on the
+    #: code. Past this the attempt stays open and ``resend-otp/`` recovers it.
+    otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    otp_resend_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Masked by the provider before we ever see it. The customer needs to know
+    #: which phone to look at, and nothing here needs the rest of the number.
+    otp_sent_to: Mapped[str | None] = mapped_column(String(32))
+
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
