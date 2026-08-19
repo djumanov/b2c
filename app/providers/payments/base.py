@@ -1,21 +1,30 @@
 """The payment port — Payme and Click in the first release (D7).
 
-One protocol, ``PaymentProvider``: redirect + webhook. The customer leaves for
-the provider's page and the provider calls us back. Every payment adapter
-implements it.
+One protocol, ``PaymentProvider``, and it speaks the **card flow**: register a
+card, ask for the code the provider texts, verify it, charge, forget the token.
+The customer never leaves our checkout (API.md §22, ``O14``).
+
+Both providers work the same way in outline and differ in every detail, and the
+differences stay on this side of the port: Payme registers and asks for the code
+in two calls where Click does it in one, Payme charges in two where Click
+charges in one, and Payme counts money in tiyin where Click counts it in so'm.
+An adapter that leaked any of that would make the service speak one provider's
+dialect.
 
 Saved cards do **not** pass through here. A saved card is a local record owned
 by ``modules/payments`` — the number is stored AES-GCM encrypted and opened
-server-side at charge time (PROJECT.md §13, D7). When the checkout path lands
-(phase 2) it will feed the opened number into the provider's card flow; nothing
-about *saving* a card involves a provider.
+server-side at charge time (PROJECT.md §13, D7). What the checkout does with a
+``card_id`` is open that ciphertext and hand the digits to ``register_card``,
+which is the same call a freshly typed number makes; nothing about *saving* a
+card involves a provider.
 
-Callbacks arrive more than once — providers resend, and Payme's protocol assumes
-it. Handling must be idempotent: the same event must not settle twice
-(ARCHITECTURE.md §8).
+The webhook half stays. Settlement now happens inside the ``confirm/`` request
+(``O16``), but Payme closes its receipt by callback regardless, callbacks arrive
+more than once, and its protocol assumes they will. Handling must be idempotent:
+the same event must not settle twice (ARCHITECTURE.md §8).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -62,6 +71,66 @@ class RefundStatus(StrEnum):
     PENDING = "pending"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CardCredentials:
+    """A card number in flight, on its way to a provider. Never logged.
+
+    Lives on the port rather than in ``modules/payments`` because both sides
+    need it and a provider adapter may not import a module's service
+    (ARCHITECTURE.md §4). ``payments.service.reveal_card`` returns one of these,
+    and so does the request body's validator — which is the point: by the time
+    a number reaches an adapter, where it came from no longer shows.
+
+    The hand-written ``__repr__`` is not decoration. A dataclass carrying a
+    secret ends up inside a structlog ``exc_info``, an f-string or a failing
+    assertion sooner or later, and the default one would print the number in all
+    three.
+    """
+
+    #: Digits only.
+    number: str
+    #: ``MMYY``, the shape both provider APIs use.
+    expire: str
+
+    def __repr__(self) -> str:
+        return f"CardCredentials(last4={self.number[-4:]!r})"
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredCard:
+    """A card the provider now holds, and the code it has just texted.
+
+    Returning from ``register_card`` means the SMS **is already on its way** —
+    Payme needs a second call for that and Click does not, and the service must
+    not have to know which.
+    """
+
+    #: The provider's handle for the card. Sealed before it is stored.
+    token: str
+    masked_pan: str | None = None
+    #: Masked by the adapter, because the provider masks it: we never see the
+    #: customer's whole phone number and have no reason to.
+    otp_sent_to: str | None = None
+    #: How long the provider itself wants before another code is asked for. The
+    #: service takes the larger of this and its own floor.
+    otp_wait_seconds: int | None = None
+    provider_state: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedCard:
+    """The code checked out. The token may now be charged, once."""
+
+    token: str
+    masked_pan: str | None = None
+    provider_state: dict[str, Any] | None = None
+
+
+#: Called by an adapter the instant the provider names the charge, before the
+#: call that moves the money. See ``PaymentProvider.charge_card``.
+type ReferenceSink = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,14 +183,72 @@ class ProviderCheck:
 
 @runtime_checkable
 class PaymentProvider(Protocol):
-    """Redirect + webhook. Every payment adapter implements this."""
+    """The card flow plus the callback half. Every payment adapter implements it."""
 
     code: PaymentProviderCode
 
     async def create_payment(
         self, *, order_id: str, amount: Decimal, currency: str, return_url: str
     ) -> str:
-        """Start a payment; returns the URL to send the customer to."""
+        """Start a hosted payment; returns the URL to send the customer to.
+
+        **Being removed.** The hosted redirect leaves the contract with the card
+        flow (``O14``); it is still here so this slice changes no behaviour, and
+        goes with the endpoints that call it.
+        """
+        ...
+
+    async def register_card(self, card: CardCredentials) -> RegisteredCard:
+        """Hand the card to the provider and get the customer texted a code.
+
+        The token that comes back is single-use: neither provider is asked to
+        remember the card, because the copy worth keeping is our own encrypted
+        one (D7). Payme is told ``save: false`` and Click ``temporary: true``.
+        """
+        ...
+
+    async def request_card_code(self, *, token: str) -> RegisteredCard:
+        """Send the code again for a card already registered."""
+        ...
+
+    async def verify_card(self, *, token: str, code: str) -> VerifiedCard:
+        """Give the provider the code the customer read out.
+
+        **We never check the code ourselves** — the provider issued it and the
+        provider judges it. A wrong one is a ``PaymentFailed``, not a decision
+        of ours.
+        """
+        ...
+
+    async def charge_card(
+        self,
+        *,
+        token: str,
+        order_id: str,
+        amount: Decimal,
+        currency: str,
+        on_reference: ReferenceSink | None = None,
+    ) -> ChargeResult:
+        """Take the money. ``amount`` is in the order's currency, always UZS.
+
+        ``on_reference`` is the money-path form of "the row is written before
+        the network call". Payme charges in two steps — one names the receipt,
+        the next moves the money — and if the second times out, the receipt id
+        must already be ours or the attempt is left pending with nothing to
+        reconcile it against. An adapter calls this the moment the provider
+        names the charge; the service persists the reference and commits before
+        the paying call goes out. Click, which charges in one step, calls it
+        once with the same id it then returns.
+        """
+        ...
+
+    async def remove_card(self, *, token: str) -> None:
+        """Release a token we are done with. Never raises for one already gone.
+
+        This is cleanup — it runs after a refusal, after an exhausted code and
+        after an order is cancelled — and cleanup that can fail loudly is
+        cleanup that holds up the thing it was cleaning after.
+        """
         ...
 
     def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
@@ -214,6 +341,7 @@ registry = PaymentRegistry()
 
 __all__ = [
     "CallbackResult",
+    "CardCredentials",
     "ChargeResult",
     "PaymentProvider",
     "PaymentProviderCode",
@@ -221,9 +349,12 @@ __all__ = [
     "PaymentStatus",
     "ProviderCheck",
     "ProviderFactory",
+    "ReferenceSink",
     "RefundResult",
     "RefundStatus",
+    "RegisteredCard",
     "TransactionFlow",
     "TransactionStatus",
+    "VerifiedCard",
     "registry",
 ]
