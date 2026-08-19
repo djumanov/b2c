@@ -18,6 +18,7 @@ Two rules that shape the code below:
 
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
@@ -41,13 +42,17 @@ from app.core.crypto import decrypt, encrypt
 from app.modules.integrations import service as integrations_service
 from app.modules.payments import repository
 from app.modules.payments.models import CustomerCard
-from app.modules.payments.schemas import CardCreateIn, CardOut
+from app.modules.payments.schemas import CardCreateIn, CardOut, CardPaymentIn
 from app.providers.payments.base import (
     CallbackResult,
     CardCredentials,
+    ChargeResult,
     PaymentProvider,
     PaymentProviderCode,
+    ReferenceSink,
     RefundResult,
+    RegisteredCard,
+    VerifiedCard,
 )
 
 logger = structlog.get_logger(__name__)
@@ -230,28 +235,6 @@ async def _adapter(session: AsyncSession, code: PaymentProviderCode) -> PaymentP
     return adapter
 
 
-async def charge(
-    session: AsyncSession,
-    code: PaymentProviderCode,
-    *,
-    reference: str,
-    amount: Decimal,
-    currency: str,
-    return_url: str,
-) -> str:
-    """Start a hosted charge and return where to send the customer.
-
-    ``reference`` is what the provider will quote back in its callbacks, and it
-    is the **order's** id: both Payme's ``account`` and Click's
-    ``merchant_trans_id`` are the merchant's own order handle, and giving them
-    anything else would leave a settled charge pointing at nothing.
-    """
-    adapter = await _adapter(session, code)
-    return await adapter.create_payment(
-        order_id=reference, amount=amount, currency=currency, return_url=return_url
-    )
-
-
 async def refund(
     session: AsyncSession,
     code: PaymentProviderCode,
@@ -294,14 +277,179 @@ async def callback(
     return await adapter.handle_callback(headers, body)
 
 
+# --- the card flow (API.md §22) ---------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CardToken:
+    """A provider's card handle, sealed. The plaintext never leaves this module.
+
+    The attempt row that stores it belongs to ``orders``, so the ciphertext and
+    its key version travel together in one value rather than as two loose
+    columns the caller has to remember to pair. ``orders`` puts the pair in the
+    row and hands it back; only the functions below open it.
+
+    ``repr`` is hand-written for the same reason ``CardCredentials``'s is: even
+    a ciphertext in a log line is a credential in a log line.
+    """
+
+    ciphertext: str
+    key_version: int
+
+    def __repr__(self) -> str:
+        return f"CardToken(key_version={self.key_version})"
+
+
+@dataclass(frozen=True, slots=True)
+class CardRegistration:
+    """What the attempt row needs after the provider has taken the card.
+
+    Everything here is safe to store and safe to show. The number is not here —
+    it was opened, sent and dropped inside ``register_card``.
+    """
+
+    token: CardToken
+    masked_pan: str
+    last4: str
+    brand: str | None
+    #: Masked by the provider; the customer needs to know which phone to look at.
+    otp_sent_to: str | None
+    #: The provider's own idea of how long before another code may be asked for.
+    otp_wait_seconds: int | None
+
+
+def _seal(value: str) -> CardToken:
+    ciphertext, key_version = encrypt(value)
+    return CardToken(ciphertext=ciphertext, key_version=key_version)
+
+
+def _open(token: CardToken) -> str:
+    return decrypt(token.ciphertext, token.key_version)
+
+
+async def register_card(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    customer_id: uuid.UUID,
+    data: CardPaymentIn,
+) -> CardRegistration:
+    """Give the provider a card and have it text the customer a code.
+
+    The two ways a card arrives — typed into the request, or named by
+    ``card_id`` — meet here and are indistinguishable afterwards. That is the
+    whole reason this lives in ``payments``: it is the only module allowed to
+    hold a number in the clear, and by keeping both branches inside one function
+    nothing downstream ever learns which one it was.
+
+    The masked forms are derived from the digits **locally** rather than taken
+    from the provider's answer, so a saved card and a typed one produce the same
+    strings and a receipt does not change shape with the provider.
+    """
+    if data.card_id is not None:
+        card = await reveal_card(session, customer_id, data.card_id)
+    else:
+        # ``_exactly_one_form`` has already refused every other combination.
+        assert data.number is not None and data.expire is not None
+        card = CardCredentials(
+            number=data.number.get_secret_value(),
+            expire=data.expire.get_secret_value(),
+        )
+
+    adapter = await _adapter(session, code)
+    registered = await adapter.register_card(card)
+
+    digits = card.number
+    return CardRegistration(
+        token=_seal(registered.token),
+        masked_pan=f"{digits[:6]}{'*' * 6}{digits[-4:]}",
+        last4=digits[-4:],
+        brand=_brand_for(digits),
+        otp_sent_to=registered.otp_sent_to,
+        otp_wait_seconds=registered.otp_wait_seconds,
+    )
+
+
+async def resend_card_code(
+    session: AsyncSession, code: PaymentProviderCode, *, token: CardToken
+) -> RegisteredCard:
+    """Ask the provider to text the code again."""
+    adapter = await _adapter(session, code)
+    return await adapter.request_card_code(token=_open(token))
+
+
+async def verify_card(
+    session: AsyncSession, code: PaymentProviderCode, *, token: CardToken, otp_code: str
+) -> VerifiedCard:
+    """Hand the provider the code the customer read out.
+
+    **We do not judge the code.** It was issued by the provider and it is the
+    provider that rules on it; a wrong one comes back as ``PaymentFailed`` from
+    the adapter. Our own counter exists to stop a customer spending the
+    installation's merchant account on guesses, not to check arithmetic.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.verify_card(token=_open(token), code=otp_code)
+
+
+async def charge_card(
+    session: AsyncSession,
+    code: PaymentProviderCode,
+    *,
+    token: CardToken,
+    reference: str,
+    amount: Decimal,
+    currency: str,
+    on_reference: ReferenceSink | None = None,
+) -> ChargeResult:
+    """Take the money for one order.
+
+    ``reference`` is the **order's** id, for the reason ``charge`` gave: both
+    Payme's ``account`` and Click's ``merchant_trans_id`` are the merchant's own
+    handle on the purchase, and a settled charge pointing at anything else
+    points at nothing.
+    """
+    adapter = await _adapter(session, code)
+    return await adapter.charge_card(
+        token=_open(token),
+        order_id=reference,
+        amount=amount,
+        currency=currency,
+        on_reference=on_reference,
+    )
+
+
+async def forget_card(
+    session: AsyncSession, code: PaymentProviderCode, *, token: CardToken
+) -> None:
+    """Release a token at the provider. **Never raises.**
+
+    Cleanup, and it runs on paths that are already going wrong: a refused card,
+    an exhausted code, a cancelled order. A failure here means one dead token
+    left on a merchant account, which is worth a log line and is not worth
+    holding up the thing being cleaned up after.
+    """
+    try:
+        adapter = await _adapter(session, code)
+        await adapter.remove_card(token=_open(token))
+    except Exception:  # noqa: BLE001 - deliberate: see the docstring
+        logger.warning("card_token_not_released", provider=code.value, exc_info=True)
+
+
 __all__ = [
+    "CardRegistration",
+    "CardToken",
     "add_card",
     "callback",
-    "charge",
-    "refund",
+    "charge_card",
     "delete_card",
+    "forget_card",
     "forget_cards",
     "get_card",
     "list_cards",
+    "refund",
+    "register_card",
+    "resend_card_code",
     "reveal_card",
+    "verify_card",
 ]

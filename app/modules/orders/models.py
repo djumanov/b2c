@@ -63,7 +63,6 @@ from app.modules.orders.states import (
 )
 from app.providers.payments.base import (
     PaymentProviderCode,
-    TransactionFlow,
     TransactionStatus,
 )
 from app.providers.products.base import ProductCode
@@ -312,8 +311,9 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     Not a payment intent: the amount and the currency the customer owes live on
     the order, because one order carries one of each. What varies is the trying
-    — a card refused at Payme and then a redirect completed at Click is two
-    rows here and one order there (``O12``).
+    — a card refused and then a second card accepted is two rows here and one
+    order there (``O12``). Several attempts may exist; only one may be **open**,
+    and the partial unique index below is what says so.
 
     No soft delete. An attempt is evidence of a conversation with a payment
     provider, and evidence that can be deleted is not evidence — the same
@@ -329,7 +329,6 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         _in_values("provider", PaymentProviderCode, name="provider"),
         _in_values("status", TransactionStatus, name="status"),
-        _in_values("flow", TransactionFlow, name="flow"),
         CheckConstraint("amount > 0", name="amount"),
         # The provider's token is a live payment credential: it can be charged.
         # It exists only while the attempt is open, and this is what makes
@@ -353,6 +352,21 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             postgresql_where=text("provider_ref IS NOT NULL"),
         ),
         Index("ix_order_payments_order_created", "order_id", "created_at"),
+        # **One open attempt per order.** The card flow spans three requests, so
+        # a customer who wanders off and comes back must land on the attempt
+        # they left rather than open a second one against the same order. Doing
+        # that in the handler would be a read followed by a write with a gap in
+        # the middle; the index has no gap. Same shape as
+        # ``uq_order_refunds_open``, and the reason ``O8`` gives for putting the
+        # real guard in the database.
+        Index(
+            "uq_order_payments_open",
+            "order_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('awaiting_card', 'awaiting_otp', 'pending')"
+            ),
+        ),
     )
 
     order_id: Mapped[uuid.UUID] = mapped_column(
@@ -366,17 +380,12 @@ class OrderPayment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: redirect is the first callback rather than the call that starts it.
     provider_ref: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    #: ``redirect`` today. The card flow fills the rest of the vocabulary.
-    flow: Mapped[str] = mapped_column(String(8), nullable=False)
 
     #: Copied from the order rather than referenced, because it is what was
     #: *asked for* — an order repriced afterwards must not silently rewrite the
     #: history of what a customer was charged.
     amount: Mapped[Decimal] = money_column(nullable=False)
     currency: Mapped[str] = currency_column(nullable=False)
-
-    #: Where the customer was sent, for the hosted flow.
-    redirect_url: Mapped[str | None] = mapped_column(Text)
 
     #: Which saved card paid, when one did. **No foreign key**: ``customer_cards``
     #: belongs to ``payments`` and a constraint across the two would be the

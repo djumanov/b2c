@@ -90,7 +90,6 @@ async def _compensating(
             provider="payme",
             provider_ref="receipt-1",
             status="paid",
-            flow="redirect",
             amount=PAID,
             currency="UZS",
             paid_at=datetime.now(UTC),

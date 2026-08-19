@@ -26,8 +26,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Final
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
@@ -36,7 +35,14 @@ from sqlalchemy.orm import defer
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import AppError, Conflict, NotFound, ValidationFailed
+from app.api.errors import (
+    AppError,
+    Conflict,
+    NotFound,
+    PaymentFailed,
+    RateLimited,
+    UpstreamError,
+)
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -60,7 +66,6 @@ from app.modules.orders.schemas import (
     OrderListOut,
     OrderOut,
     TransactionOut,
-    TransactionStartIn,
 )
 from app.modules.orders.states import (
     INITIAL_STATUS,
@@ -73,11 +78,10 @@ from app.modules.orders.states import (
     can,
 )
 from app.modules.payments import service as payments_service
-from app.modules.settings import service as settings_service
+from app.modules.payments.schemas import CardPaymentIn, OtpConfirmIn
 from app.modules.settings.schemas import OrderSettingsOut
 from app.providers.payments.base import (
     PaymentProviderCode,
-    TransactionFlow,
     TransactionStatus,
 )
 from app.providers.products.base import registry
@@ -472,7 +476,12 @@ async def apply_cancel(
     they call it, ``cancelled`` is what happened. Reaching here at all means the
     seat is released — a refusal is an ``UpstreamError`` and never gets this
     far — so the move does not depend on what, if anything, they named it.
+
+    An attempt still open goes with it, in this transaction: an order that is
+    cancelled and a payment that is still collecting a card must not be two
+    different facts about the same purchase.
     """
+    await close_open_attempts(session, order)
     return await transition(
         session,
         order.id,
@@ -518,8 +527,45 @@ def payment_state(order: Order) -> dict[str, Any]:
     }
 
 
+#: How long a code we asked for is worth trying. Our own guard, not the
+#: provider's — theirs is the one that rules on the code, and ours only stops an
+#: attempt sitting open forever. Module constants rather than settings, for the
+#: reason ``customers`` gives about the email OTP: PROJECT.md §7 asks whether two
+#: clients could want different values, and here they could not — Payme and Click
+#: issue the code and own its real lifetime.
+CARD_OTP_TTL: Final = timedelta(minutes=3)
+#: The floor between two codes. The provider's own wait wins when it is longer.
+CARD_OTP_RESEND_FLOOR: Final = timedelta(seconds=60)
+#: Wrong codes before the attempt is spent. Not a judgement on the code — that
+#: is the provider's — but a limit on how long somebody may keep asking it
+#: questions with the installation's merchant credentials.
+CARD_OTP_MAX_ATTEMPTS: Final = 3
+
+
+def _ensure_payable(order: Order) -> None:
+    """Whether this order can take money at all, in the order that costs least."""
+    if order.amount_total is None or order.currency is None:
+        raise Conflict("This order has no amount to pay yet")
+    if OrderStatus(order.status) is not OrderStatus.BOOKED:
+        raise Conflict(
+            f"An order that is {order.status} cannot be paid for",
+            meta={"status": order.status},
+        )
+    if order.currency != _CARD_CURRENCY:
+        # Not the request's fault and not fixable by retrying: the price came
+        # from the provider and neither card API takes anything but so'm.
+        raise Conflict(
+            f"A card can only pay in {_CARD_CURRENCY}",
+            meta={"currency": order.currency},
+        )
+
+
+#: Both card APIs take so'm and nothing else (API.md §22).
+_CARD_CURRENCY: Final = "UZS"
+
+
 async def start_attempt(
-    session: AsyncSession, order: Order, *, provider: str, flow: str
+    session: AsyncSession, order: Order, *, provider: str
 ) -> OrderPayment:
     """Write the attempt, **then** let the caller talk to the provider.
 
@@ -528,23 +574,23 @@ async def start_attempt(
     row with no ``provider_ref`` is merely an attempt that has not been answered
     yet, and reconciliation knows what to do with one (ARCHITECTURE.md §8).
     """
-    if order.amount_total is None or order.currency is None:
-        raise Conflict("This order has no amount to pay yet")
-    if OrderStatus(order.status) is not OrderStatus.BOOKED:
-        raise Conflict(
-            f"An order that is {order.status} cannot be paid for",
-            meta={"status": order.status},
-        )
+    _ensure_payable(order)
+    assert order.amount_total is not None and order.currency is not None
     attempt = OrderPayment(
         order_id=order.id,
         provider=provider,
-        status=TransactionStatus.PENDING.value,
-        flow=flow,
+        status=TransactionStatus.AWAITING_CARD.value,
         amount=order.amount_total,
         currency=order.currency,
     )
     session.add(attempt)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as clash:
+        # ``uq_order_payments_open`` — somebody opened one in the gap. The
+        # caller is about to be told to use theirs, which is what it wanted.
+        await session.rollback()
+        raise Conflict("This order already has a payment in progress") from clash
     await session.refresh(attempt)
     logger.info(
         "payment_attempt_started",
@@ -556,26 +602,77 @@ async def start_attempt(
     return attempt
 
 
-async def attach_redirect(
-    session: AsyncSession, attempt: OrderPayment, *, redirect_url: str
-) -> OrderPayment:
-    """Where the customer was sent. Written after the provider answered."""
-    attempt.redirect_url = redirect_url
-    await session.commit()
-    await session.refresh(attempt)
-    return attempt
+def _release_token(attempt: OrderPayment) -> payments_service.CardToken | None:
+    """Drop the provider's token from the row, returning it for one last use.
+
+    Called on every path out of an open attempt, and not out of tidiness: the
+    ``open_attempts_hold_the_token`` CHECK refuses a closed row that still
+    carries one, so forgetting this is a failed commit rather than a slow leak.
+    """
+    if attempt.card_token is None:
+        return None
+    token = payments_service.CardToken(
+        ciphertext=attempt.card_token,
+        key_version=attempt.card_token_key_version or 0,
+    )
+    attempt.card_token = None
+    attempt.card_token_key_version = None
+    return token
 
 
 async def abandon_attempt(
-    session: AsyncSession, attempt: OrderPayment, *, message: str
+    session: AsyncSession,
+    attempt: OrderPayment,
+    *,
+    message: str,
+    code: str | None = None,
 ) -> None:
-    """The provider would not start the charge. The row stays as evidence."""
+    """The attempt is spent. The row stays as evidence of what was tried."""
+    token = _release_token(attempt)
     attempt.status = TransactionStatus.FAILED.value
+    attempt.error_code = code
     attempt.error_message = message
     await session.commit()
+    if token is not None:
+        await payments_service.forget_card(
+            session, PaymentProviderCode(attempt.provider), token=token
+        )
     logger.warning(
-        "payment_attempt_abandoned", attempt_id=str(attempt.id), reason=message
+        "payment_attempt_abandoned",
+        attempt_id=str(attempt.id),
+        reason=message,
+        error_code=code,
     )
+
+
+async def close_open_attempts(session: AsyncSession, order: Order) -> None:
+    """Shut the attempt an order leaves behind. **Does not commit.**
+
+    Runs inside the cancellation it belongs to, so an order that closes and an
+    attempt that stays open cannot be two different facts. The token goes with
+    it — the CHECK would refuse the row otherwise — and is not handed back to
+    the provider from here: it is single-use and short-lived on both of them,
+    and a network call inside a cancellation would put a provider between a
+    customer and their released seat.
+
+    A ``pending`` attempt is **left alone**. The charge went out and the answer
+    is unknown; marking it cancelled would file a payment that may have happened
+    as one that did not. ``payments.reconcile`` is what closes those.
+    """
+    attempt = await repository.open_attempt(session, order.id, lock=True)
+    if attempt is None:
+        return
+    if attempt.status == TransactionStatus.PENDING.value:
+        logger.warning(
+            "payment_attempt_left_pending",
+            attempt_id=str(attempt.id),
+            order_id=str(order.id),
+            detail="a charge was in flight when the order closed",
+        )
+        return
+    _release_token(attempt)
+    attempt.status = TransactionStatus.CANCELLED.value
+    logger.info("payment_attempt_cancelled", attempt_id=str(attempt.id))
 
 
 async def settle_attempt(
@@ -605,9 +702,10 @@ async def settle_attempt(
 
     attempt = await repository.attempt_by_provider_ref(session, provider, provider_ref)
     if attempt is None:
-        # A hosted redirect hands us a URL and no reference; the provider names
-        # the charge when it first calls back, so the open attempt is bound to
-        # that name here.
+        # The charge is normally named before it is paid — ``charge_card`` calls
+        # back with the reference and the row is written then — but a provider
+        # that calls us with a name we never saw is still talking about the
+        # attempt that is in flight, so it is bound to that one here.
         attempt = await repository.unreferenced_attempt(session, order_id, provider)
         if attempt is None:
             raise NotFound("No such payment attempt")
@@ -625,6 +723,12 @@ async def settle_attempt(
     attempt.status = TransactionStatus.PAID.value
     attempt.paid_at = datetime.now(UTC)
     attempt.provider_state = provider_state
+    # A spent token is not kept, and the CHECK on the table would refuse the row
+    # if it were. Nothing is sent to the provider: it has just been used, and
+    # both of them hand out single-use tokens for a charge like this.
+    _release_token(attempt)
+    attempt.otp_expires_at = None
+    attempt.otp_resend_after = None
     try:
         await session.commit()
     except IntegrityError as clash:
@@ -662,71 +766,303 @@ async def settle_attempt(
     )
 
 
+def _out(attempt: OrderPayment) -> TransactionOut:
+    return TransactionOut.from_attempt(attempt, otp_max_attempts=CARD_OTP_MAX_ATTEMPTS)
+
+
 async def start_transaction(
+    session: AsyncSession, *, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> TransactionOut:
+    """Open an attempt at paying, or hand back the one already open.
+
+    There is nothing to choose. The provider is the installation's, not the
+    request's (``O15``), and with no hosted page there is nowhere to come back
+    from — so this takes an empty body and the only questions left are about
+    the order.
+
+    **Idempotent without a key.** A customer who opened the checkout, wandered
+    off and came back gets the attempt they left rather than a second one
+    against the same order; ``uq_order_payments_open`` is what makes that true
+    under a race rather than merely usually. A ``pending`` attempt is different
+    and answers ``409``: a charge is in flight and may have moved money, and
+    starting another over the top of it is the one thing that must not happen.
+    """
+    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
+    _ensure_payable(order)
+
+    existing = await repository.open_attempt(session, order.id)
+    if existing is not None:
+        if existing.status == TransactionStatus.PENDING.value:
+            raise Conflict("A payment for this order is still being processed")
+        return _out(existing)
+
+    provider = await integrations_service.active_payment_provider(session)
+    if provider is None:
+        # No attempt row: an attempt is evidence of a conversation with a
+        # provider, and there was no provider to have one with.
+        raise UpstreamError("No payment method is available")
+    return _out(await start_attempt(session, order, provider=provider.code.value))
+
+
+async def _open_attempt_for(
     session: AsyncSession,
     *,
     customer_id: uuid.UUID,
-    order_id: uuid.UUID,
-    data: TransactionStartIn,
-) -> TransactionOut:
-    """Open an attempt at paying and hand back where to send the customer.
+    attempt_id: uuid.UUID,
+    expected: tuple[str, ...],
+) -> OrderPayment:
+    """This customer's attempt, locked, and in a state this step can act on.
 
-    Four checks before anything leaves the building, in the order that costs
-    least: the order is this customer's, the method is one this installation
-    offers, the return address is one of ours, and the order is in a state that
-    can be paid for.
-
-    **The return address is checked against the installation's own origins.**
-    A redirect target chosen by a request and handed to a payment provider is
-    an open redirect wearing our merchant account's name; the provider will
-    send the customer wherever it is told.
+    Someone else's answers ``404`` exactly as a missing one does — the rule §19
+    states for cards and passengers, and an attempt id is worth no more guessing
+    than either.
     """
-    order = await owned_order(session, customer_id=customer_id, order_id=order_id)
-    try:
-        code = PaymentProviderCode(data.method)
-    except ValueError as unknown:
-        raise ValidationFailed("No such payment method", field="method") from unknown
-    if not await _is_our_origin(data.return_url):
-        raise ValidationFailed(
-            "The return address is not one of this installation's own",
-            field="return_url",
+    attempt = await repository.attempt_by_id(session, customer_id, attempt_id)
+    if attempt is None:
+        raise NotFound("No such payment attempt")
+    locked = await repository.lock_attempt(session, attempt.id)
+    if locked is None:
+        raise NotFound("No such payment attempt")
+    if locked.status not in expected:
+        raise Conflict(
+            f"A payment that is {locked.status} cannot take this step",
+            meta={"status": locked.status},
+        )
+    return locked
+
+
+def _token_of(attempt: OrderPayment) -> payments_service.CardToken:
+    if attempt.card_token is None:
+        # Only reachable if a row were hand-edited: the CHECK pairs an open
+        # attempt past the card step with a token.
+        raise Conflict("This payment has no card on it yet")
+    return payments_service.CardToken(
+        ciphertext=attempt.card_token,
+        key_version=attempt.card_token_key_version or 0,
+    )
+
+
+def _stamp_code(attempt: OrderPayment, *, wait_seconds: int | None) -> None:
+    """Record that a code has just gone out."""
+    now = datetime.now(UTC)
+    wait = max(CARD_OTP_RESEND_FLOOR, timedelta(seconds=wait_seconds or 0))
+    attempt.otp_expires_at = now + CARD_OTP_TTL
+    attempt.otp_resend_after = now + wait
+
+
+async def submit_card(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    attempt_id: uuid.UUID,
+    data: CardPaymentIn,
+) -> TransactionOut:
+    """Hand the card to the provider, which texts the customer a code.
+
+    Accepted from ``awaiting_otp`` as well as ``awaiting_card``: a customer who
+    mistyped a digit should be able to type it again rather than start over, and
+    the cost of allowing it is one extra SMS against a bucket that already
+    allows ten requests a minute. The previous registration is dropped first, so
+    only one token is ever live on an attempt.
+
+    A refusal leaves the attempt **open**. The card was wrong, not the payment;
+    failing the attempt here would turn a typo into a round trip through
+    ``transactions/`` and a row in the history for every mistyped digit.
+    """
+    attempt = await _open_attempt_for(
+        session,
+        customer_id=customer_id,
+        attempt_id=attempt_id,
+        expected=(
+            TransactionStatus.AWAITING_CARD.value,
+            TransactionStatus.AWAITING_OTP.value,
+        ),
+    )
+    order = await owned_order(
+        session, customer_id=customer_id, order_id=attempt.order_id
+    )
+    _ensure_payable(order)
+
+    code = PaymentProviderCode(attempt.provider)
+    superseded = _release_token(attempt)
+    if superseded is not None:
+        await session.commit()
+        await payments_service.forget_card(session, code, token=superseded)
+
+    registration = await payments_service.register_card(
+        session, code, customer_id=customer_id, data=data
+    )
+
+    attempt.card_token = registration.token.ciphertext
+    attempt.card_token_key_version = registration.token.key_version
+    attempt.card_masked = registration.masked_pan
+    attempt.card_last4 = registration.last4
+    attempt.card_brand = registration.brand
+    attempt.card_id = data.card_id
+    attempt.otp_sent_to = registration.otp_sent_to
+    # A new card is a new count. The limit is about guessing one code, not about
+    # how long the customer has been at the checkout.
+    attempt.otp_attempts = 0
+    attempt.status = TransactionStatus.AWAITING_OTP.value
+    _stamp_code(attempt, wait_seconds=registration.otp_wait_seconds)
+    await session.commit()
+    await session.refresh(attempt)
+    logger.info(
+        "payment_card_registered",
+        attempt_id=str(attempt.id),
+        saved_card=data.card_id is not None,
+    )
+    return _out(attempt)
+
+
+async def resend_code(
+    session: AsyncSession, *, customer_id: uuid.UUID, attempt_id: uuid.UUID
+) -> TransactionOut:
+    """Ask the provider to text the code again.
+
+    The cooldown is on the row rather than in the rate limiter, because it is a
+    property of this attempt and has to survive a Redis that was flushed. It
+    does **not** reset the wrong-code count: a counter a customer can clear by
+    pressing "resend" is not a counter.
+    """
+    attempt = await _open_attempt_for(
+        session,
+        customer_id=customer_id,
+        attempt_id=attempt_id,
+        expected=(TransactionStatus.AWAITING_OTP.value,),
+    )
+    now = datetime.now(UTC)
+    if attempt.otp_resend_after is not None and now < attempt.otp_resend_after:
+        raise RateLimited(
+            "The code was only just sent",
+            retry_after=max(1, int((attempt.otp_resend_after - now).total_seconds())),
         )
 
-    attempt = await start_attempt(
-        session, order, provider=code.value, flow=TransactionFlow.REDIRECT.value
+    code = PaymentProviderCode(attempt.provider)
+    resent = await payments_service.resend_card_code(
+        session, code, token=_token_of(attempt)
     )
+    attempt.otp_sent_to = resent.otp_sent_to or attempt.otp_sent_to
+    _stamp_code(attempt, wait_seconds=resent.otp_wait_seconds)
+    await session.commit()
+    await session.refresh(attempt)
+    logger.info("payment_card_code_resent", attempt_id=str(attempt.id))
+    return _out(attempt)
+
+
+#: Every way a code can be refused says the same thing. Which of them it was
+#: only helps somebody working through the space (API.md §22).
+_CODE_REJECTED: Final = "The code was not accepted"
+
+
+async def _count_wrong_code(session: AsyncSession, attempt: OrderPayment) -> None:
+    """One wrong code, and the attempt if that was the last one it had."""
+    attempt.otp_attempts += 1
+    if attempt.otp_attempts >= CARD_OTP_MAX_ATTEMPTS:
+        await abandon_attempt(
+            session, attempt, message=_CODE_REJECTED, code="otp_exhausted"
+        )
+        return
+    await session.commit()
+
+
+async def confirm_payment(
+    session: AsyncSession,
+    *,
+    customer_id: uuid.UUID,
+    attempt_id: uuid.UUID,
+    data: OtpConfirmIn,
+) -> TransactionOut:
+    """Verify the code and take the money — the whole of the payment (``O16``).
+
+    The order of the two provider calls is the point. Verifying is free to fail
+    and changes nothing, so it goes first and a wrong code costs one counter.
+    Charging is not free to fail: between "the provider took it" and "we wrote
+    that down" there is a window nothing else closes, so the attempt is moved to
+    ``pending`` and **committed** before the charge goes out, and the reference
+    is written the instant the provider names it. A process that dies anywhere
+    after that leaves a row reconciliation can follow.
+
+    A repeat on an attempt already ``paid`` returns the same answer rather than
+    charging again — replay by state, which is what stands in for an
+    ``Idempotency-Key`` this endpoint must not have.
+    """
+    attempt = await repository.attempt_by_id(session, customer_id, attempt_id)
+    if attempt is None:
+        raise NotFound("No such payment attempt")
+    locked = await repository.lock_attempt(session, attempt.id)
+    if locked is None:
+        raise NotFound("No such payment attempt")
+    if locked.status == TransactionStatus.PAID.value:
+        return _out(locked)
+    if locked.status != TransactionStatus.AWAITING_OTP.value:
+        raise Conflict(
+            f"A payment that is {locked.status} cannot be confirmed",
+            meta={"status": locked.status},
+        )
+    attempt = locked
+
+    now = datetime.now(UTC)
+    if attempt.otp_expires_at is not None and now > attempt.otp_expires_at:
+        # The attempt stays open on purpose: an expired code is recovered by
+        # asking for another, not by starting the payment again.
+        raise PaymentFailed(_CODE_REJECTED)
+
+    code = PaymentProviderCode(attempt.provider)
+    token = _token_of(attempt)
     try:
-        redirect_url = await payments_service.charge(
+        await payments_service.verify_card(
+            session, code, token=token, otp_code=data.otp_code
+        )
+    except PaymentFailed:
+        await _count_wrong_code(session, attempt)
+        raise PaymentFailed(_CODE_REJECTED) from None
+
+    attempt.status = TransactionStatus.PENDING.value
+    await session.commit()
+
+    async def name_the_charge(reference: str) -> None:
+        attempt.provider_ref = reference
+        await session.commit()
+
+    try:
+        result = await payments_service.charge_card(
             session,
             code,
-            reference=str(order.id),
+            token=token,
+            reference=str(attempt.order_id),
             amount=attempt.amount,
             currency=attempt.currency,
-            return_url=data.return_url,
+            on_reference=name_the_charge,
         )
     except AppError as refused:
-        # The row stays: what was tried is part of the record, and an attempt
-        # that failed to start is the cheapest kind of evidence there is.
-        await abandon_attempt(session, attempt, message=str(refused))
+        await abandon_attempt(
+            session, attempt, message=str(refused), code="charge_failed"
+        )
         raise
-    attempt = await attach_redirect(session, attempt, redirect_url=redirect_url)
-    return TransactionOut.from_attempt(attempt)
 
+    if result.status is not TransactionStatus.PAID or result.provider_ref is None:
+        await abandon_attempt(
+            session,
+            attempt,
+            message=result.failure_message or "The payment was declined",
+            code=result.failure_code or "charge_declined",
+        )
+        raise PaymentFailed(result.failure_message or "The payment was declined")
 
-async def _is_our_origin(url: str) -> bool:
-    """Whether a return address belongs to this installation.
-
-    Reads the same list the browser is held to (``settings.cors_origins``), so
-    turning an origin off closes both doors at once. A wildcard entry means the
-    owner has deliberately opened the installation to any origin, and refusing
-    here would contradict them.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return False
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    allowed = await settings_service.cors_origins()
-    return "*" in allowed or origin in allowed
+    await settle_attempt(
+        session,
+        provider=code.value,
+        provider_ref=result.provider_ref,
+        order_id=attempt.order_id,
+        provider_state=(
+            {"state": result.provider_state}
+            if result.provider_state is not None
+            else None
+        ),
+    )
+    await session.refresh(attempt)
+    return _out(attempt)
 
 
 async def owned_order(
@@ -788,7 +1124,11 @@ async def expire_booking(session: AsyncSession, order: Order) -> Order:
     Distinct from a customer cancelling only by its reason, and that is the
     whole reason ``cancellation_reason`` exists rather than a second status: the
     two look identical to everything except a report (order-system §3.3).
+
+    A half-finished payment closes with it — the seat is gone, so a customer
+    still typing a code into it is being asked for money for nothing.
     """
+    await close_open_attempts(session, order)
     logger.info(
         "order_expired",
         order_id=str(order.id),
@@ -1109,7 +1449,8 @@ __all__ = [
     "abandon_refund",
     "apply_cancel",
     "cancel_order",
-    "attach_redirect",
+    "close_open_attempts",
+    "confirm_payment",
     "begin_ticketing",
     "booking_answer",
     "claim_order",
@@ -1127,6 +1468,7 @@ __all__ = [
     "owned_order",
     "payment_state",
     "record_unreadable_booking",
+    "resend_code",
     "retry_refund",
     "retry_ticketing",
     "send_to_refund",
@@ -1136,6 +1478,7 @@ __all__ = [
     "start_attempt",
     "start_order",
     "start_transaction",
+    "submit_card",
     "ticket_deadline",
     "transition",
 ]

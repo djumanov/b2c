@@ -50,11 +50,6 @@ class DemoPaymentProvider:
     code: PaymentProviderCode = PaymentProviderCode.PAYME
     credentials: Mapping[str, str] = field(default_factory=dict)
 
-    async def create_payment(
-        self, *, order_id: str, amount: Decimal, currency: str, return_url: str
-    ) -> str:
-        return f"{return_url}?demo_payment={order_id}"
-
     async def register_card(self, card: CardCredentials) -> RegisteredCard:
         # ``card`` is read for its last four digits and for nothing else — the
         # rule the real adapters follow, kept here so the fake cannot teach a

@@ -1740,9 +1740,11 @@ qaytmaydi va hech qanday `GET` da ko'rinmaydi. `expire` — `MMYY`. Tekshiruv
 o'zi ochadi (§19) — mijoz uni qayta terishi shart emas. Undan keyingi yo'l
 ikkala holatda ham bir xil.
 
-Kartani **qayta yuborish mumkin**: mijoz raqamni xato tergan bo'lsa,
-`awaiting_otp` holatidagi urinishga yangi karta yuboriladi va oldingi token
-provayderdan bo'shatiladi, kod hisoblagichi nolga qaytadi.
+Kartani **qayta yuborish mumkin**, va **rad etilgan karta urinishni
+yoqmaydi**: raqam xato terilgan bo'lsa javob `400` bo'ladi, urinish esa o'z
+holatida qoladi va unga boshqa karta yuboriladi. `awaiting_otp` dan ham qabul
+qilinadi — oldingi token provayderdan bo'shatiladi va kod hisoblagichi nolga
+qaytadi (yangi karta — yangi sanoq).
 
 **3. Tasdiqlash.** Maydon nomi `code` emas, **`otp_code`** — `code` jurnalda
 redaksiya qilinmaydigan nom (u provayder kodi, xato kodi va valyuta kodi
@@ -1779,7 +1781,7 @@ POST /public/transactions/9a2e…/resend-otp/
 | `awaiting_otp` | Provayderda karta bor, mijozga kod ketgan |
 | `pending` | Yechish yuborildi, provayderning javobi hali noma'lum |
 | `paid` | Pul yechildi |
-| `failed` | Karta rad etildi, kod urinishlari tugadi yoki provayder yechmadi |
+| `failed` | Kod urinishlari tugadi yoki provayder yechishni rad etdi |
 | `cancelled` | Buyurtma bekor bo'ldi yoki muddati o'tdi, urinish ochiq qolgandi |
 
 ### OTP qoidalari

@@ -24,16 +24,6 @@ def test_it_satisfies_the_port() -> None:
     assert isinstance(DemoPaymentProvider(), PaymentProvider)
 
 
-async def test_a_payment_redirects_back_to_the_caller() -> None:
-    url = await DemoPaymentProvider().create_payment(
-        order_id="order-1",
-        amount=Decimal("125000.00"),
-        currency="UZS",
-        return_url="https://shop.example/return",
-    )
-    assert url == "https://shop.example/return?demo_payment=order-1"
-
-
 async def test_the_card_flow_walks_all_three_steps() -> None:
     """A laptop checkout: card accepted, code always right, charge always paid."""
     provider = DemoPaymentProvider()
