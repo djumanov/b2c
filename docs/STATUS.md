@@ -573,14 +573,39 @@ yo'qolib ketmasligi uchun yozilgan. Tartib — jiddiyligi bo'yicha.
 
 ### 2026-08-17 — buyurtma qatori qo'shilganda
 
-15. 🟠 **GTS javobining maydonlari kolleksiyadan olindi, jonli emas.**
-    2026-08-17 da `EASY_GATEWAY` kolleksiyasidagi `/content/Booking` va
-    `/content/Cancel` yozuvlari topildi va kod ularga moslandi (№84). Bu
-    avvalgi 🔴 ni tushirdi: endi maydon nomlari taxmin emas, **yozib
-    olingan haqiqiy chaqiruv**. Lekin ular hamon *shu o'rnatmaning* jonli
-    GTS'ida ko'rilmagan. Yozuv o'qilmasa qator baribir yoziladi va
-    `order_recorded_without_gts_number` ogohlantirishi ikkala qavatning
-    maydon ro'yxati bilan log'ga tushadi.
+15. 🔴 **GTS javobining maydonlari kolleksiyadan olindi, jonli emas** —
+    **2026-08-19 da bu ro'y berdi.** 2026-08-17 da `EASY_GATEWAY`
+    kolleksiyasidagi `/content/Booking` va `/content/Cancel` yozuvlari topilib
+    kod ularga moslangan edi (№84), lekin ular *shu o'rnatmaning* jonli
+    GTS'ida ko'rilmagan edi. Ko'rilganda mos kelmadi: jonli javobda narx
+    `price_info` da emas, buyurtmaning o'zida tekis `price`/`currency` bo'lib
+    turgan. `_money()` `None` qaytardi, `book()` `UnreadableAnswer` ko'tardi va
+    **ikkita haqiqiy bron** `needs_attention` da qotib qoldi — bekor ham
+    qilinmaydi (`provider_order_number` `null` → `409`), supurgiga ham
+    tushmaydi (u faqat `booked` ni oladi).
+
+    Tuzatildi: adapter narxni uch joydan, marshrutni ikki joydan o'qiydi;
+    aeroport kodi, `middlename`, `gender: "Male"`, `GMT±H:MM` va kun-oldin
+    sanalar tanildi; jonli javob `tests/unit/test_flight_order_ops.py`
+    (`GTS_LIVE_ORDER`) da fikstura sifatida turibdi. Log endi **ikkala
+    qavatning** kalitlarini va qaysi maydon yetishmaganini yozadi
+    (`order_answer_unresolved`) — avvalgi log faqat envelope'ning uchta
+    kalitini yozardi, ya'ni xato bo'lgan qavat haqida hech narsa demasdi.
+
+15b. ✅ **O'qib bo'lmagan javob endi `needs_attention` ga tushmaydi.** U holat
+    ta'rifi bo'yicha *pul harakatlangan, kompensatsiya bajarilmagan* degani;
+    bron javobini o'qiy olmaslikda pul umuman harakatlanmaydi. Endi buyurtma
+    **`created`** da qoladi (T2x, `created → created`) va `sync_open` uni GTS
+    bilan hal qiladi. O'qilgan hamma narsa — `provider_order_number`,
+    `gds_pnr`, marshrut, yo'lovchilar, muddat — qatorga yoziladi, ya'ni qator
+    GTS'dagi o'rinni **nomlay oladi**.
+
+15c. ✅ **Noma'lum status kodi endi jimgina `booked` bo'lmaydi.** `_STATUS_MAP`
+    da yo'q kod avval sukut bo'yicha `booked` bo'lardi, ma'lum kod esa
+    (`CB`, `TI`, `VO` …) `created` dan erishib bo'lmaydigan holatga
+    yo'naltirib mijozga tirik o'rin ustidan `409` qaytarardi. Endi faqat
+    `_HELD_CODES` (`BO`, `STATUS_BOOK`) bronni tasdiqlaydi; qolgani T2x ga
+    ketadi va GTS'dan qayta so'raladi.
 
 15a. ✅ **Bekor qilish javobining shakli mos kelmasligi** — **yopildi.**
     Kolleksiyadagi yagona `cancel` javobi eski shaklda (`{status, code,

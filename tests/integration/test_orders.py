@@ -636,17 +636,21 @@ async def test_the_travellers_are_stored_in_our_own_shape(
 
 
 @respx.mock
-async def test_an_unreadable_answer_lands_in_needs_attention(
+async def test_an_answer_we_cannot_confirm_stays_created(
     api: AsyncClient,
     session: AsyncSession,
     customer: Customer,
     headers: dict[str, str],
 ) -> None:
-    """The field names are not yet confirmed against live GTS (STATUS.md §8).
-    A booking that really happened must leave a trace even when we cannot read
-    the shape of it — but a half-written row that claims to be ``booked`` and
-    cannot name a price is worse than one that says so. It goes to the queue a
-    person watches, with the whole answer attached."""
+    """A booking that really happened must leave a trace even when we cannot
+    read the shape of it — but a row claiming to be ``booked`` while unable to
+    name a price is worse than one that says so.
+
+    It stays ``created``, which is precisely what that status means: we asked
+    and do not know. **Not** ``needs_attention`` — no money has moved, and that
+    state is one only a person leaves, which is how a parsing failure once
+    turned into orders nobody could cancel or sweep (03-design.md §3.3).
+    """
     await _installation(session)
     _mock_signin()
     _mock_booking({"data": {"reference": "1250", "state": "held"}})
@@ -654,18 +658,64 @@ async def test_an_unreadable_answer_lands_in_needs_attention(
     response = await _book(api, headers)
 
     assert response.status_code == 200
-    assert response.json()["data"]["order"]["status"] == "needs_attention"
+    assert response.json()["data"]["order"]["status"] == "created"
     (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
     order = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
-    assert order["status"] == "needs_attention"
+    assert order["status"] == "created"
     assert order["gts_order_number"] is None
     assert order["amount"] is None
     assert order["data"] == {"data": {"reference": "1250", "state": "held"}}
-    # The evidence is on the event, which is what a person will read.
-    meta = await session.scalar(
-        text("SELECT meta::text FROM order_events WHERE to_status = 'needs_attention'")
-    )
-    assert "1250" in str(meta)
+    # The evidence is on the event, which is what a person will read, and the
+    # reason says which field was missing rather than only that one was.
+    event = (
+        await session.execute(
+            text(
+                "SELECT reason, meta::text FROM order_events"
+                " WHERE action = 'booking.unresolved'"
+            )
+        )
+    ).one()
+    assert "no order number and no price" in str(event[0])
+    assert "1250" in str(event[1])
+
+
+@respx.mock
+async def test_what_did_read_is_kept_even_when_the_booking_is_not_confirmed(
+    api: AsyncClient,
+    session: AsyncSession,
+    customer: Customer,
+    headers: dict[str, str],
+) -> None:
+    """The seat is real; the row has to be able to name it.
+
+    An order with no ``provider_order_number`` cannot be cancelled at all and
+    no sweep looks at it, so an answer we could half read used to leak a live
+    reservation with nothing in our database pointing at it. Everything that
+    read is written now — only the price, the one thing missing, stays null.
+    """
+    await _installation(session)
+    _mock_signin()
+    _mock_booking({**GTS_BOOKING, "data": {**GTS_BOOKING["data"], "price_info": None}})
+
+    response = await _book(api, headers)
+
+    assert response.status_code == 200
+    (row,) = (await api.get(ORDERS, headers=headers)).json()["data"]
+    assert row["status"] == "created"
+    assert row["amount"] is None
+    # The card still draws: route, dates and travellers all came out of the
+    # same answer the price did not.
+    assert row["gts_pnr"] == "UBPLKW"
+    assert row["route_summary"] == "BOM-MAD"
+    assert row["route"]["directions"][0]["from"] == "BOM"
+    assert row["travel_start_at"] == "2026-10-01T01:55:00Z"
+    assert row["passenger_count"] == 1
+
+    order = (await api.get(f"{ORDERS}{row['id']}/", headers=headers)).json()["data"]
+    assert order["gts_order_number"] == "61453"
+    assert order["gts_order_uid"] == "cd3f1e7bfde940f8bea03cde13f07dfd"
+    assert order["gts_status"] == "BO"
+    assert order["amount"] is None
 
 
 @respx.mock

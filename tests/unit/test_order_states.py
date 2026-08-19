@@ -34,6 +34,7 @@ from app.modules.orders.states import (
 #: table in order-system/03-design.md §3.3, by hand.
 EXPECTED_MOVES: set[tuple[OrderStatus, OrderStatus]] = {
     (OrderStatus.CREATED, OrderStatus.BOOKED),
+    (OrderStatus.CREATED, OrderStatus.CREATED),
     (OrderStatus.CREATED, OrderStatus.FAILED),
     (OrderStatus.CREATED, OrderStatus.NEEDS_ATTENTION),
     (OrderStatus.BOOKED, OrderStatus.PAID),
@@ -72,10 +73,20 @@ def test_every_pair_is_allowed_only_if_the_table_says_so(
 
 
 def test_nothing_transitions_back_into_the_initial_status() -> None:
-    """An order is *born* ``created``; it can never return there. Otherwise a
-    booked seat could be walked back to "we have not asked yet"."""
+    """An order is *born* ``created`` and nothing may walk it back there.
+
+    The reason is a booked seat: once GTS has confirmed one, returning the row
+    to "we have not asked yet" would lose it. ``created → created`` is the one
+    exception and it cannot do that — it never leaves ``created`` in the first
+    place. It is the row saying "asked, answered, still cannot call it booked".
+    """
     assert INITIAL_STATUS is OrderStatus.CREATED
-    assert not any(item.target is OrderStatus.CREATED for item in TRANSITIONS)
+    walked_back = {
+        item.source
+        for item in TRANSITIONS
+        if item.target is OrderStatus.CREATED and item.source is not OrderStatus.CREATED
+    }
+    assert walked_back == set()
 
 
 @pytest.mark.parametrize("status", list(OrderStatus))
@@ -110,11 +121,20 @@ def test_the_settled_statuses_can_still_start_something_new() -> None:
 
 
 def test_only_the_outward_steps_repeat_themselves() -> None:
-    """A self-transition is a retry, and only the two states that talk to an
-    outside system have anything to retry. Anywhere else it would hide a stuck
-    order rather than describe one."""
+    """A self-transition is a retry, and only a state that talks to an outside
+    system has anything to retry. Anywhere else it would hide a stuck order
+    rather than describe one.
+
+    ``created`` earns its place for exactly that reason: an answer we cannot
+    call a reservation leaves the order where it was and reconciliation asks
+    GTS again, which is a retry in every sense ``attempts`` counts.
+    """
     repeats = {item.source for item in TRANSITIONS if item.source is item.target}
-    assert repeats == {OrderStatus.TICKETING, OrderStatus.REFUNDING}
+    assert repeats == {
+        OrderStatus.CREATED,
+        OrderStatus.TICKETING,
+        OrderStatus.REFUNDING,
+    }
 
 
 def test_needs_attention_is_only_left_by_a_person() -> None:

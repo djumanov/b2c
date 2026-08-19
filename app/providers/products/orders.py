@@ -40,21 +40,34 @@ from app.providers.products.base import ProductAdapter, ProductCode
 
 
 class UnreadableAnswer(Exception):
-    """The provider answered, and no order can be made out of what it said.
+    """The provider answered, and no **confirmed** order can be made of it.
 
     Distinct from ``UpstreamError``, and the distinction decides what happens
     to a real reservation. An ``UpstreamError`` means GTS *refused*: nothing was
     booked and the order failed. This means GTS very probably **did** book
-    something and we cannot name it — which is not a failure to report to the
-    customer but a row for a person to look at (order-system/03-design.md T4).
+    something and we cannot name it well enough to call the seat ours — either
+    a field the row cannot do without would not read, or the answer carries a
+    status that is not a held reservation.
 
-    The whole answer travels on the exception, because it is the only evidence
-    of a reservation that may be holding a real seat.
+    Neither is a failure to report to the customer. The order stays ``created``
+    — "we asked and do not know" — and the reconciliation sweep asks GTS again
+    (order-system/03-design.md §3.9).
+
+    The whole answer travels on the exception because it is the only evidence
+    of a reservation that may be holding a real seat, and ``partial`` carries
+    whatever *was* read, so the row is not left blank while the seat is real.
     """
 
-    def __init__(self, message: str, *, raw: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw: dict[str, Any],
+        partial: "PartialBooking | None" = None,
+    ) -> None:
         super().__init__(message)
         self.raw = raw
+        self.partial = partial
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +227,70 @@ class BookingResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PartialBooking:
+    """Everything an answer *did* say, when it did not say enough to confirm.
+
+    The same fields as ``BookingResult`` and every one of them optional. It
+    exists because the alternative — recording only that the answer was
+    unreadable — threw away the identifiers a person needs to find the seat
+    GTS is holding. An order with no ``provider_order_number`` cannot even be
+    cancelled (``orders/service.cancel_order``), so the seat leaks upstream
+    while the row says nothing about it.
+
+    ``raw`` is the answer whole, as on ``BookingResult``.
+    """
+
+    raw: dict[str, Any]
+    provider_order_number: str | None = None
+    provider_order_uid: str | None = None
+    provider_pnr: str | None = None
+    provider_status: str | None = None
+    total: Money | None = None
+    travelers: tuple[TravelerRef, ...] = ()
+    ticket_time_limit_at: datetime | None = None
+    travel_start_at: datetime | None = None
+    travel_end_at: datetime | None = None
+    route_summary: str | None = None
+    route: RouteRef | None = None
+
+    def confirmed(self) -> "BookingResult | None":
+        """The same booking as a reservation, or ``None`` if it is not one.
+
+        A reservation needs an order number and a price: without the first
+        there is nothing to cancel and without the second nothing to charge.
+        Everything else is a cosmetic loss (03-design.md §3.3, T2's guard).
+        """
+        if self.provider_order_number is None or self.total is None:
+            return None
+        return BookingResult(
+            provider_order_number=self.provider_order_number,
+            provider_order_uid=self.provider_order_uid,
+            provider_pnr=self.provider_pnr,
+            provider_status=self.provider_status,
+            status=OrderStatus.BOOKED,
+            total=self.total,
+            travelers=self.travelers,
+            ticket_time_limit_at=self.ticket_time_limit_at,
+            travel_start_at=self.travel_start_at,
+            travel_end_at=self.travel_end_at,
+            route_summary=self.route_summary,
+            route=self.route,
+            raw=self.raw,
+        )
+
+    def missing(self) -> tuple[str, ...]:
+        """Which of the two mandatory fields did not read. For the message."""
+        return tuple(
+            name
+            for name, value in (
+                ("order number", self.provider_order_number),
+                ("price", self.total),
+            )
+            if value is None
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CancelResult:
     """A released reservation.
 
@@ -338,6 +415,7 @@ def order_operations(adapter: ProductAdapter) -> OrderOperations | None:
 
 __all__ = [
     "BookingResult",
+    "PartialBooking",
     "CancelResult",
     "FailureClass",
     "RepriceResult",

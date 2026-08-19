@@ -47,6 +47,7 @@ from app.providers.products.orders import (
     BookingResult,
     CancelResult,
     FailureClass,
+    PartialBooking,
     RepriceResult,
     RouteDirectionRef,
     RouteRef,
@@ -73,7 +74,24 @@ _STATUS_MAP: Final[Mapping[str, OrderStatus]] = {
     "VO": OrderStatus.VOIDED,
     "RF": OrderStatus.REFUNDED,
     "PRF": OrderStatus.PARTIALLY_REFUNDED,
+    # The second vocabulary, seen on this installation's live ``/v1/orders/`` —
+    # the same states under longer names. Recorded, not inferred; anything not
+    # actually observed stays out, because ``_HELD_CODES`` below makes guessing
+    # unnecessary.
+    "STATUS_BOOK": OrderStatus.BOOKED,
+    "STATUS_VOID": OrderStatus.VOIDED,
 }
+
+#: The codes that mean **a seat is held and nothing has been issued against
+#: it**. Only these confirm a booking.
+#:
+#: The map above says what a code *means*; this says which meanings we will act
+#: on without asking again. Everything else — a code that means something else,
+#: or one nobody has seen before — leaves the order ``created`` and the
+#: reconciliation sweep settles it with GTS. That is deliberately the cautious
+#: way round: recording a held seat on a guess would let a cancelled booking be
+#: charged for, while an extra round trip costs a minute.
+_HELD_CODES: Final[frozenset[str]] = frozenset({"BO", "STATUS_BOOK"})
 
 #: Below this a bare ``ticket_time_limit`` is read as minutes, above it as
 #: seconds. **A guess**, and recorded as one: three spellings have been seen and
@@ -101,9 +119,14 @@ _RETRYABLE_PHRASES: Final = (
     "too many requests",
 )
 
-#: ``UTC+5``, ``UTC-03:30``, ``UTC+0`` — what GTS puts in ``departure_timezone``
-#: when it puts anything at all.
-_UTC_OFFSET = re.compile(r"UTC([+-])(\d{1,2})(?::?(\d{2}))?$")
+#: ``UTC+5``, ``UTC-03:30``, ``GMT+5:00`` — what GTS puts in
+#: ``departure_timezone`` when it puts anything at all. Both prefixes are
+#: recorded from this installation's own answers; they mean the same offset.
+_UTC_OFFSET = re.compile(r"(?:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?$")
+
+#: ``04-04-2023`` — the day-first spelling that appears in the same answer as
+#: ISO dates, segment by segment.
+_DAY_FIRST = re.compile(r"^(\d{2})-(\d{2})-(\d{4})$")
 
 
 class _DirectionIn(BaseModel):
@@ -236,29 +259,61 @@ def _text(source: Mapping[str, Any], *keys: str, limit: int) -> str | None:
     return None
 
 
-def _money(body: Mapping[str, Any]) -> Money | None:
-    """What the customer owes, from ``price_info``.
+def _priced(source: Mapping[str, Any], fallback: Mapping[str, Any]) -> Money | None:
+    """``price`` plus the fee **beside it**, in whichever layer names a currency.
 
-    ``price`` is fare plus taxes and **excludes** the agency fee sitting beside
-    it: in the recorded booking, ``46.89 + 5.50`` is exactly the only
-    passenger's ``payable_amount``. Their sum is the figure to charge.
+    The fee has to come from the same object as the price it belongs to. Adding
+    a fee read one layer up to a total read one layer down would charge a figure
+    nobody quoted, and both layers carry a ``fee_amount`` of their own.
 
     Amounts arrive as JSON floats and ``core.money.to_decimal`` refuses floats
     on purpose — binary fractions are not money. They go through ``str`` first,
     which is the one conversion that keeps the digits that were sent.
     """
-    info = body.get("price_info")
-    if not isinstance(info, dict):
+    if "price" not in source:
         return None
-    currency = _text(info, "currency", limit=3)
+    currency = _text(source, "currency", limit=3) or _text(
+        fallback, "currency", limit=3
+    )
     if currency is None:
         return None
     try:
-        amount = to_decimal(str(info["price"]))
-        fee = to_decimal(str(info.get("fee_amount") or 0))
-        return Money(amount=quantize(amount + fee), currency=currency.upper())
-    except (KeyError, TypeError, ValueError, InvalidOperation):
+        amount = to_decimal(str(source["price"]))
+        fee = to_decimal(str(source.get("fee_amount") or 0))
+    except (TypeError, ValueError, InvalidOperation):
         return None
+    return Money(amount=quantize(amount + fee), currency=currency.upper())
+
+
+def _money(body: Mapping[str, Any]) -> Money | None:
+    """What the customer owes, wherever this answer happens to keep it.
+
+    Three placements have been seen against live GTS and the first that reads
+    wins:
+
+    1. ``price_info`` beside the order — the booking answer's own spelling,
+       where ``46.89 + 5.50`` is exactly the single passenger's
+       ``payable_amount``;
+    2. a flat ``price``/``currency`` on the order itself — how the live
+       ``/v1/orders/list/`` answer states it, and the placement that used to
+       cost us the whole order (STATUS.md §8.15);
+    3. ``offer.price_info`` — the offer the order was made from, which the same
+       answer carries alongside.
+
+    Order matters: the outer layers describe *this order*, the offer describes
+    what it was made from, and the two can disagree.
+    """
+    offer = body.get("offer")
+    offer = offer if isinstance(offer, dict) else {}
+    layers: list[Mapping[str, Any]] = []
+    for candidate in (body.get("price_info"), body, offer.get("price_info")):
+        if isinstance(candidate, dict):
+            layers.append(candidate)
+    for layer in layers:
+        found = _priced(layer, body)
+        if found is not None:
+            return found
+    return None
 
 
 def _deadline(value: object, *, now: dt.datetime) -> dt.datetime | None:
@@ -296,23 +351,67 @@ def _zone(raw: object) -> dt.tzinfo:
     return dt.UTC
 
 
-def _departure(segment: Mapping[str, Any]) -> dt.datetime | None:
-    """When the first flight leaves, as an instant.
+def _day(raw: str) -> dt.date | None:
+    """A calendar day out of either spelling GTS uses.
 
-    The date and time are local to the airport and the offset beside them is
-    often blank, so a journey whose timezone GTS did not state is read as UTC.
-    The column exists for ordering and reminders, not for a boarding pass — the
-    exact local time stays in ``raw``.
+    ISO in most segments, ``DD-MM-YYYY`` in others — sometimes both inside one
+    answer. Nothing is inferred from an ambiguous value: only the two shapes
+    that have actually been seen are read, and anything else is ``None``.
     """
-    date = _text(segment, "departure_date", limit=32)
-    if date is None:
-        return None
-    time = _text(segment, "departure_time", limit=32) or "00:00"
+    found = _DAY_FIRST.match(raw)
+    if found is not None:
+        raw = f"{found[3]}-{found[2]}-{found[1]}"
     try:
-        naive = dt.datetime.fromisoformat(f"{date}T{time}")
+        return dt.date.fromisoformat(raw)
     except ValueError:
         return None
-    return naive.replace(tzinfo=_zone(segment.get("departure_timezone")))
+
+
+def _clock(raw: str) -> dt.time | None:
+    """A time of day, even when the field holds a whole datetime.
+
+    ``arrival_time`` arrives as ``"17:40:00"`` in one segment and
+    ``"04-04-2023 17:40:00"`` in the next. The day is taken from the ``*_date``
+    field either way, so only the last whitespace-separated part is read here.
+    """
+    try:
+        return dt.time.fromisoformat(raw.strip().rsplit(" ", 1)[-1])
+    except ValueError:
+        return None
+
+
+def _moment(
+    segment: Mapping[str, Any], *, date_key: str, time_key: str, zone_key: str
+) -> dt.datetime | None:
+    """One end of a flight, as an instant.
+
+    The date and the time are local to the airport and the offset beside them is
+    often blank, so a leg whose timezone GTS did not state is read as UTC. A
+    date that will not read at all costs the instant; a time that will not read
+    costs only the hour, because midnight on the right day still orders and
+    reminds correctly. The exact local time stays in ``raw`` regardless.
+    """
+    raw_date = _text(segment, date_key, limit=32)
+    if raw_date is None:
+        return None
+    day = _day(raw_date)
+    if day is None:
+        return None
+    raw_time = _text(segment, time_key, limit=32)
+    clock = _clock(raw_time) if raw_time is not None else None
+    return dt.datetime.combine(
+        day, clock or dt.time(), tzinfo=_zone(segment.get(zone_key))
+    )
+
+
+def _departure(segment: Mapping[str, Any]) -> dt.datetime | None:
+    """When the first flight leaves."""
+    return _moment(
+        segment,
+        date_key="departure_date",
+        time_key="departure_time",
+        zone_key="departure_timezone",
+    )
 
 
 def _arrival(segment: Mapping[str, Any]) -> dt.datetime | None:
@@ -323,22 +422,29 @@ def _arrival(segment: Mapping[str, Any]) -> dt.datetime | None:
     offsets — which is correct, and why the arrival is not derived by adding
     ``duration_minutes`` to the departure.
     """
-    date = _text(segment, "arrival_date", limit=32)
-    if date is None:
-        return None
-    time = _text(segment, "arrival_time", limit=32) or "00:00"
-    try:
-        naive = dt.datetime.fromisoformat(f"{date}T{time}")
-    except ValueError:
-        return None
-    return naive.replace(tzinfo=_zone(segment.get("arrival_timezone")))
+    return _moment(
+        segment,
+        date_key="arrival_date",
+        time_key="arrival_time",
+        zone_key="arrival_timezone",
+    )
 
 
 def _endpoint(segment: object, *keys: str) -> str | None:
-    """One end of a direction, as an airport code."""
+    """One end of a direction, as an airport code.
+
+    **Only a three-letter code is accepted**, whichever key it came from. The
+    recorded answers use ``departure_airport`` for the code in one shape and
+    for the airport's *name* in another, and a name here would put "Istanbul
+    Airport" on a card that has room for ``IST``.
+    """
     if not isinstance(segment, dict):
         return None
-    return _text(segment, *keys, limit=8)
+    for key in keys:
+        found = _text(segment, key, limit=8)
+        if found is not None and re.match(_IATA_PATTERN, found):
+            return found.upper()
+    return None
 
 
 def _ends(
@@ -352,9 +458,20 @@ def _ends(
     it is a display string, while the codes are fields. ``departure_city_code``
     is **not** consulted at all — it arrives as an empty string in the recorded
     booking (EASY_GATEWAY, ``/content/Booking``).
+
+    ``departure_airport``/``arrival_airport`` are tried after the ``_code``
+    pair because the live answer puts the code there and omits the ``_code``
+    keys entirely; ``_endpoint`` refuses anything that is not a three-letter
+    code, so the shape where those keys hold a name costs nothing.
     """
-    origin = _endpoint(segments[0] if segments else None, "departure_airport_code")
-    destination = _endpoint(segments[-1] if segments else None, "arrival_airport_code")
+    origin = _endpoint(
+        segments[0] if segments else None,
+        "departure_airport_code",
+        "departure_airport",
+    )
+    destination = _endpoint(
+        segments[-1] if segments else None, "arrival_airport_code", "arrival_airport"
+    )
     if origin is not None and destination is not None:
         return origin, destination
 
@@ -418,8 +535,15 @@ def _route(body: Mapping[str, Any]) -> RouteRef | None:
     could not read" would otherwise have to inspect the summary. A direction
     every field of which came back empty is dropped for the same reason — an
     object of nulls on the wire says less than its absence.
+
+    ``offer.routes`` is the second place looked in: the live answer keeps the
+    journey under the offer the order was made from rather than beside the
+    order, and both spellings describe the same flights.
     """
     routes = body.get("routes")
+    if not isinstance(routes, list):
+        offer = body.get("offer")
+        routes = offer.get("routes") if isinstance(offer, dict) else None
     if not isinstance(routes, list):
         return None
     entries = [route for route in routes if isinstance(route, dict)]
@@ -454,6 +578,21 @@ def _phone(source: Mapping[str, Any]) -> str | None:
     return _text(source, "phone", limit=32)
 
 
+def _gender(source: Mapping[str, Any]) -> str | None:
+    """``M`` or ``F``, out of the letter or the whole word.
+
+    ``"M"`` in one recorded answer and ``"Male"`` in another; reading only the
+    first meant the field was silently dropped whenever the word was spelled
+    out. Anything that is neither is dropped rather than guessed — a wrong
+    gender on a ticket is a boarding problem.
+    """
+    raw = _text(source, "gender", limit=16)
+    if raw is None:
+        return None
+    letter = raw[0].upper()
+    return letter if letter in {"M", "F"} else None
+
+
 def _traveler(position: int, source: Mapping[str, Any]) -> TravelerRef:
     """One traveller, read from either the request or the answer.
 
@@ -468,9 +607,9 @@ def _traveler(position: int, source: Mapping[str, Any]) -> TravelerRef:
         type=_text(source, "passenger_type", "type", limit=8),
         first_name=_text(source, "first_name", "firstname", limit=64),
         last_name=_text(source, "last_name", "lastname", limit=64),
-        middle_name=_text(source, "middle_name", limit=64),
+        middle_name=_text(source, "middle_name", "middlename", limit=64),
         birth_date=_text(source, "birth_date", limit=32),
-        gender=_text(source, "gender", limit=1),
+        gender=_gender(source),
         citizenship=(
             _text(source, "citizenship", limit=8)
             or _text(document, "citizenship", "nationality", limit=8)
@@ -508,6 +647,76 @@ def _travelers(
                 if isinstance(person, dict)
             )
     return ()
+
+
+def _partial(
+    raw: dict[str, Any], payload: Mapping[str, Any] | None = None
+) -> PartialBooking:
+    """Read everything an order answer offers, and refuse nothing.
+
+    Every field is optional here on purpose. Deciding what is missing is the
+    caller's job, and separating the two means a booking we cannot confirm
+    still arrives with its identifiers rather than as an empty row.
+    """
+    body = _order_body(raw)
+    route = _route(body)
+    legs = route.directions if route is not None else ()
+    return PartialBooking(
+        raw=raw,
+        provider_order_number=_text(body, "order_number", limit=64),
+        provider_order_uid=_text(body, "order_uid", limit=64),
+        provider_pnr=_text(body, "gds_pnr", limit=32),
+        provider_status=_text(body, "status", limit=16),
+        total=_money(body),
+        travelers=_travelers(body, payload or {}),
+        ticket_time_limit_at=_deadline(
+            body.get("ticket_time_limit"), now=dt.datetime.now(dt.UTC)
+        ),
+        travel_start_at=legs[0].departure_at if legs else None,
+        travel_end_at=legs[-1].arrival_at if legs else None,
+        route_summary=route.summary if route is not None else None,
+        route=route,
+    )
+
+
+def _reservation(
+    raw: dict[str, Any], payload: Mapping[str, Any] | None = None
+) -> BookingResult:
+    """One GTS order answer as a **held reservation**, or nothing of the kind.
+
+    Two ways it is not one, and the message says which: a field the row cannot
+    do without would not read, or the answer carries a status that is not a
+    held seat. Both raise ``UnreadableAnswer`` with everything that *did* read
+    attached, because both mean the same thing to the caller — do not call this
+    booked, and do not throw it away either.
+
+    Shared with the reconciliation call that asks about the same order later:
+    the two answers have the same shape, and reading them in two places is how
+    spellings drift apart.
+    """
+    partial = _partial(raw, payload)
+    result = partial.confirmed()
+    if result is not None and partial.provider_status in _HELD_CODES:
+        return result
+    if result is None:
+        refusal = "the GTS answer names no " + " and no ".join(partial.missing())
+    else:
+        refusal = (
+            f"the GTS answer carries status {partial.provider_status!r},"
+            " which is not a held reservation"
+        )
+    # **Both** key lists, because the whole failure is about which layer the
+    # order sits in. Logging only the envelope's keys — ``message``,
+    # ``request_id``, ``data`` — says nothing about the layer that actually
+    # failed, and that is the log that left an incident undiagnosable.
+    logger.warning(
+        "order_answer_unresolved",
+        detail=refusal,
+        provider_status=partial.provider_status,
+        envelope_fields=sorted(raw),
+        order_fields=sorted(_order_body(raw)),
+    )
+    raise UnreadableAnswer(refusal, raw=raw, partial=partial)
 
 
 def _hide_failure(step: str, failure: AppError) -> None:
@@ -668,44 +877,18 @@ class FlightAdapter:
         not ours to guess. They are read back in on the way home, though: the
         answer's travellers are what the order stores.
 
-        **No order number or no price is not an order.** Everything else is
-        optional — a booking with no route summary is a cosmetic loss — but
-        without those two there is nothing to cancel and nothing to charge, and
-        a row claiming otherwise would be worse than the exception.
+        **Only a held seat is a booking.** An answer with no order number, no
+        price, or a status that is not a held reservation raises
+        ``UnreadableAnswer`` carrying everything it *did* say — the order stays
+        ``created`` and reconciliation asks GTS again. A row claiming a seat we
+        could not name would be worse than the exception, and an empty row
+        would lose the seat.
         """
         _validated(_FlightOfferRefIn, payload)
         raw = await client.post(
             "/v1/content/booking/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
         )
-        body = _order_body(raw)
-        number = _text(body, "order_number", limit=64)
-        total = _money(body)
-        if number is None or total is None:
-            raise UnreadableAnswer(
-                "the GTS booking answer names no order or no price", raw=raw
-            )
-        code = _text(body, "status", limit=16)
-        route = _route(body)
-        legs = route.directions if route is not None else ()
-        return BookingResult(
-            provider_order_number=number,
-            provider_order_uid=_text(body, "order_uid", limit=64),
-            provider_pnr=_text(body, "gds_pnr", limit=32),
-            provider_status=code,
-            # An answer we could read at all is a reservation, whatever code it
-            # carries; the code is kept beside ours rather than trusted over it.
-            status=_STATUS_MAP.get(code or "", OrderStatus.BOOKED),
-            total=total,
-            travelers=_travelers(body, payload),
-            ticket_time_limit_at=_deadline(
-                body.get("ticket_time_limit"), now=dt.datetime.now(dt.UTC)
-            ),
-            travel_start_at=legs[0].departure_at if legs else None,
-            travel_end_at=legs[-1].arrival_at if legs else None,
-            route_summary=route.summary if route is not None else None,
-            route=route,
-            raw=raw,
-        )
+        return _reservation(raw, payload)
 
     async def cancel(self, client: GtsClient, payload: dict[str, Any]) -> CancelResult:
         """Release a booking GTS still holds.

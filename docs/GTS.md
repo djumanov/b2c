@@ -182,6 +182,25 @@ Javob **ikki qavatli**: envelope'ning `data` si ichida yana `data` bor va
 buyurtmaning o'zi o'sha yerda — `order_number` (butun son), `order_uid`,
 `status` (`BO`), `gds_pnr`, `routes`, `price_info`, `passengers`.
 
+> ⚠ **Jonli javob bundan farq qiladi.** 2026-08-19 da shu o'rnatmaning GTS'idan
+> olingan buyurtma javobida:
+>
+> | Kolleksiyada | Jonli javobda |
+> |---|---|
+> | `price_info: {price, currency, fee_amount}` buyurtma yonida | buyurtmaning o'zida tekis `price` va `currency`; `price_info` esa `offer` ichida |
+> | `routes[]` buyurtma yonida | `offer.routes[]` |
+> | `segments[].departure_airport_code` | `segments[].departure_airport` |
+> | `middle_name` | `middlename` |
+> | `gender: "M"` | `gender: "Male"` |
+> | `departure_timezone: "UTC+5"` | `"GMT+5:00"` |
+> | `departure_date: "2026-10-01"` | bir segmentda ISO, keyingisida `"04-04-2023"` |
+> | `status: "BO"` | `status: "STATUS_VOID"` — ikkinchi lug'at |
+>
+> Adapter endi ikkala imloni ham o'qiydi
+> (`providers/products/flight.py::_partial`). **Kolleksiya — boshlang'ich
+> nuqta, spetsifikatsiya emas:** u yozib olingan bo'lsa ham, yozib olingan
+> paytdagi xizmatni ko'rsatadi.
+
 **Bekor qilish** (`POST /v1/content/cancel/`) buyurtmani **`order_number`**
 bilan nomlaydi, `order_id` bilan emas: tanasi `{"order_number": 61453}`.
 `retrieve` ham shu raqamni oladi.

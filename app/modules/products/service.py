@@ -46,6 +46,7 @@ from app.modules.orders import service as orders_service
 from app.providers.products.base import ProductAdapter, ProductCode
 from app.providers.products.orders import (
     OrderOperations,
+    PartialBooking,
     UnreadableAnswer,
     order_operations,
 )
@@ -139,13 +140,16 @@ async def book(
     * **no answer** — the row stays ``created``, which is precisely what that
       status means: we do not know. Calling it failed would throw away a real
       booking, so reconciliation resolves it later (slice S7);
-    * **unreadable** — the provider agreed in words we cannot parse, so the
-      order goes to ``needs_attention`` with the answer attached and the key is
-      kept: a seat is probably held and a retry must not open a second one.
+    * **unresolved** — the provider answered, but a field the row cannot do
+      without would not read, or the status is not a held seat. The order stays
+      ``created`` with everything that *did* read written onto it, and the key
+      is kept: a seat is probably held and a retry must not open a second one.
+      Reconciliation asks GTS again (``orders.sync_open``).
 
     Only the confirmed ending saves passengers. A booking that failed, timed
-    out or came back unreadable has nothing worth putting on a profile — and
-    on the unreadable path there are no normalised travellers to put there.
+    out or came back unresolved has nothing worth putting on a profile yet —
+    the travellers on an unresolved row are the ones we read, not ones GTS has
+    agreed to.
     """
     ops = _order_ops(adapter)
     client = await integrations_service.gts_client(session)
@@ -161,9 +165,12 @@ async def book(
 
     try:
         result = await ops.book(client, payload)
-    except UnreadableAnswer as unreadable:
-        order = await orders_service.record_unreadable_booking(
-            session, order, unreadable.raw
+    except UnreadableAnswer as unresolved:
+        order = await orders_service.record_unresolved_booking(
+            session,
+            order,
+            unresolved.partial or PartialBooking(raw=unresolved.raw),
+            reason=str(unresolved),
         )
         return orders_service.booking_answer(order)
     except UpstreamTimeout:

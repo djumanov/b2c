@@ -180,6 +180,7 @@ stateDiagram-v2
     needs_attention --> ticketed: T18 admin
     needs_attention --> refunded: T18 admin
     needs_attention --> cancelled: T18 admin
+    created --> created: T2x javob o'qilmadi
 ```
 
 ### O'tishlar jadvali
@@ -187,9 +188,10 @@ stateDiagram-v2
 | # | Dan → Ga | Trigger | Guard | Keyingi qadam (o'sha tranzaksiyada belgilanadi) | Guard buzilsa |
 |---|---|---|---|---|---|
 | **T1** | ∅ → `created` | `POST /{product}/booking/` | `request_id` va `offer_id` bor; mijoz autentifikatsiyadan o'tgan (`Idempotency-Key` — ixtiyoriy, bo'lmasa so'rovdan hosil qilinadi) | — | `422` |
-| **T2** | `created` → `booked` | GTS `booking` muvaffaqiyatli | `provider_order_number` **va** summa/valyuta o'qildi | `travelers` to'ldiriladi · `order_payments` qatori · `notify.order_booked` | O'qilmasa → `needs_attention`, xom javob hodisada |
+| **T2** | `created` → `booked` | GTS `booking` muvaffaqiyatli | `provider_order_number` **va** summa/valyuta o'qildi, **va** javobdagi kod band o'rin degani (`_HELD_CODES`) | `travelers` to'ldiriladi · `order_payments` qatori · `notify.order_booked` | Guard buzilsa → **T2x** |
+| **T2x** | `created` → `created` | GTS javob berdi, lekin T2 guard'i bajarilmadi | — | `orders.sync_open` (fon) | — |
 | **T3** | `created` → `failed` | GTS `status: "error"` | — | — | — |
-| **T4** | `created` → `needs_attention` | GTS timeout / erishib bo'lmadi, `orders.reconcile_orphans` 3 urinishda topolmadi | — | `alert.stuck` | — |
+| **T4** | `created` → `needs_attention` | GTS timeout / erishib bo'lmadi, `orders.sync_open` urinishlari tugadi | — | `alert.stuck` | — |
 | **T5** | `booked` → `paid` | To'lov `paid` bo'ldi (`confirm/` so'rovining o'zida — O16 — yoki webhook, yoki `payments.reconcile`) | `payment.amount` == `order.amount_total` **va** valyutalar teng | `orders.ticket` · `notify.order_paid` | Summa mos emas → `needs_attention` |
 | **T5x** | `booked` → `needs_attention` | To'lov settled bo'ldi, lekin summa boshqa | — | — | Pul harakatlangan, xavfsiz turadigan joy yo'q |
 | **T6** | `booked` → `cancelled` | `POST /orders/{id}/cancel/` (mijoz) yoki admin | To'lov `paid` emas | `gts.cancel` · `notify.order_cancelled` | To'langan bo'lsa → `409`, qaytarish yo'li taklif qilinadi |
@@ -209,6 +211,21 @@ stateDiagram-v2
 | **T18** | `needs_attention` → `ticketed` \| `refunded` \| `cancelled` | Admin qo'lda hal qildi | `CurrentStaff`; sabab majburiy | audit yozuvi | — |
 
 Jadvalda **yo'q** bo'lgan har qanday o'tish — `409 conflict`.
+
+**T2x nega `needs_attention` emas.** `needs_attention` ta'rifi — *pul
+harakatlandi, avtomatik kompensatsiya bajarilmadi*. Javobni o'qiy olmaslikda
+pul umuman harakatlanmagan, o'rin esa katta ehtimol band. `needs_attention` dan
+faqat odam chiqara oladi (T18) va buyurtmalar uchun admin yuzasi hali yo'q —
+ya'ni u yerga tushgan qator na bekor qilinadi (`provider_order_number` yo'q →
+`409`), na `orders.expire_unpaid` supurgisiga tushadi (u faqat `booked` ni
+oladi). Shuning uchun bunday javob buyurtmani **`created`** da qoldiradi — bu
+aynan "so'radik, javobini bilmaymiz" degani — va `sync_open` uni GTS bilan hal
+qiladi.
+
+O'qilgan hamma narsa (`provider_order_number`, `gds_pnr`, marshrut,
+yo'lovchilar, muddat, narx bo'lsa narx) T2x da ham qatorga yoziladi: qator
+o'rinni **nomlay olishi** shart, aks holda GTS'da tirik bron qoladi va bizda
+unga ishora qiladigan hech narsa bo'lmaydi.
 
 `ticket_deadline` = `ticket_time_limit_at − ticket_margin`
 (`ticket_margin` — DB sozlamasi, sukut bo'yicha 30 daqiqa).
@@ -1166,10 +1183,20 @@ jonli GTS'da tasdiqlanmaguncha taxmin bo'lib qoladi.
 | `retrieve` so'rovi (`request_id`, `order_number`, `provider_id`) | `EASY_GATEWAY` → `content/Retrieve` | ✅ yozib olingan |
 | `/v1/orders/list/` filtrlari (`booking_date_from/to`, `passenger`, `gds_pnr`, `order_number`) | `EASY_GATEWAY` → `orders/Получить все собств. закази` | ✅ yozib olingan — **`offer_id` filtri yo'q** |
 | Status kodlari `BO/PW/TI/TE/CB/VO/RF/PRF` | `GTS.md` §4 | ✅ hujjatlashtirilgan |
-| `ticket_time_limit` **formati** | Uch xil: ISO (kolleksiya) · `4319` (`drct-error1.json`) · `288000` (`API.md` §20) | ⚠ **Q1** — ziddiyatli |
+| Status kodlari `STATUS_BOOK` / `STATUS_VOID` | **Jonli** `/v1/orders/` javobi, 2026-08-19 | ✅ ko'rilgan — ikkinchi lug'at |
+| Buyurtma javobining **jonli** shakli: tekis `price`/`currency`, `offer.routes`, `departure_airport` (`_code` siz), `middlename`, `gender: "Male"`, `GMT+5:00`, kun-oldin sanalar | **Jonli** `/v1/orders/` javobi, 2026-08-19 | ✅ ko'rilgan — kolleksiyadagi shakl bilan **mos kelmaydi** |
+| `ticket_time_limit` **formati** | To'rt xil: ISO (kolleksiya, va jonli javob) · `4319` (`drct-error1.json`) · `288000` (`API.md` §20) | ⚠ **Q1** — ziddiyatli |
 | `void_time_limit` | `EASY_GATEWAY` → `content/Booking` (`null` bo'lgan) | ⚠ v2 uchun tekshiriladi |
 | Xato konvensiyasi (HTTP 200 + `status: "error"` + manfiy `code`) | `GTS.md` §10 + `gts/client.py:279` | ✅ kodda ishlaydi |
 | Deposit balansi (`/v1/contract/provider/balance/check/`) | `EASY_GATEWAY` → `agreements/Provider` | ⚠ **Q3** — B2C credential'i bilan ochiqmi, noma'lum |
 
 > Kolleksiya va yozib olingan javoblar **`GTS.md` dan ustun** turadi: ular
 > hujjat emas, haqiqiy chaqiruv ([`00-README.md`](00-README.md)).
+
+> ⚠ **Kolleksiya ham eskiradi.** 2026-08-19 da shu o'rnatmaning jonli GTS'idan
+> olingan javob kolleksiyadagi shakl bilan mos kelmadi: narx `price_info` da
+> emas, buyurtmaning o'zida tekis `price`/`currency` bo'lib turgan edi, va shu
+> bitta farq ikkita haqiqiy bronni o'qib bo'lmaydigan qilib qo'ydi. Shuning
+> uchun adapter endi **bir nechta joyni** ketma-ket o'qiydi va har bir imlo
+> qayerdan ko'rilgani kod izohida yozib qo'yiladi. Tartib: **jonli javob >
+> kolleksiya > hujjat**.

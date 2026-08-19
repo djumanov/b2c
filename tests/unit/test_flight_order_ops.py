@@ -20,7 +20,7 @@ import pytest
 
 from app.api.errors import UpstreamError, UpstreamTimeout
 from app.modules.orders.states import OrderStatus
-from app.providers.products.flight import FlightAdapter
+from app.providers.products.flight import _HELD_CODES, FlightAdapter, _partial
 from app.providers.products.orders import (
     FailureClass,
     OrderOperations,
@@ -112,6 +112,132 @@ GTS_BOOKING: dict[str, Any] = {
 }
 
 
+#: One order out of this installation's **live** GTS, captured 2026-08-19. Not
+#: from the collection: the collection is older than the service it records,
+#: which is how the booking above came to be read against the wrong spellings
+#: for a day (STATUS.md §8.15).
+#:
+#: Everything the adapter needs sits somewhere else here — a flat ``price`` and
+#: ``currency`` instead of ``price_info``, ``routes`` under ``offer``, bare
+#: ``departure_airport`` instead of ``departure_airport_code``, ``middlename``
+#: without its underscore, ``Male`` spelled out, ``GMT+5:00`` rather than
+#: ``UTC+5``, and day-first dates in one segment beside ISO ones in another.
+#: Reading it is what this fixture is for.
+GTS_LIVE_ORDER: dict[str, Any] = {
+    "passengers": [
+        {
+            "offer": {
+                "price_info": [
+                    {
+                        "fee_amount": 1.04,
+                        "tax_amount": 32.25,
+                        "base_amount": 91.13,
+                        "total_amount": 124.42,
+                        "payable_amount": 124.42,
+                        "commission_amount": 0,
+                    }
+                ]
+            },
+            "document": {
+                "passport_number": "AA1111111",
+                "passport_expiry": "2030-12-10",
+                "nationality": "UZ",
+                "document_type": "PSP",
+            },
+            "passenger_id": "db6f7d06-53c7-11ee-9874-f4b520498588",
+            "firstname": "Elmurod",
+            "lastname": "Egamberdiyev",
+            "middlename": "Hojiakbar o'g'li",
+            "gender": "Male",
+            "birth_date": "2001-01-01",
+            "passenger_category": "Student",
+            "passenger_type": "ADT",
+            "phone_number": "+9989992747465",
+            "email_address": "test@mail.uz",
+        }
+    ],
+    "status": "STATUS_VOID",
+    "gds_pnr": "L9J87M",
+    "supplier_pnr": "J9-L9J87M",
+    "created_at": "2023-09-11T21:13:00",
+    "ticket_time_limit": "2023-09-13T21:43:00",
+    "void_time_limit": 120,
+    "price": 320.12,
+    "currency": "USD",
+    "offer": {
+        "routes": [
+            {
+                "stops": 1,
+                "segments": [
+                    {
+                        "leg": "IST-ESB",
+                        "arrival_date": "2023-04-04",
+                        "arrival_time": "14:05:00",
+                        "carrier_code": "TK",
+                        "flight_number": "2150",
+                        "segment_index": 1,
+                        "departure_date": "2023-04-04",
+                        "departure_time": "13:00:00",
+                        "arrival_airport": "ESB",
+                        "arrival_timezone": "GMT+5:00",
+                        "duration_minutes": 65,
+                        "departure_airport": "IST",
+                        "departure_timezone": "GMT+5:00",
+                    },
+                    {
+                        "dir_number": 2,
+                        "arrival_date": "04-04-2023",
+                        "arrival_time": "04-04-2023 17:40:00",
+                        "carrier_code": "AJ",
+                        "flight_number": "7030",
+                        "departure_date": "04-04-2023",
+                        "departure_time": "04-04-2023 16:35:00",
+                        "arrival_airport": "AYT",
+                        "duration_minutes": 65,
+                        "departure_airport": "ESB",
+                    },
+                ],
+                "direction": "IST-AYT",
+                "route_index": 1,
+            },
+            {
+                "segments": [
+                    {
+                        "dir_number": 1,
+                        "arrival_date": "05-04-2023",
+                        "arrival_time": "05-04-2023 08:30:00",
+                        "carrier_code": "TK",
+                        "flight_number": "2435",
+                        "departure_date": "05-04-2023",
+                        "departure_time": "05-04-2023 07:00:00",
+                        "arrival_airport": "IST",
+                        "duration_minutes": 90,
+                        "departure_airport": "AYT",
+                    }
+                ],
+                "route_index": 2,
+            },
+        ],
+        "offer_id": "4b739ef16ee7af525f7381b2ba7ce661",
+        "price_info": {"price": 252, "fee_amount": 1.02, "commission_amount": 0},
+        "price_details": [
+            {
+                "fee_amount": 1.04,
+                "tax_amount": 32.25,
+                "base_amount": 91.13,
+                "total_amount": 124.42,
+                "passenger_type": "ADT",
+                "payable_amount": 124.42,
+                "commission_amount": 0,
+            }
+        ],
+    },
+    "provider": {"name": "AerTicket", "provider_id": "1233-12323-1122-12233334"},
+    "airline_code": "TK",
+    "order_number": 1,
+}
+
+
 def _answer(**overrides: Any) -> dict[str, Any]:
     """The recorded booking answer with its inner ``data`` amended."""
     body = {**GTS_BOOKING["data"], **overrides}
@@ -134,8 +260,10 @@ def test_the_flight_adapter_can_manage_orders() -> None:
 
 
 def test_every_provider_code_has_a_meaning() -> None:
-    """GTS.md §4 lists eight codes; a code with no entry would silently become
-    the default and turn a voided ticket into a booked one."""
+    """GTS.md §4 lists eight codes and the live service adds a second spelling
+    of two of them. A code with no entry used to become the default and turn a
+    voided order into a booked one; ``_HELD_CODES`` is what stops that now, and
+    this list only has to stay honest about what has been seen."""
     assert set(FlightAdapter().status_map()) == {
         "BO",
         "PW",
@@ -145,8 +273,18 @@ def test_every_provider_code_has_a_meaning() -> None:
         "VO",
         "RF",
         "PRF",
+        "STATUS_BOOK",
+        "STATUS_VOID",
     }
     assert set(FlightAdapter().status_map().values()) <= set(OrderStatus)
+
+
+def test_every_held_code_means_booked() -> None:
+    """The two lists must agree: a code we act on without asking again has to
+    be one the map calls a held seat."""
+    mapping = FlightAdapter().status_map()
+    assert set(mapping) >= _HELD_CODES
+    assert {mapping[code] for code in _HELD_CODES} == {OrderStatus.BOOKED}
 
 
 # --- money ----------------------------------------------------------------------------
@@ -508,16 +646,28 @@ async def test_a_flat_answer_is_read_too() -> None:
 
 
 @pytest.mark.parametrize(
-    "code", ["PW", "TI", "TE", "CB", "VO", "RF", "PRF", "", "WHAT"]
+    "code", ["PW", "TI", "TE", "CB", "VO", "RF", "PRF", "STATUS_VOID", "", "WHAT"]
 )
-async def test_a_code_we_do_not_know_still_leaves_a_reservation(code: str) -> None:
-    """An answer we could read at all is a reservation. The code is recorded
-    beside our status rather than trusted over it, and an unknown one falls back
-    to ``booked`` — the state that keeps the deadline running."""
-    result = await _book(_answer(status=code))
+async def test_a_code_that_is_not_a_held_seat_is_not_a_booking(code: str) -> None:
+    """An answer that reads perfectly is still not a reservation when GTS calls
+    the order something other than held.
 
-    assert result.provider_status == (code or None)
-    assert result.status is FlightAdapter().status_map().get(code, OrderStatus.BOOKED)
+    It used to become ``booked`` either way — an unknown code by the default, a
+    known one by a status ``created`` cannot even reach, which made
+    ``confirm_booking`` answer the customer ``409`` over a live seat. Now the
+    order stays ``created`` and reconciliation asks GTS what it really is.
+
+    Nothing is thrown away: the identifiers ride on the exception, so the row
+    can still name the seat it may be holding.
+    """
+    with pytest.raises(UnreadableAnswer) as refused:
+        await _book(_answer(status=code))
+
+    partial = refused.value.partial
+    assert partial is not None
+    assert partial.provider_status == (code or None)
+    assert partial.provider_order_number == "61453"
+    assert partial.total is not None
 
 
 @pytest.mark.parametrize(
@@ -544,6 +694,122 @@ async def test_an_answer_that_names_no_order_is_refused(
         await _book(answer)
 
     assert refused.value.raw == answer
+
+
+# --- the live answer ------------------------------------------------------------------
+
+
+def test_the_live_answer_reads_where_it_actually_keeps_things() -> None:
+    """The whole point of the fixture. Every one of these used to be ``None``
+    against live GTS, and the price being one of them is what sent two real
+    bookings to a state nobody could get them out of."""
+    partial = _partial(GTS_LIVE_ORDER)
+
+    assert partial.missing() == ()
+    assert partial.provider_order_number == "1"
+    assert partial.provider_pnr == "L9J87M"
+    assert partial.provider_status == "STATUS_VOID"
+    assert partial.total is not None
+    assert partial.total.amount == Decimal("320.12")
+    assert partial.total.currency == "USD"
+    assert partial.ticket_time_limit_at == dt.datetime(
+        2023, 9, 13, 21, 43, tzinfo=dt.UTC
+    )
+
+
+def _priced_at(answer: dict[str, Any]) -> Decimal | None:
+    total = _partial(answer).total
+    return None if total is None else total.amount
+
+
+def test_the_order_layer_outranks_the_offer_it_was_made_from() -> None:
+    """Both are in the same answer and they disagree: the order costs 320.12
+    and the offer beneath it says 252 plus a fee of 1.02. What the customer
+    owes is the order's own figure — charging the offer's would undercharge
+    every booking — and the offer is only read when the order names no price.
+    """
+    assert _priced_at(GTS_LIVE_ORDER) == Decimal("320.12")
+    without_flat = {
+        key: value for key, value in GTS_LIVE_ORDER.items() if key != "price"
+    }
+
+    assert _priced_at(without_flat) == Decimal("253.02")
+
+
+def test_the_live_route_comes_out_of_the_offer() -> None:
+    """``routes`` is under ``offer`` here, not beside the order. Reading only
+    the outer level left the card with no route, no dates and no stops."""
+    route = _partial(GTS_LIVE_ORDER).route
+
+    assert route is not None
+    assert route.summary == "IST-AYT"
+    out, back = route.directions
+    assert (out.origin, out.destination) == ("IST", "AYT")
+    assert out.stops == 1
+    # ``GMT+5:00`` is the same offset as ``UTC+5``, spelled the other way.
+    assert out.departure_at == dt.datetime(
+        2023, 4, 4, 13, 0, tzinfo=dt.timezone(dt.timedelta(hours=5))
+    )
+    # Day-first dates, and a whole datetime sitting in the ``arrival_time``
+    # field of the very next segment.
+    assert out.arrival_at == dt.datetime(2023, 4, 4, 17, 40, tzinfo=dt.UTC)
+    # The second direction names no ``direction`` string at all, so its ends
+    # come from the segments alone.
+    assert (back.origin, back.destination) == ("AYT", "IST")
+
+
+def test_the_live_journey_spans_both_directions() -> None:
+    partial = _partial(GTS_LIVE_ORDER)
+
+    assert partial.travel_start_at == dt.datetime(
+        2023, 4, 4, 13, 0, tzinfo=dt.timezone(dt.timedelta(hours=5))
+    )
+    assert partial.travel_end_at == dt.datetime(2023, 4, 5, 8, 30, tzinfo=dt.UTC)
+
+
+def test_the_live_traveller_survives_both_spellings() -> None:
+    """``middlename`` without its underscore, and a gender spelled out. Both
+    were silently dropped — the second by a one-character length limit."""
+    (person,) = _partial(GTS_LIVE_ORDER).travelers
+
+    assert person.first_name == "Elmurod"
+    assert person.last_name == "Egamberdiyev"
+    assert person.middle_name == "Hojiakbar o'g'li"
+    assert person.gender == "M"
+    assert person.type == "ADT"
+    assert person.citizenship == "UZ"
+    assert person.document_type == "PSP"
+    assert person.document_number == "AA1111111"
+    assert person.document_expiry_date == "2030-12-10"
+    assert person.email == "test@mail.uz"
+    assert person.provider_traveler_id == "db6f7d06-53c7-11ee-9874-f4b520498588"
+
+
+def test_an_airport_name_is_never_read_as_a_code() -> None:
+    """``departure_airport`` carries the code in the live answer and the
+    airport's *name* in the collection's. Only a three-letter code is taken, so
+    the shape that spells the name out falls back to the ``direction`` label
+    rather than putting "Ankara" where ``ESB`` belongs."""
+    named = _answer(
+        routes=[
+            {
+                "direction": "IST-ESB",
+                "segments": [
+                    {
+                        "departure_airport": "Turkey",
+                        "arrival_airport": "Ankara",
+                        "departure_date": "2026-10-01",
+                    }
+                ],
+            }
+        ]
+    )
+
+    route = _partial(named).route
+
+    assert route is not None
+    (leg,) = route.directions
+    assert (leg.origin, leg.destination) == ("IST", "ESB")
 
 
 # --- cancelling -----------------------------------------------------------------------

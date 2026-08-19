@@ -666,9 +666,12 @@ _BOOKED_ORDER: Final[dict[str, Any]] = {
             ],
             "description": (
                 "**Canonical, ours** (order-system/03-design.md §3.3). A "
-                "booking normally answers `booked`. `needs_attention` means "
-                "GTS agreed in words we could not read — a seat is probably "
-                "held, so **do not book again**; poll the order instead."
+                "booking normally answers `booked`. It answers `created` when "
+                "GTS agreed in words we could not read, or in a status that is "
+                "not a held seat — a seat is probably held, so **do not book "
+                "again**; poll the order while reconciliation settles it with "
+                "GTS. `needs_attention` is the money path's own state and "
+                "never an answer to a booking."
             ),
         },
         "gts_status": {
