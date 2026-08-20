@@ -50,14 +50,11 @@ from app.modules.integrations.schemas import (
 )
 from app.modules.uploads import service as uploads_service
 from app.providers import notifications, social
-from app.providers import payments as payments_provider
 from app.providers.gts.base import GtsClient
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
-from app.providers.payments.base import PaymentProvider as PaymentProviderPort
 from app.providers.payments.base import PaymentProviderCode
-from app.providers.payments.base import registry as payments_registry
 from app.providers.social.base import SocialProviderCode, SocialVerifier
 from app.providers.social.google import GoogleVerifier
 from app.providers.storage.base import UploadPurpose
@@ -407,11 +404,10 @@ def _is_usable(row: SmtpSettings) -> bool:
 async def gts_client(session: AsyncSession) -> GtsClient:
     """A ready GTS client, built from the active credential.
 
-    The counterpart of ``payment_provider_adapter``, and here for the same
-    reason: the credential is a settings question and settings belong to a
-    module. It lives in ``integrations`` rather than in ``products`` because
-    both the search flow and the order steps need one, and putting it in either
-    of them would make the other import it — a cycle for a two-line function.
+    The credential is a settings question and settings belong to a module, so
+    the client is built here rather than in ``products``: every caller that
+    needs one would otherwise have to import whichever module owned it, and a
+    two-line function is not worth a cycle.
 
     **No active credential is a 502, not a 404.** The product *is* enabled on
     this installation, so pretending the resource does not exist would lie; the
@@ -837,34 +833,6 @@ async def active_payment_provider(
     return min(
         configured, key=lambda row: (row.sort_order, row.code.value), default=None
     )
-
-
-async def payment_provider_adapter(
-    session: AsyncSession, code: PaymentProviderCode
-) -> PaymentProviderPort | None:
-    """The configured adapter for one provider, or ``None``.
-
-    The payment counterpart of ``notifier()``, and built per call for the same
-    reason: the credentials behind it are edited from the panel and there are
-    several worker processes, so an adapter cached at import would be both stale
-    and inconsistent between them.
-
-    ``None`` covers three cases the caller must not tell apart — no adapter
-    registered for the code, the provider switched off, or no credentials
-    entered. All three mean "this installation cannot charge through it", and
-    which one it is says something about the installation that a customer has
-    no business learning.
-    """
-    override = payments_provider.get_override(code)
-    if override is not None:
-        return override
-
-    row = await repository.payment_provider(session, code)
-    if session.in_transaction():
-        await session.commit()
-    if row is None or not row.enabled or not row.credentials:
-        return None
-    return payments_registry.build(code.value, _decode_credentials(row))
 
 
 async def any_payment_provider_ready(session: AsyncSession) -> bool:

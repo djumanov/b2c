@@ -24,7 +24,6 @@ from app.modules.settings.models import (
     Currencies,
     Features,
     Languages,
-    OrderSettings,
     ProductSetting,
     Site,
 )
@@ -83,18 +82,6 @@ async def currencies(session: AsyncSession) -> Currencies:
     )
 
 
-async def order_settings(session: AsyncSession) -> OrderSettings:
-    return await _singleton(
-        session,
-        OrderSettings,
-        {
-            "ticket_margin_minutes": defaults.DEFAULT_TICKET_MARGIN_MINUTES,
-            "reprice_tolerance": defaults.DEFAULT_REPRICE_TOLERANCE,
-            "hold_fallback_minutes": defaults.DEFAULT_HOLD_FALLBACK_MINUTES,
-        },
-    )
-
-
 async def features(session: AsyncSession) -> Features:
     return await _singleton(
         session, Features, {"flags": dict(defaults.FEATURE_DEFAULTS)}
@@ -128,7 +115,6 @@ async def products(session: AsyncSession) -> list[ProductSetting]:
 __all__ = [
     "branding",
     "currencies",
-    "order_settings",
     "features",
     "languages",
     "products",

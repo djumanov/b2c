@@ -2,7 +2,7 @@
 
 * ``/api/v1/public/*``  — website and Flutter app, subject ``aud: public``
 * ``/api/v1/admin/*``   — React panel, subject ``aud: admin``
-* ``/api/v1/webhooks/*``— payment provider callbacks, no auth, signature checked
+* ``/api/v1/webhooks/*``— provider callbacks, no auth, signature checked
 
 The first two use ``EnvelopeRoute``; webhooks deliberately do not, because
 their response shape is the provider's protocol (API.md §40).
@@ -29,10 +29,7 @@ from app.modules.customers import router_public as customers_public
 from app.modules.integrations import router_admin as integrations_admin
 from app.modules.leads import router_admin as leads_admin
 from app.modules.leads import router_public as leads_public
-from app.modules.orders import router_public as orders_public
 from app.modules.payments import router_cards as payments_cards
-from app.modules.payments import router_public as payments_public
-from app.modules.payments import router_webhooks as payments_webhooks
 from app.modules.products import router_public as products_public
 from app.modules.settings import router_admin as settings_admin
 from app.modules.settings import router_public as settings_public
@@ -52,9 +49,9 @@ admin_router = enveloped_router(
 
 webhooks_router = APIRouter(prefix="/webhooks")
 
-# The provider callbacks. Bare router on purpose: their answers are their own
-# protocol's shape, not our envelope (API.md §40).
-webhooks_router.include_router(payments_webhooks.router)
+# Empty while the order system is rebuilt. The surface stays declared: a
+# provider callback answers in the provider's own shape, not our envelope
+# (API.md §40), and that exception is easier to keep than to rediscover.
 
 # --- module routers -----------------------------------------------------------
 # One line per module, in the order of API.md's sections. Modules that have not
@@ -64,8 +61,8 @@ public_router.include_router(settings_public.router)
 public_router.include_router(customers_public.router)
 public_router.include_router(customers_profile.router)
 public_router.include_router(customers_profile.passengers_router)
-# A profile path served by ``payments`` — the row is a provider token
-# (ARCHITECTURE.md §5).
+# A profile path served by ``payments`` — the row is an encrypted autofill
+# record, not a provider token (ARCHITECTURE.md §5).
 public_router.include_router(payments_cards.router)
 public_router.include_router(cms_public.faq_router)
 public_router.include_router(cms_public.pages_router)
@@ -73,9 +70,6 @@ public_router.include_router(leads_public.topics_router)
 public_router.include_router(leads_public.support_router)
 public_router.include_router(leads_public.router)
 public_router.include_router(catalog_public.router)
-public_router.include_router(orders_public.router)
-public_router.include_router(orders_public.transactions_router)
-public_router.include_router(payments_public.router)
 # Last on purpose: ``/{product}`` is a catch-all prefix, and mounting it after
 # every literal sibling removes even the theoretical chance of shadowing one.
 public_router.include_router(products_public.router)

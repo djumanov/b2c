@@ -24,8 +24,6 @@ from app.modules.settings.schemas import (
     FeaturesOut,
     LanguagesIn,
     LanguagesOut,
-    OrderSettingsIn,
-    OrderSettingsOut,
     ProductOut,
     SiteIn,
     SiteOut,
@@ -76,20 +74,6 @@ async def get_currencies(session: SessionDep) -> CurrenciesOut:
 @router.patch("/currencies/", summary="Change the currencies on offer")
 async def update_currencies(data: CurrenciesIn, session: SessionDep) -> CurrenciesOut:
     return await service.update_currencies(session, data)
-
-
-@router.get("/orders/", summary="The ticketing dials")
-async def get_order_settings(session: SessionDep) -> OrderSettingsOut:
-    return await service.get_order_settings(session)
-
-
-@router.patch("/orders/", summary="Change the ticketing dials")
-async def update_order_settings(
-    data: OrderSettingsIn, session: SessionDep
-) -> OrderSettingsOut:
-    """Not owner-only. These are operating numbers the daily ``admin`` role
-    tunes — unlike ``features/``, which removes a section from the site."""
-    return await service.update_order_settings(session, data)
 
 
 @router.get("/features/", summary="Which sections are switched on")

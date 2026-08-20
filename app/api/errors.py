@@ -36,7 +36,6 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "rate_limited"
     UPSTREAM_ERROR = "upstream_error"
     UPSTREAM_TIMEOUT = "upstream_timeout"
-    PAYMENT_FAILED = "payment_failed"
     OFFER_EXPIRED = "offer_expired"
     INTERNAL = "internal"
 
@@ -51,7 +50,6 @@ ERROR_STATUS: Final[dict[ErrorCode, int]] = {
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.UPSTREAM_ERROR: 502,
     ErrorCode.UPSTREAM_TIMEOUT: 504,
-    ErrorCode.PAYMENT_FAILED: 400,
     ErrorCode.OFFER_EXPIRED: 409,
     ErrorCode.INTERNAL: 500,
 }
@@ -146,12 +144,6 @@ class UpstreamTimeout(AppError):
     """Upstream did not answer inside the budget (API.md §12: 40 s / 15 s)."""
 
     code = ErrorCode.UPSTREAM_TIMEOUT
-
-
-class PaymentFailed(AppError):
-    """The payment was declined; the reason is in ``message``."""
-
-    code = ErrorCode.PAYMENT_FAILED
 
 
 class OfferExpired(AppError):
@@ -259,7 +251,6 @@ __all__ = [
     "InternalError",
     "NotFound",
     "OfferExpired",
-    "PaymentFailed",
     "RateLimited",
     "Unauthorized",
     "UpstreamError",

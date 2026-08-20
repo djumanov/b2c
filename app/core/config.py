@@ -58,18 +58,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_version: str = "0.1.0"
 
-    # --- development tooling ---
-    # Registers the fake payment adapter (``providers/payments/demo.py``) so the
-    # card endpoints can be exercised without a merchant account.
-    #
-    # This is env rather than a database setting, and it does not break the
-    # "config, not code, and not env" rule (PROJECT.md §7). That rule asks "could
-    # two clients want different values?" — no client ever wants a payment
-    # provider that only pretends to take money. It belongs with ``debug`` and
-    # ``log_level``: a property of the installation's *mode*, not of its owner's
-    # preferences. Refused outright unless ``debug`` is on, below.
-    payments_demo_adapter: bool = False
-
     # --- database (PostgreSQL) ---
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -162,17 +150,6 @@ class Settings(BaseSettings):
         failure is the one that happens at boot with a message — not the one
         discovered when somebody signs a token of their own.
         """
-        if self.payments_demo_adapter and not self.debug:
-            # Checked before the ``debug`` shortcut below, so it is the one
-            # placeholder rule that a production installation cannot opt out of.
-            # A fake payment provider on a live server would take real customers'
-            # cards and confirm them with a code printed in the log.
-            raise ValueError(
-                "PAYMENTS_DEMO_ADAPTER=true is a development-only switch and "
-                "requires DEBUG=true. It registers a payment provider that only "
-                "pretends to charge."
-            )
-
         if self.debug:
             return self
 

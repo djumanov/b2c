@@ -1,7 +1,7 @@
 """customer phone object
 
 Revision ID: 3c1f9a4d7e02
-Revises: 97fbdc8dac3f
+Revises: 49b3b6e5cc3a
 Create Date: 2026-08-18 11:40:00.000000
 
 Clients upgrade on their own schedule and may skip versions (PROJECT.md D10):
@@ -16,7 +16,7 @@ from alembic import op
 
 
 revision: str = "3c1f9a4d7e02"
-down_revision: str | None = "97fbdc8dac3f"
+down_revision: str | None = "49b3b6e5cc3a"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

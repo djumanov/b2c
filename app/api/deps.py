@@ -252,10 +252,9 @@ RATE_LIMITS: Final[dict[str, tuple[int, int]]] = {
     # kind: (max requests, window seconds)
     "auth": (5, 60),
     "search": (30, 60),
-    # Tighter than the rest of the public surface because every request behind
-    # it spends the installation's own merchant credentials at the provider:
-    # this limit protects the installation's account, not the customer (API.md
-    # §14).
+    # Tighter than the rest of the public surface: what sits behind it writes
+    # card data, and a bucket that lets a script hammer it is a bucket that
+    # lets a script test card numbers (API.md §14).
     "payment": (10, 60),
     "public": (120, 60),
     "admin": (300, 60),

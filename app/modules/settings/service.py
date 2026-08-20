@@ -23,7 +23,7 @@ from app.db.session import get_sessionmaker
 from app.modules.audit import context as audit_context
 from app.modules.integrations import service as integrations_service
 from app.modules.settings import cache, defaults, repository
-from app.modules.settings.models import Branding, OrderSettings, Site
+from app.modules.settings.models import Branding, Site
 from app.modules.settings.schemas import (
     BrandingIn,
     BrandingOut,
@@ -33,8 +33,6 @@ from app.modules.settings.schemas import (
     FeaturesOut,
     LanguagesIn,
     LanguagesOut,
-    OrderSettingsIn,
-    OrderSettingsOut,
     ProductOut,
     SiteConfigOut,
     SiteIn,
@@ -199,49 +197,6 @@ async def update_languages(session: AsyncSession, data: LanguagesIn) -> Language
     after = LanguagesOut(default=row.default, available=row.available)
     audit_context.describe(changes=audit_context.diff(before, after.model_dump()))
     return after
-
-
-def _order_settings_out(row: OrderSettings) -> OrderSettingsOut:
-    return OrderSettingsOut(
-        ticket_margin_minutes=row.ticket_margin_minutes,
-        reprice_tolerance=row.reprice_tolerance,
-        hold_fallback_minutes=row.hold_fallback_minutes,
-    )
-
-
-async def get_order_settings(session: AsyncSession) -> OrderSettingsOut:
-    return _order_settings_out(await repository.order_settings(session))
-
-
-async def update_order_settings(
-    session: AsyncSession, data: OrderSettingsIn
-) -> OrderSettingsOut:
-    row = await repository.order_settings(session)
-    before = _order_settings_out(row).model_dump()
-
-    if data.ticket_margin_minutes is not None:
-        row.ticket_margin_minutes = data.ticket_margin_minutes
-    if data.reprice_tolerance is not None:
-        row.reprice_tolerance = data.reprice_tolerance
-    if data.hold_fallback_minutes is not None:
-        row.hold_fallback_minutes = data.hold_fallback_minutes
-
-    await _save(session)
-    after = _order_settings_out(row)
-    audit_context.describe(changes=audit_context.diff(before, after.model_dump()))
-    return after
-
-
-async def order_settings() -> OrderSettingsOut:
-    """The dials, for a caller with no request session.
-
-    The ticketing task is one: it runs on a worker and opens its own session.
-    Unlike ``site-config`` these are not cached — they are read once per
-    ticketing attempt, which is rare, and a stale margin is the kind of wrong
-    that only shows up when a hold lapses.
-    """
-    async with get_sessionmaker()() as session:
-        return await get_order_settings(session)
 
 
 async def get_currencies(session: AsyncSession) -> CurrenciesOut:

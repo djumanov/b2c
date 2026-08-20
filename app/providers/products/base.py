@@ -13,7 +13,7 @@ vertical's extra paths from its declaration, and answers ``404 not_found`` for
 a step the adapter does not implement (ARCHITECTURE.md §6).
 
 The acceptance test for phase 3 is a diff: adding the four remaining verticals
-must not change the flow or the saga. If it does, this port was designed wrong
+must not change the flow. If it does, this port was designed wrong
 (PROJECT.md §15).
 
 The port is declared now because the contract needs all five; only ``flight``
@@ -78,13 +78,10 @@ class ProductAdapter(Protocol):
     adapter validates the request lightly and forwards it in GTS's own shape
     (API.md §20).
 
-    **This protocol is the search flow only.** ``book`` and ``cancel`` used to
-    be here as passthroughs; they moved to ``OrderOperations`` in
-    ``products/orders.py`` when they started answering in our own types, which
-    is the whole difference between a pipe and an anti-corruption layer
-    (order-system/03-design.md ``O4``). ``FlowStep.BOOKING`` still belongs to
-    ``supports()`` — the router's gate is about which paths exist, not about
-    which protocol serves them.
+    **This protocol is the search flow only.** ``FlowStep.BOOKING`` stays in the
+    catalogue below because it names a step of GTS's flow, not a method of
+    ours; no adapter declares it while the order system is being rebuilt, so
+    the router's gate answers ``404`` for it.
     """
 
     code: ProductCode
