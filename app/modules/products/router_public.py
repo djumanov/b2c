@@ -18,9 +18,12 @@ public. A presented but invalid token still 401s — ``OptionalCustomer``
 forgives absence, not garbage — and the search rate limit keys on the subject
 when there is one, the IP otherwise.
 
-**Booking and cancelling are not here.** They belonged to the order system,
-which was removed to be rebuilt; ``FlowStep.BOOKING`` is still in the
-catalogue, no adapter declares it, and the gate below answers ``404``.
+**Booking is the flow's one authenticated, writing step.** The search steps
+relay GTS untouched; ``booking/`` holds the seat at GTS and records the order
+(``modules/orders``), so it demands a customer token and the tighter
+``payment`` rate limit. The adapter gate is declared **before** the token
+check so a vertical this installation does not sell answers ``404`` even to
+an anonymous caller (API.md §41).
 
 **The bodies stay ``dict``, the documentation does not.** Every step carries an
 ``openapi_extra`` from ``products/openapi.py`` describing what it sends and
@@ -34,12 +37,14 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Path
 
-from app.api.deps import LanguageDep, OptionalCustomer, RateLimit
+from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
 from app.api.errors import NotFound
 from app.db.session import SessionDep
+from app.modules.orders.schemas import BookingResultOut
 from app.modules.products import service
 from app.modules.products.openapi import (
+    FLIGHT_BOOKING,
     FLIGHT_OFFERS,
     FLIGHT_SEARCH,
     FLIGHT_UPSELL,
@@ -151,6 +156,24 @@ async def verify(
     _customer: OptionalCustomer,
 ) -> dict[str, Any]:
     return await service.verify(session, adapter, payload)
+
+
+@router.post(
+    "/booking/",
+    status_code=201,
+    summary="Book a chosen offer",
+    dependencies=[Depends(RateLimit("payment"))],
+    openapi_extra=FLIGHT_BOOKING,
+)
+async def booking(
+    payload: dict[str, Any],
+    session: SessionDep,
+    # ``adapter`` before ``customer`` on purpose: a step that does not exist
+    # here must 404 before anybody is asked to log in (API.md §41).
+    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
+    customer: CurrentCustomer,
+) -> BookingResultOut:
+    return await service.book(session, adapter, payload, customer_id=customer.id)
 
 
 __all__ = ["RequireProductStep", "router"]

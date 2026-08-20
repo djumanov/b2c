@@ -20,8 +20,12 @@ The port is declared now because the contract needs all five; only ``flight``
 is implemented in phase 2 (ARCHITECTURE.md §13.8).
 """
 
+import datetime as dt
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final, Protocol, runtime_checkable
+
+from pydantic import BaseModel
 
 from app.providers.gts.base import GtsClient
 
@@ -66,6 +70,38 @@ class FlowStep(StrEnum):
 SEARCH_IN_PROCESS: Final = "In process"
 
 
+class BookedOrder(BaseModel):
+    """What ``book()`` hands back: the GTS answer, read once.
+
+    GTS spells its booking answer inconsistently between installations
+    (``firstname`` vs ``first_name``, prices flat or nested, a deadline that
+    may be an ISO string, minutes or seconds), so reading it is the adapter's
+    job and happens exactly once, here. The typed fields are what the orders
+    module stores in columns; ``raw`` is the full inner answer, kept verbatim.
+
+    Every field an inconsistent GTS might omit is optional — a booking with a
+    confirmed ``gts_order_number`` is worth recording even when a price or a
+    deadline could not be read.
+    """
+
+    #: Echoed from the request, not read from the answer — the pair that names
+    #: the search and the offer this booking came from.
+    request_id: str
+    offer_id: str
+
+    gts_order_number: int
+    gts_order_uid: str | None = None
+    gts_status: str
+    pnr: str | None = None
+    trip_type: str | None = None
+    amount: Decimal | None = None
+    currency: str | None = None
+    route_summary: str | None = None
+    passenger_count: int | None = None
+    ticket_time_limit_at: dt.datetime | None = None
+    raw: dict[str, Any]
+
+
 @runtime_checkable
 class ProductAdapter(Protocol):
     """What every vertical implements.
@@ -78,10 +114,10 @@ class ProductAdapter(Protocol):
     adapter validates the request lightly and forwards it in GTS's own shape
     (API.md §20).
 
-    **This protocol is the search flow only.** ``FlowStep.BOOKING`` stays in the
-    catalogue below because it names a step of GTS's flow, not a method of
-    ours; no adapter declares it while the order system is being rebuilt, so
-    the router's gate answers ``404`` for it.
+    ``book()`` is the one step that answers in our own type: the search steps
+    relay GTS's shape untouched, but a booking is recorded in our database, so
+    its answer is read once — here, behind the port — into a ``BookedOrder``
+    the orders module can store without knowing GTS's spellings.
     """
 
     code: ProductCode
@@ -112,6 +148,10 @@ class ProductAdapter(Protocol):
         """Re-check price and availability before booking."""
         ...
 
+    async def book(self, client: GtsClient, payload: dict[str, Any]) -> BookedOrder:
+        """Book one verified offer at GTS. Never retried, never degraded."""
+        ...
+
 
 class ProductRegistry:
     """Product code → adapter. Adding a vertical is one registration."""
@@ -137,6 +177,7 @@ registry = ProductRegistry()
 
 __all__ = [
     "SEARCH_IN_PROCESS",
+    "BookedOrder",
     "FlowStep",
     "ProductAdapter",
     "ProductCode",

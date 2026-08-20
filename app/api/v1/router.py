@@ -29,6 +29,7 @@ from app.modules.customers import router_public as customers_public
 from app.modules.integrations import router_admin as integrations_admin
 from app.modules.leads import router_admin as leads_admin
 from app.modules.leads import router_public as leads_public
+from app.modules.orders import router_public as orders_public
 from app.modules.payments import router_cards as payments_cards
 from app.modules.products import router_public as products_public
 from app.modules.settings import router_admin as settings_admin
@@ -70,6 +71,7 @@ public_router.include_router(leads_public.topics_router)
 public_router.include_router(leads_public.support_router)
 public_router.include_router(leads_public.router)
 public_router.include_router(catalog_public.router)
+public_router.include_router(orders_public.router)
 # Last on purpose: ``/{product}`` is a catch-all prefix, and mounting it after
 # every literal sibling removes even the theoretical chance of shadowing one.
 public_router.include_router(products_public.router)

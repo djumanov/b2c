@@ -17,9 +17,9 @@ Two details that are easy to get wrong and expensive to get wrong:
   at the same moment; without a lock they all re-authenticate at once, and GTS
   sees a burst of logins from one machine account.
 The canonical status vocabulary is **not** here: it is ours, not the
-boundary's, and it belongs to whichever module owns the states. Nothing owns
-them today — the order system was removed to be rebuilt — so the codes above
-are relayed and nothing maps them.
+boundary's, and it belongs to the module that owns the states —
+``modules/orders`` keeps GTS's code verbatim in ``gts_status`` beside its own
+``status``, and nothing in this package maps between them.
 
 * **Booking and payment are never retried** (API.md §12). A retried booking is
   a second booking. Only idempotent ``GET``s retry — twice, with backoff.
