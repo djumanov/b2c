@@ -163,6 +163,17 @@ class ProductAdapter(Protocol):
         a deadline and a ticket. A GET, so safe to ask as often as needed."""
         ...
 
+    async def ticket(self, client: GtsClient, order_number: int) -> OrderSnapshot:
+        """Ask GTS to issue the ticket, charging the agent's deposit.
+
+        A POST that moves money and seats: **never retried blindly**. The
+        answer is the order as GTS now sees it — ``TI`` with ticket numbers
+        when it issued at once, ``PW`` when it is still working, anything
+        else when it did not. An unreadable or absent answer is an exception
+        for the caller to settle by ``retrieve``.
+        """
+        ...
+
 
 class ProductRegistry:
     """Product code → adapter. Adding a vertical is one registration."""

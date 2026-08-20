@@ -35,6 +35,7 @@ from tests.conftest import (
     make_order,
     mock_gts_order,
     mock_gts_signin,
+    mock_gts_ticketing,
 )
 
 pytestmark = pytest.mark.usefixtures("gts_credential")
@@ -413,6 +414,7 @@ async def test_confirm_pays_and_stamps_card_last_used(
 ) -> None:
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_ticketing()
     order = await make_order(db_session, customer)
     card_id = await _save_card(db_session, customer)
     started = await _start(client, order, customer_headers, {"card_id": str(card_id)})
@@ -425,8 +427,8 @@ async def test_confirm_pays_and_stamps_card_last_used(
     assert data["payment"]["status"] == "paid"
     assert data["payment"]["paid_at"] is not None
     assert data["order"]["payment_status"] == "paid"
-    assert data["order"]["stage"] == "ticketing"
-    assert data["order"]["message"].startswith("To'lovingiz muvaffaqiyatli")
+    # Paid and ticketed in the same request — GTS issued at once.
+    assert data["order"]["stage"] == "ticketed"
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "paid"
     assert attempt.paid_at is not None
@@ -440,6 +442,9 @@ async def test_confirm_pays_and_stamps_card_last_used(
         "payment.started",
         "payment.confirming",
         "payment.paid",
+        "ticketing.processing",
+        "ticketing.requested",
+        "ticketing.ticketed",
     ]
 
 
@@ -654,6 +659,7 @@ async def test_sweep_settles_confirming_via_status_paid(
 ) -> None:
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_ticketing()
     order = await make_order(db_session, customer)
     await _leave_confirming(client, order, customer_headers, fake_provider)
     await _age_attempt(
@@ -669,8 +675,7 @@ async def test_sweep_settles_confirming_via_status_paid(
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "paid"
     assert fake_provider.calls[-1] == ("status", {"reference": "ref-1"})
-    events = await _events(db_session, order)
-    assert events[-1] == "payment.paid"
+    assert "payment.paid" in await _events(db_session, order)
     paid = await db_session.scalar(
         select(OrderEvent).where(
             OrderEvent.order_id == order.id, OrderEvent.event == "payment.paid"

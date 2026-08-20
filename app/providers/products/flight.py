@@ -450,6 +450,31 @@ class FlightAdapter:
             **_snapshot(order_number, order).model_dump(),
         )
 
+    async def ticket(self, client: GtsClient, order_number: int) -> OrderSnapshot:
+        """``POST /v1/content/ticketing/`` — issue the ticket against our deposit.
+
+        ``payment_method: "deposit"`` is the only value GTS's collection
+        records: GTS charges the agreement's balance, the customer's money
+        having already been taken by us. The answer nests the order under
+        ``order``, not ``data`` — the one shape that made a bare ``post``
+        turn every success into a 502 — so the whole envelope is read and
+        the order looked for under ``order``, then ``data``, then flat.
+
+        GTS's own refusal (``status: "error"``) raises ``UpstreamError`` with
+        GTS's words; a deposit that is empty reads "user don't have enough
+        credits on account", and that is **our** failure, not the customer's.
+        """
+        envelope = await client.post_envelope(
+            "/v1/content/ticketing/",
+            json={"order_number": order_number, "payment_method": "deposit"},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        order = gts_order.order_body(envelope)
+        if order is None:
+            logger.warning("gts_ticketing_unreadable", keys=sorted(envelope))
+            raise UpstreamError("the GTS ticketing answer had an unexpected shape")
+        return _snapshot(order_number, order)
+
     async def retrieve(self, client: GtsClient, order_number: int) -> OrderSnapshot:
         """``GET /v1/orders/{n}/`` — the order as GTS holds it right now.
 
