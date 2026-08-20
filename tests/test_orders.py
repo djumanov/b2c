@@ -250,3 +250,136 @@ async def test_missing_order_is_404(
 async def test_list_requires_a_token(client: httpx.AsyncClient) -> None:
     response = await client.get(ORDERS_URL)
     assert response.status_code == 401
+
+
+# --- the lifecycle blocks ------------------------------------------------------------
+
+
+async def test_list_carries_the_three_statuses_and_stage(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    await _make_order(
+        db_session, customer, payment_status="paid", ticketing_status="failed"
+    )
+
+    response = await client.get(ORDERS_URL, headers=customer_headers)
+
+    assert response.status_code == 200
+    (item,) = response.json()["data"]
+    assert item["status"] == "booked"
+    assert item["payment_status"] == "paid"
+    assert item["ticketing_status"] == "failed"
+    assert item["stage"] == "ticketing_failed"
+
+
+async def test_detail_carries_ticketing_block_stage_and_message(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    order = await _make_order(db_session, customer)
+
+    response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["order"]["stage"] == "awaiting_payment"
+    assert data["order"]["message"].startswith("Bron qilindi")  # uz by default
+    assert data["order"]["cancel_reason"] is None
+    assert data["payment"]["status"] == "pending"
+    assert data["payment"]["payment_id"] is None
+    assert data["ticketing"]["status"] == "pending"
+    assert data["ticketing"]["tickets"] == []
+
+
+async def test_detail_message_follows_the_request_language(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    order = await _make_order(db_session, customer)
+    url = f"{ORDERS_URL}{order.id}/"
+
+    by_query = await client.get(url, params={"lang": "ru"}, headers=customer_headers)
+    by_header = await client.get(
+        url, headers={**customer_headers, "Accept-Language": "en"}
+    )
+
+    assert by_query.json()["data"]["order"]["message"].startswith("Бронирование")
+    assert by_header.json()["data"]["order"]["message"].startswith("Your booking")
+
+
+async def test_ticketing_failed_message_names_support_and_lists_tickets(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """The sentence the user asked for, with the panel's support contact, and
+    the ticket numbers GTS did issue read off the stored answer."""
+    from app.modules.settings import cache as settings_cache
+
+    await settings_cache.write(
+        {
+            "products": [{"code": "flight", "enabled": True}],
+            "site": {"support_phone": "+998 90 123 45 67", "support_email": None},
+        }
+    )
+    order = await _make_order(
+        db_session,
+        customer,
+        payment_status="paid",
+        ticketing_status="failed",
+        ticketing_error="BOOKING: save_booking 403: user don't have enough credits",
+        gts_response={
+            "order_number": 61453,
+            "passengers": [
+                {**PASSENGER, "ticket_number": "7653081297644"},
+                {"firstname": "Malika", "lastname": "Aliyeva", "ticket_number": None},
+            ],
+        },
+    )
+
+    response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
+
+    data = response.json()["data"]
+    assert data["order"]["stage"] == "ticketing_failed"
+    message = data["order"]["message"]
+    assert "support xizmatiga murojaat qiling: +998 90 123 45 67." in message
+    assert data["ticketing"]["status"] == "failed"
+    assert data["ticketing"]["error"].startswith("BOOKING: save_booking 403")
+    assert data["ticketing"]["tickets"] == [
+        {"passenger": "Jasur Aliyev", "ticket_number": "7653081297644"}
+    ]
+    # The list does not need a passport to name a ticket holder either.
+    listed = await client.get(ORDERS_URL, headers=customer_headers)
+    assert _keys(listed.json()).isdisjoint(PRIVATE_KEYS)
+
+
+async def test_cancelled_before_payment_reads_cancelled(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    from app.db.mixins import utcnow
+
+    order = await _make_order(
+        db_session,
+        customer,
+        status="cancelled",
+        cancel_reason="expired",
+        cancelled_at=utcnow(),
+    )
+
+    response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
+
+    data = response.json()["data"]
+    assert data["order"]["stage"] == "expired"
+    assert data["order"]["cancel_reason"] == "expired"
+    assert data["payment"]["status"] == "cancelled"

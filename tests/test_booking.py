@@ -111,10 +111,10 @@ def _gts_order(**overrides: Any) -> dict[str, Any]:
     return order
 
 
-def _mock_booking(data: Any = None) -> None:
+def _mock_booking(data: Any = None) -> respx.Route:
     """The booking answer. Live GTS sends the order number and nothing else."""
     answer = {"order_number": ORDER_NUMBER} if data is None else data
-    respx.post(f"{GTS}/v1/content/booking/").mock(
+    return respx.post(f"{GTS}/v1/content/booking/").mock(
         return_value=httpx.Response(200, json=_gts_envelope(answer))
     )
 
@@ -372,3 +372,192 @@ async def test_unknown_product_is_404(
         "/api/v1/public/train/booking/", json=PAYLOAD, headers=customer_headers
     )
     assert response.status_code == 404
+
+
+# --- idempotency (API.md §10) -------------------------------------------------------
+
+
+@respx.mock
+async def test_same_booking_body_replays_fresh_order_not_second_seat(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """A double tap books once — and the repeat answers with the order as it
+    stands now, not as it stood when booked."""
+    _mock_signin()
+    booking_route = _mock_booking()
+    _mock_order(_gts_order())
+
+    first = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+    assert first.status_code == 201
+    order_id = first.json()["data"]["order"]["id"]
+
+    # Something moved the order in the meantime (the payment step, say).
+    row = await db_session.scalar(select(Order))
+    assert row is not None
+    row.payment_status = "paid"
+    await db_session.commit()
+
+    second = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+
+    assert second.status_code == 201
+    data = second.json()["data"]
+    assert data["order"]["id"] == order_id
+    assert data["order"]["payment_status"] == "paid"
+    assert data["order"]["stage"] == "ticketing"
+    assert booking_route.call_count == 1
+    assert await _order_count(db_session) == 1
+
+
+@respx.mock
+async def test_booking_in_flight_duplicate_is_409(
+    client: httpx.AsyncClient,
+    customer: Any,
+    customer_headers: dict[str, str],
+    fake_redis: Any,
+) -> None:
+    """The twin of a request that is still running waits, it does not book."""
+    import json
+
+    from app.api.idempotency import canonical, derived_key, fingerprint
+
+    body = json.dumps(PAYLOAD).encode()
+    subject = f"sub:{customer.id}"
+    key = derived_key(subject, "POST", "/api/v1" + BOOKING_URL[7:], body)
+    await fake_redis.set(
+        f"idempotency:{key}",
+        json.dumps(
+            {
+                "fingerprint": fingerprint(
+                    subject, "POST", "/api/v1" + BOOKING_URL[7:], canonical(body)
+                ),
+                "response": "__in_flight__",
+            }
+        ),
+    )
+
+    response = await client.post(
+        BOOKING_URL,
+        content=body,
+        headers={**customer_headers, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "conflict"
+
+
+@respx.mock
+async def test_gts_error_releases_the_key(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """A refusal is final for that attempt, not for the key: fix and retry."""
+    _mock_signin()
+    route = respx.post(f"{GTS}/v1/content/booking/").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "status": "error",
+                    "message": "no seats",
+                    "code": -100,
+                    "data": None,
+                },
+            ),
+            httpx.Response(200, json=_gts_envelope({"order_number": ORDER_NUMBER})),
+        ]
+    )
+    _mock_order(_gts_order())
+
+    first = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+    assert first.status_code == 502
+    second = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+    assert second.status_code == 201
+    assert route.call_count == 2
+    assert await _order_count(db_session) == 1
+
+
+@respx.mock
+async def test_gts_timeout_keeps_the_claim(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """After a timeout GTS may be holding a seat we could not name — the
+    retry is made to wait out the claim rather than book a second one."""
+    _mock_signin()
+    route = respx.post(f"{GTS}/v1/content/booking/").mock(
+        side_effect=httpx.ReadTimeout("GTS did not answer")
+    )
+
+    first = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+    assert first.status_code == 504
+    second = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+    assert second.status_code == 409
+    assert route.call_count == 1
+    assert await _order_count(db_session) == 0
+
+
+@respx.mock
+async def test_supplied_key_is_bound_to_the_subject(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """Another customer sending my key and my body must not read my order."""
+    from tests.conftest import bearer, make_customer
+
+    _mock_signin()
+    _mock_booking()
+    _mock_order(_gts_order())
+    headers = {**customer_headers, "Idempotency-Key": "shared-key-1"}
+
+    first = await client.post(BOOKING_URL, json=PAYLOAD, headers=headers)
+    assert first.status_code == 201
+
+    stranger = await make_customer(db_session, "stranger@example.com")
+    second = await client.post(
+        BOOKING_URL,
+        json=PAYLOAD,
+        headers={**bearer(stranger), "Idempotency-Key": "shared-key-1"},
+    )
+    assert second.status_code == 422
+    assert second.json()["errors"][0]["field"] == "Idempotency-Key"
+
+
+@respx.mock
+async def test_booking_writes_created_event_and_lifecycle_defaults(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    from app.modules.orders.models import OrderEvent
+
+    _mock_signin()
+    _mock_booking()
+    _mock_order(_gts_order())
+
+    response = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["order"]["payment_status"] == "pending"
+    assert data["order"]["ticketing_status"] == "pending"
+    assert data["order"]["stage"] == "awaiting_payment"
+    assert data["order"]["message"]
+    assert data["ticketing"] == {
+        "status": "pending",
+        "requested_at": None,
+        "ticketed_at": None,
+        "tickets": [],
+        "error": None,
+    }
+    assert data["payment"]["payment_id"] is None
+
+    event = await db_session.scalar(select(OrderEvent))
+    assert event is not None
+    assert event.event == "order.created"
+    assert event.actor == "customer"
+    assert str(event.order_id) == data["order"]["id"]
+    assert event.data == {"gts_order_number": ORDER_NUMBER}

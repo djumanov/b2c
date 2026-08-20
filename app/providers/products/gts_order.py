@@ -68,4 +68,37 @@ def passenger_names(body: dict[str, Any]) -> list[dict[str, str | None]]:
     ]
 
 
-__all__ = ["passenger_names", "routes"]
+def tickets(body: dict[str, Any]) -> list[dict[str, str]]:
+    """Issued tickets — ``passengers[].ticket_number`` where GTS filled it in.
+
+    Named by passenger (the card's "Azimjon Yusufov — 7653081297644"), using
+    the same two spellings ``passenger_names`` reads. A passenger without a
+    number is simply absent: before ticketing the list is empty, after a
+    partial issue it is short, and both are facts rather than errors.
+    """
+    found: list[dict[str, str]] = []
+    people = body.get("passengers")
+    if not isinstance(people, list):
+        return found
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        number = person.get("ticket_number")
+        if isinstance(number, int) and not isinstance(number, bool):
+            number = str(number)
+        if not isinstance(number, str) or not number:
+            continue
+        names = (
+            _text(person.get("first_name") or person.get("firstname")),
+            _text(person.get("last_name") or person.get("lastname")),
+        )
+        found.append(
+            {
+                "passenger": " ".join(part for part in names if part),
+                "ticket_number": number,
+            }
+        )
+    return found
+
+
+__all__ = ["passenger_names", "routes", "tickets"]

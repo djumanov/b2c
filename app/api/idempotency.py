@@ -81,13 +81,18 @@ def _record_key(key: str) -> str:
     return f"{_PREFIX}:{key}"
 
 
-def fingerprint(method: str, path: str, body: bytes) -> str:
-    """Identify the request a key was first used for."""
+def fingerprint(subject: str, method: str, path: str, body: bytes) -> str:
+    """Identify the request a key was first used for.
+
+    The subject is part of it on purpose. A supplied key lives in one flat
+    namespace, so without it a caller who learned another customer's key and
+    sent the same body would be handed that customer's answer; with it the
+    record simply does not match and the reuse is refused as a ``422``.
+    """
     digest = hashlib.sha256()
-    digest.update(method.encode())
-    digest.update(b"\0")
-    digest.update(path.encode())
-    digest.update(b"\0")
+    for part in (subject, method, path):
+        digest.update(part.encode())
+        digest.update(b"\0")
     digest.update(body)
     return digest.hexdigest()
 
@@ -184,6 +189,7 @@ async def idempotency_key(
     ] = None,
 ) -> IdempotencyContext:
     body = await request.body()
+    subject = request_subject(request)
     supplied = (idempotency_key or "").strip()
     if supplied.startswith(_DERIVED_PREFIX):
         raise ValidationFailed(
@@ -192,15 +198,15 @@ async def idempotency_key(
         )
     if supplied:
         key = supplied
-        current = fingerprint(request.method, request.url.path, body)
+        current = fingerprint(subject, request.method, request.url.path, body)
     else:
         # Derived from the canonical body, and fingerprinted over the same
         # bytes: the key and the fingerprint then move together, so the
         # "reused for a different request" 422 cannot fire on this path.
-        key = derived_key(
-            request_subject(request), request.method, request.url.path, body
+        key = derived_key(subject, request.method, request.url.path, body)
+        current = fingerprint(
+            subject, request.method, request.url.path, canonical(body)
         )
-        current = fingerprint(request.method, request.url.path, canonical(body))
 
     redis = get_redis()
     record_key = _record_key(key)

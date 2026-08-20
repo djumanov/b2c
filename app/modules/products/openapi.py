@@ -537,7 +537,55 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                     "product": {"type": "string"},
                     "status": {
                         "type": "string",
-                        "enum": ["booked", "paid", "ticketed", "cancelled"],
+                        "enum": ["booked", "cancelled"],
+                        "description": "Is the booking alive?",
+                    },
+                    "payment_status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "paid",
+                            "failed",
+                            "refunding",
+                            "refunded",
+                            "refund_failed",
+                        ],
+                    },
+                    "ticketing_status": {
+                        "type": "string",
+                        "enum": ["pending", "processing", "ticketed", "failed"],
+                    },
+                    "stage": {
+                        "type": "string",
+                        "enum": [
+                            "awaiting_payment",
+                            "payment_processing",
+                            "payment_failed",
+                            "ticketing",
+                            "ticketed",
+                            "ticketing_failed",
+                            "cancelled",
+                            "expired",
+                            "refund_due",
+                            "refunding",
+                            "refunded",
+                        ],
+                        "description": (
+                            "The one label a screen shows, derived from the "
+                            "three statuses above."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "The sentence that goes with `stage`, in the "
+                            "request's language (`?lang=` / `Accept-Language`)."
+                        ),
+                    },
+                    "cancel_reason": {
+                        "type": "string",
+                        "enum": ["customer", "expired", "staff"],
+                        "nullable": True,
                     },
                     "gts_status": {
                         "type": "string",
@@ -554,6 +602,21 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                         "format": "date-time",
                         "nullable": True,
                     },
+                    "paid_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                    "ticketed_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                    "cancelled_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
                     "request_id": {"type": "string"},
                     "offer_id": {"type": "string"},
                     "created_at": {"type": "string", "format": "date-time"},
@@ -562,13 +625,24 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "payment": {
                 "type": "object",
                 "description": (
-                    "Derived, not yet a stored payment: pay this much "
-                    "before `pay_before`."
+                    "Where the money stands: pay this much before `pay_before`. "
+                    "`payment_id`, `card_last4` and `phone_hint` are filled once "
+                    "a payment attempt exists."
                 ),
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["pending", "paid", "cancelled"],
+                        "enum": [
+                            "pending",
+                            "awaiting_otp",
+                            "processing",
+                            "paid",
+                            "failed",
+                            "cancelled",
+                            "refunding",
+                            "refunded",
+                            "refund_failed",
+                        ],
                     },
                     "amount": _MONEY,
                     "pay_before": {
@@ -576,6 +650,55 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                         "format": "date-time",
                         "nullable": True,
                     },
+                    "payment_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": True,
+                    },
+                    "provider": {"type": "string", "nullable": True},
+                    "card_last4": {"type": "string", "nullable": True},
+                    "phone_hint": {"type": "string", "nullable": True},
+                    "paid_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                    "error": {"type": "string", "nullable": True},
+                },
+            },
+            "ticketing": {
+                "type": "object",
+                "description": (
+                    "Where the ticket stands. While `processing`, poll "
+                    "`GET /public/orders/{id}/`; the issued numbers arrive in "
+                    "`tickets`."
+                ),
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "processing", "ticketed", "failed"],
+                    },
+                    "requested_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                    "ticketed_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                    "tickets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "passenger": {"type": "string"},
+                                "ticket_number": {"type": "string"},
+                            },
+                        },
+                    },
+                    "error": {"type": "string", "nullable": True},
                 },
             },
             "order_data": {
@@ -594,6 +717,14 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "id": "5f0d87c1-9c58-4bff-8f95-6a1f61f4d1f7",
             "product": "flight",
             "status": "booked",
+            "payment_status": "pending",
+            "ticketing_status": "pending",
+            "stage": "awaiting_payment",
+            "message": (
+                "Bron qilindi. Chiptani olish uchun to'lovni belgilangan "
+                "muddatgacha amalga oshiring."
+            ),
+            "cancel_reason": None,
             "gts_status": "BO",
             "gts_order_number": 61453,
             "pnr": "UBPLKW",
@@ -602,6 +733,9 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "passenger_count": 1,
             "amount": {"amount": "287500.00", "currency": "UZS"},
             "ticket_time_limit_at": "2026-08-20T06:53:12Z",
+            "paid_at": None,
+            "ticketed_at": None,
+            "cancelled_at": None,
             "request_id": _REQUEST_ID,
             "offer_id": _OFFER_ID,
             "created_at": "2026-08-20T05:54:12Z",
@@ -610,6 +744,19 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "status": "pending",
             "amount": {"amount": "287500.00", "currency": "UZS"},
             "pay_before": "2026-08-20T06:53:12Z",
+            "payment_id": None,
+            "provider": None,
+            "card_last4": None,
+            "phone_hint": None,
+            "paid_at": None,
+            "error": None,
+        },
+        "ticketing": {
+            "status": "pending",
+            "requested_at": None,
+            "ticketed_at": None,
+            "tickets": [],
+            "error": None,
         },
         "order_data": {
             "order_number": 61453,
