@@ -12,13 +12,17 @@ holds no field map — only the two things a pipe still owes its caller:
 * **A shape check on the way back.** ``search/`` without a ``request_id`` is
   not an answer, whatever the envelope said.
 
-**The pipe ends at ``verify``.** Booking and everything after it belonged to
-the order system, which was removed to be rebuilt; the half of this adapter
-that answered in our own types went with it. What is left is the search flow,
-and it is a pipe the whole way through.
+**The pipe gains one stateful step: ``book``.** The search steps relay GTS's
+shape untouched, but a booking is recorded in our database, so its answer is
+read here — once, tolerantly — into a ``BookedOrder``. GTS spells the same
+answer differently between installations (``firstname`` vs ``first_name``, a
+price that is flat or nested, a deadline that is an ISO string, minutes or
+seconds), which is why every reader below reaches with ``.get`` and gives up
+to ``None`` rather than trusting one recorded example.
 """
 
 import datetime as dt
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pydantic
@@ -26,8 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
 from app.core.logging import get_logger
+from app.core.money import quantize
 from app.providers.gts.base import GtsClient, GtsTimeouts
-from app.providers.products.base import SEARCH_IN_PROCESS, FlowStep, ProductCode
+from app.providers.products.base import (
+    SEARCH_IN_PROCESS,
+    BookedOrder,
+    FlowStep,
+    ProductCode,
+)
 
 logger = get_logger(__name__)
 
@@ -78,6 +88,21 @@ class _FlightOfferRefIn(BaseModel):
     offer_id: str = Field(min_length=1)
 
 
+class _FlightBookingIn(BaseModel):
+    """The least a booking must carry: the chosen offer and who is flying.
+
+    Passenger fields are GTS's to validate — document rules differ per
+    provider and change without waiting for us. We refuse only a body that
+    could not possibly be a booking, before a GTS session is spent on it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    request_id: str = Field(min_length=1)
+    offer_id: str = Field(min_length=1)
+    passengers: list[dict[str, Any]] = Field(min_length=1)
+
+
 def _validated(model: type[BaseModel], payload: dict[str, Any]) -> None:
     """Run the shape check, turning pydantic's error into our catalogue's.
 
@@ -110,6 +135,72 @@ def _hide_failure(step: str, failure: AppError) -> None:
     )
 
 
+# --- booking-answer readers ---------------------------------------------------
+# Each reads one fact out of GTS's booking answer and answers ``None`` when the
+# spelling at hand does not carry it. A booking with a confirmed order number
+# is recorded even when a price or a deadline could not be read.
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
+    """The order's total and currency — ``price_info`` first, flat second."""
+    price_info = order.get("price_info")
+    source = price_info if isinstance(price_info, dict) else order
+    price = source.get("price")
+    if isinstance(price, bool) or not isinstance(price, int | float | str):
+        return None, None
+    try:
+        # ``str`` first: GTS sends JSON floats, and Decimal(0.1) would keep
+        # the binary noise a customer should never see.
+        amount = quantize(Decimal(str(price)))
+    except InvalidOperation:
+        return None, None
+    return amount, _text(source.get("currency"))
+
+
+def _route_summary(order: dict[str, Any]) -> str | None:
+    """``routes[].direction`` joined — ``"TAS-IST, IST-TAS"`` for a round trip."""
+    routes = order.get("routes")
+    if not isinstance(routes, list):
+        return None
+    directions = [route.get("direction") for route in routes if isinstance(route, dict)]
+    summary = ", ".join(part for part in directions if isinstance(part, str) and part)
+    return summary[:128] or None
+
+
+def _passenger_count(order: dict[str, Any]) -> int | None:
+    count = order.get("passengers_count")
+    if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+        return count
+    passengers = order.get("passengers")
+    if isinstance(passengers, list) and passengers:
+        return len(passengers)
+    return None
+
+
+#: ``ticket_time_limit`` has been seen as an ISO datetime, as minutes (120,
+#: 4319) and as seconds (288000). No number of minutes this large is a sane
+#: deadline, so the threshold splits the two numeric readings.
+_DEADLINE_SECONDS_THRESHOLD = 10_000
+
+
+def _ticket_deadline(value: Any) -> dt.datetime | None:
+    """When GTS releases the unpaid seat — best effort, ``None`` when unclear."""
+    if isinstance(value, str) and value:
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return None
+    seconds = value if value >= _DEADLINE_SECONDS_THRESHOLD else value * 60
+    return dt.datetime.now(dt.UTC) + dt.timedelta(seconds=seconds)
+
+
 class FlightAdapter:
     """``ProductAdapter`` for ``flight``.
 
@@ -125,6 +216,7 @@ class FlightAdapter:
                 FlowStep.OFFERS,
                 FlowStep.UPSELL,
                 FlowStep.VERIFY,
+                FlowStep.BOOKING,
             }
         )
 
@@ -232,6 +324,48 @@ class FlightAdapter:
         )
         data: dict[str, Any] = envelope.get("data") or {}
         return {**data, "search_status": envelope.get("status")}
+
+    async def book(self, client: GtsClient, payload: dict[str, Any]) -> BookedOrder:
+        """Book one offer — the step after ``verify`` cleared it.
+
+        Bare ``post``, not ``post_envelope``: a booking has no ``"In
+        process"`` state, so anything short of ``"success"`` is a failure the
+        client must see (a 502 with GTS's own words in ``meta.upstream``).
+        And **no degradation**: unlike ``offers/``, an error here must never
+        be softened into "keep polling" — nothing will improve.
+
+        The answer nests once more than the search steps: the client already
+        stripped GTS's envelope, and the order sits under a second ``data``
+        key beside ``message: "booked"``. No order number in there means we
+        could not name the seat GTS may now be holding — a 502, same as a
+        timeout, and nothing is written.
+        """
+        _validated(_FlightBookingIn, payload)
+        data = await client.post(
+            "/v1/content/booking/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
+        )
+        order = data.get("data")
+        if not isinstance(order, dict):
+            raise UpstreamError("the GTS booking returned an unexpected shape")
+        order_number = order.get("order_number")
+        if isinstance(order_number, bool) or not isinstance(order_number, int):
+            raise UpstreamError("the GTS booking returned an unexpected shape")
+        amount, currency = _booking_amount(order)
+        return BookedOrder(
+            request_id=str(payload["request_id"]),
+            offer_id=str(payload["offer_id"]),
+            gts_order_number=order_number,
+            gts_order_uid=_text(order.get("order_uid")),
+            gts_status=_text(order.get("status")) or "",
+            pnr=_text(order.get("gds_pnr")),
+            trip_type=_text(order.get("trip_type")),
+            amount=amount,
+            currency=currency,
+            route_summary=_route_summary(order),
+            passenger_count=_passenger_count(order),
+            ticket_time_limit_at=_ticket_deadline(order.get("ticket_time_limit")),
+            raw=order,
+        )
 
 
 __all__ = ["FlightAdapter"]
