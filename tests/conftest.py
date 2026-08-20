@@ -370,3 +370,48 @@ def fake_provider() -> Iterator[FakeProvider]:
     payment_providers.set_provider(provider)
     yield provider
     payment_providers.set_provider(None)
+
+
+def gts_ticketed_order(**overrides: Any) -> dict[str, Any]:
+    """The order as GTS's ticketing answer carries it — under ``order``."""
+    order: dict[str, Any] = {
+        "order_number": ORDER_NUMBER,
+        "status": "TI",
+        "gds_pnr": "UBPLKW",
+        "passengers": [
+            {
+                "passenger_type": "ADT",
+                "first_name": "AZIMJON",
+                "last_name": "YUSUFOV",
+                "passenger_id": "4faa37bc-91d1-4da1-ba3d-b22ef8ec8802",
+                "ticket_number": "7653081297644",
+            }
+        ],
+    }
+    order.update(overrides)
+    return order
+
+
+def mock_gts_ticketing(
+    order: dict[str, Any] | None = None, *, error: str | None = None
+) -> Any:
+    """``POST /v1/content/ticketing/``: the order under ``order`` (not ``data``),
+    or GTS's refusal — HTTP 200, ``status: "error"``, the reason in ``message``."""
+    import respx
+
+    if error is not None:
+        body: dict[str, Any] = {
+            "status": "error",
+            "message": error,
+            "code": -104,
+            "data": None,
+        }
+    else:
+        body = {
+            "status": "success",
+            "code": 100,
+            "order": order if order is not None else gts_ticketed_order(),
+        }
+    return respx.post(f"{GTS}/v1/content/ticketing/").mock(
+        return_value=httpx.Response(200, json=body)
+    )

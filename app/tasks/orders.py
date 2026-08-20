@@ -39,6 +39,10 @@ async def _reconcile() -> dict[str, int]:
                 session
             )
         async with get_sessionmaker()() as session:
+            counts["tickets_requested"] = await service.ticket_paid_pending(session)
+        async with get_sessionmaker()() as session:
+            counts["tickets_settled"] = await service.recheck_processing(session)
+        async with get_sessionmaker()() as session:
             counts["orders_expired"] = await service.expire_unpaid(session)
     finally:
         await dispose_engine()

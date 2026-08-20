@@ -3,9 +3,9 @@
 Bu hujjat buyurtma (order) hayotiy sikli bo'yicha **manba**. Kod unga
 ergashadi; farq topilsa avval shu fayl tuzatiladi, keyin kod.
 
-Bosqichlar: **1 — lifecycle**, **2 — to'lov** (port + sandbox provider, `payment_attempts`,
-sweep) — joriy; 3 — GTS ticketing; 4 — admin/support. Keyingi bosqichlarga
-tegishli qismlar shunday belgilangan.
+Bosqichlar: **1 — lifecycle**, **2 — to'lov** (port + sandbox provider,
+`payment_attempts`, sweep), **3 — GTS ticketing** — joriy; 4 — admin/support.
+Keyingi bosqichga tegishli qismlar shunday belgilangan.
 
 ## 1. Uchta lifecycle, bitta qator
 
@@ -150,6 +150,51 @@ tranzaksiyasida, `SKIP LOCKED`):
   daqiqa throttle; `confirming` urinish bor → o'tkazib yuboriladi; 10
   daqiqadan eski `started` → `abandoned`.
 
+## 4b. Ticketing — bitta POST, o'qish bilan yakunlanadi
+
+To'lov `paid` bo'lgan zahoti (o'sha so'rov ichida) `orders/service.py::ticket()`
+chaqiriladi — ticketing POST **faqat shu yerdan** ketadi:
+
+1. Qulf ostida `ticketing=processing`, `ticketing_attempts += 1`,
+   `ticketing_requested_at = now`, event `ticketing.requested`; **commit**.
+   Shundan keyin nima bo'lmasin (crash, timeout) so'rov tasodifan qayta
+   yuborilmaydi — sweep holatni GET bilan aniqlaydi.
+2. `POST /v1/content/ticketing/ {"order_number": n, "payment_method": "deposit"}`
+   (GTS **bizning depozit**dan yechadi). Javobdagi order `order` → `data` →
+   flat tartibida o'qiladi.
+3. GTS rad etsa (`status: "error"`) — xulosadan oldin **`GET /v1/orders/{n}/`**:
+   qayta yuborilgan so'rovni "already ticketed" deb rad etishi ticketed
+   orderni failed qilmasligi kerak. Timeout → `processing` qoladi.
+4. Natija qulf ostida, faqat order hali `processing` bo'lsa qo'llanadi
+   (`_apply_ticketing`). `paid` commit bo'lgach handler hech qachon raise
+   qilmaydi — ticketing xatosi log'ga, order `paid/pending` da qoladi, sweep
+   ko'taradi.
+
+Qaror jadvali (`_decide`) — POST javobi va har GET read-back uchun bir xil:
+
+| GTS `status` | Qaror |
+|---|---|
+| `TI` | `ticketed` (snapshot yangilanadi, chipta raqamlari `order_data` va `ticketing.tickets` da) |
+| `CB` · `VO` · `STATUS_VOID` · `TE` | `failed` — sabab: GTS matni yoki `GTS status X` |
+| `PW` | kutish; `now - ticketing_requested_at > 30 min` → `failed` |
+| POST rad etilgan (status `TI`/`PW` emas) | `failed`, GTS matni; `"enough credits"` → `ERROR gts_deposit_empty` (bizning balans — support to'ldirib retry qiladi) |
+| `BO` / `STATUS_BOOK` | `< 5 min` → kutish (javob yo'lda bo'lishi mumkin); `ticketing_attempts < 2` va muddat o'tmagan → **bir marta qayta yuboriladi**; aks holda `failed` "not confirmed by GTS" |
+| noma'lum / o'qib bo'lmadi | kutish; 30 min → `failed` |
+
+Konstantalar: `TICKETING_MAX_WAIT = 30 min`, `TICKETING_POST_GRACE = 5 min`,
+`TICKETING_MAX_SENDS = 2` (1 qilinsa avtomatik qayta yuborish yo'q) — GTS
+xususiyati, klient sozlamasi emas. Staff retry (4-bosqich) chegaraga
+bo'ysunmaydi.
+
+`ticketing_failed` **hech qachon avtomatik `cancelled` bo'lmaydi**: bron va pul
+joyida, refund — support ishi (`stage=ticketing_failed`, xabar support
+kontakt bilan).
+
+Sweep qismlari (30 s): `ticket_paid_pending` (to'langan, lekin chipta
+so'ralmagan — crash xavfsizlik to'ri) → `recheck_processing` (har `processing`
+order `GET` bilan, `gts_checked_at` tartibida, 20 tadan) → to'lov va muddat
+qismlari (4a).
+
 ## 5. API
 
 Javob shakli hamma joyda bir xil — `BookingResultOut`:
@@ -180,7 +225,7 @@ to'lanmasdan bekor bo'lgan order uchun `cancelled`.
 | GET | `/public/orders/` | customer | 1 — ro'yxat: `status`, `payment_status`, `ticketing_status`, `stage`, `routes`, yo'lovchi ismlari |
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
-| POST | `/public/orders/{id}/payment/confirm/` | customer | 2 — `{payment_id, otp}`; 200; so'ng ticketing (3) |
+| POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
 | GET/POST | `/admin/orders/…` | staff | 4 — ro'yxat, detal, `refund/`, `ticketing/retry/` |
 
 Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`
@@ -195,6 +240,6 @@ Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`
 - GTS'ga POST (booking, ticketing) **ko'r-ko'rona qayta yuborilmaydi**;
   natija noma'lum bo'lsa GET bilan o'qiladi.
 - GTS bizga hech qachon qo'ng'iroq qilmaydi — `processing` holatlarni
-  Celery beat sweep (30 s) `GET /v1/orders/{n}/` bilan yakunlaydi (3-bosqich).
+  Celery beat sweep (30 s) `GET /v1/orders/{n}/` bilan yakunlaydi.
 - Idempotency (Redis) — qulaylik qatlami; qulf va commit qilingan holat
   yolg'iz ushlab turishi shart.

@@ -26,8 +26,8 @@ schema, never a model row (the ``add_card → CardOut`` convention).
 """
 
 import uuid
-from datetime import timedelta
-from typing import Final
+from datetime import datetime, timedelta
+from typing import Final, Literal
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -107,6 +107,16 @@ EXPIRY_GRACE: Final = timedelta(minutes=10)
 EXPIRY_WITHOUT_DEADLINE: Final = timedelta(hours=24)
 #: How many rows one sweep pass handles per question.
 SWEEP_BATCH: Final = 20
+
+#: How long GTS may keep a ticket "in process" (``PW``) before we stop
+#: waiting and hand the order to support.
+TICKETING_MAX_WAIT: Final = timedelta(minutes=30)
+#: How long after our request an unchanged ``BO`` may still mean "the answer
+#: is on its way" rather than "GTS never got the request".
+TICKETING_POST_GRACE: Final = timedelta(minutes=5)
+#: How many times automated code sends the ticketing request at all — the
+#: first send and one re-send. More is a human's call (staff retry).
+TICKETING_MAX_SENDS: Final = 2
 
 
 # --- reading ---------------------------------------------------------------------
@@ -609,7 +619,7 @@ async def settle_attempt(
             )
         await session.commit()
         logger.info("payment_paid", order_id=str(order.id), attempt=str(attempt.id))
-        await _after_paid(session, order)
+        await _after_paid(session, order, actor=actor)
         return True
     if outcome.status == "failed":
         attempt.status = AttemptStatus.FAILED
@@ -634,8 +644,244 @@ async def settle_attempt(
     return False
 
 
-async def _after_paid(session: AsyncSession, order: Order) -> None:
-    """What follows a successful charge — the ticketing step, when it lands."""
+async def _after_paid(session: AsyncSession, order: Order, *, actor: str) -> None:
+    """What follows a successful charge: the ticket, asked for right away.
+
+    The money has moved by the time this runs, so nothing here may turn into
+    an error for the caller — a failure is logged and the order stays
+    ``paid`` / ``pending``, where the sweep picks it up.
+    """
+    try:
+        await ticket(session, order.id, actor=actor)
+    except Exception as exc:  # noqa: BLE001 - the sweep retries; the payment stands
+        logger.exception(
+            "ticketing_after_payment_failed",
+            order_id=str(order.id),
+            error=f"{type(exc).__name__}: {exc}"[:300],
+        )
+
+
+# --- ticketing -------------------------------------------------------------------
+
+Decision = Literal["ticketed", "failed", "wait", "resend"]
+
+
+async def ticket(session: AsyncSession, order_id: uuid.UUID, *, actor: str) -> None:
+    """Ask GTS to issue the ticket — the only place the ticketing POST is sent.
+
+    The order is marked ``processing`` and **committed before** the POST, so
+    whatever happens next the request is never repeated by accident: a
+    crash or a timeout leaves ``processing``, and the sweep settles it by
+    reading the order back. GTS's own refusal is read back too before it is
+    believed — a request re-sent for an order GTS had already ticketed is
+    refused, and the refusal must not mark a ticketed order failed.
+    """
+    client = await integrations_service.gts_client(session)
+    order = await _locked(session, order_id)
+    if order is None:
+        return
+    events = lifecycle.transition(
+        order, actor=actor, ticketing=TicketingStatus.PROCESSING
+    )
+    order.ticketing_attempts += 1
+    order.ticketing_requested_at = utcnow()
+    session.add_all(events)
+    session.add(
+        lifecycle.event(
+            order,
+            event="ticketing.requested",
+            actor=actor,
+            data={"send": order.ticketing_attempts},
+        )
+    )
+    await session.commit()
+    logger.info(
+        "ticketing_requested",
+        order_id=str(order.id),
+        gts_order_number=order.gts_order_number,
+        send=order.ticketing_attempts,
+    )
+
+    adapter = _adapter(order)
+    error: str | None = None
+    snapshot: OrderSnapshot | None
+    try:
+        snapshot = await adapter.ticket(client, order.gts_order_number)
+    except UpstreamTimeout as exc:
+        logger.warning(
+            "ticketing_answer_unknown", order_id=str(order.id), error=str(exc)
+        )
+        return
+    except UpstreamError as exc:
+        error = exc.message
+        try:
+            snapshot = await adapter.retrieve(client, order.gts_order_number)
+        except (UpstreamError, UpstreamTimeout):
+            snapshot = None
+    await _apply_ticketing(session, order_id, snapshot, error=error, actor=actor)
+
+
+def _decide(
+    order: Order, status: str | None, error: str | None, *, now: datetime
+) -> tuple[Decision, str | None]:
+    """What GTS's current status means for an order we asked a ticket for.
+
+    One table for the POST's answer and for every later read-back; ``error``
+    is GTS's refusal text when the POST itself was refused.
+    """
+    if gts_order.is_ticketed(status):
+        return "ticketed", None
+    if gts_order.is_released(status) or status == "TE":
+        return "failed", error or f"GTS status {status}"
+    requested = order.ticketing_requested_at or now
+    waited = now - requested
+    if gts_order.is_waiting(status):
+        if waited > TICKETING_MAX_WAIT:
+            return "failed", "GTS did not issue the ticket within the waiting time"
+        return "wait", None
+    if error is not None:
+        return "failed", error
+    if gts_order.is_held(status):
+        # Still ``BO``: GTS shows no sign of our request. Give the answer its
+        # grace, re-send once while the hold is alive, then stop guessing.
+        if waited < TICKETING_POST_GRACE:
+            return "wait", None
+        deadline = order.ticket_time_limit_at
+        if order.ticketing_attempts < TICKETING_MAX_SENDS and (
+            deadline is None or deadline > now
+        ):
+            return "resend", None
+        return "failed", "the ticketing request was not confirmed by GTS"
+    if waited > TICKETING_MAX_WAIT:
+        return "failed", "GTS did not issue the ticket within the waiting time"
+    return "wait", None
+
+
+async def _apply_ticketing(
+    session: AsyncSession,
+    order_id: uuid.UUID,
+    snapshot: OrderSnapshot | None,
+    *,
+    error: str | None,
+    actor: str,
+    skip_locked: bool = False,
+) -> Decision:
+    """Apply what GTS says to a ``processing`` order — once, under the lock."""
+    order = await _locked(session, order_id, skip_locked=skip_locked)
+    if order is None or order.ticketing_status != TicketingStatus.PROCESSING:
+        await session.rollback()
+        return "wait"
+    now = utcnow()
+    if snapshot is not None:
+        apply_snapshot(order, snapshot)
+    else:
+        order.gts_checked_at = now
+    status = snapshot.gts_status if snapshot is not None else None
+    decision, reason = _decide(order, status, error, now=now)
+
+    if decision == "ticketed":
+        order.ticketing_error = None
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=actor,
+                ticketing=TicketingStatus.TICKETED,
+                data={"gts_status": status},
+            )
+        )
+        logger.info("order_ticketed", order_id=str(order.id))
+    elif decision == "failed":
+        order.ticketing_error = (reason or "")[:500] or None
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=actor,
+                ticketing=TicketingStatus.FAILED,
+                note=order.ticketing_error,
+                data={"gts_status": status},
+            )
+        )
+        if gts_order.is_deposit_empty(reason):
+            # Our balance at GTS, not the customer's card: an alarm, and a
+            # staff retry once the deposit is topped up.
+            logger.error(
+                "gts_deposit_empty", order_id=str(order.id), error=order.ticketing_error
+            )
+        else:
+            logger.warning(
+                "ticketing_failed",
+                order_id=str(order.id),
+                gts_status=status,
+                error=order.ticketing_error,
+            )
+    await session.commit()
+    return decision
+
+
+async def recheck_processing(session: AsyncSession) -> int:
+    """Read every order that is waiting on GTS back, and settle the ones it can.
+
+    The sweep's third question. Returns how many orders moved (to ticketed
+    or failed); a re-send counts as a move too, since the request went out.
+    """
+    client = await integrations_service.gts_client(session)
+    rows = (
+        await session.scalars(
+            live(Order)
+            .where(Order.ticketing_status == TicketingStatus.PROCESSING)
+            .order_by(Order.gts_checked_at.nulls_first(), Order.ticketing_requested_at)
+            .limit(SWEEP_BATCH)
+        )
+    ).all()
+    moved = 0
+    for probe in rows:
+        request_id_var.set(new_request_id())
+        snapshot: OrderSnapshot | None
+        try:
+            snapshot = await _adapter(probe).retrieve(client, probe.gts_order_number)
+        except (UpstreamError, UpstreamTimeout) as exc:
+            logger.warning(
+                "ticketing_recheck_unread", order_id=str(probe.id), error=str(exc)
+            )
+            snapshot = None
+        decision = await _apply_ticketing(
+            session,
+            probe.id,
+            snapshot,
+            error=None,
+            actor=lifecycle.SYSTEM,
+            skip_locked=True,
+        )
+        if decision == "resend":
+            await ticket(session, probe.id, actor=lifecycle.SYSTEM)
+        if decision != "wait":
+            moved += 1
+    return moved
+
+
+async def ticket_paid_pending(session: AsyncSession) -> int:
+    """Paid orders nobody asked a ticket for — the crash between the two.
+
+    ``settle_attempt`` commits the payment and then asks for the ticket; a
+    worker that dies in between leaves ``paid`` / ``pending``, and this is
+    the safety net that notices.
+    """
+    rows = (
+        await session.scalars(
+            live(Order)
+            .where(
+                Order.status == OrderStatus.BOOKED,
+                Order.payment_status == PaymentStatus.PAID,
+                Order.ticketing_status == TicketingStatus.PENDING,
+            )
+            .order_by(Order.paid_at)
+            .limit(SWEEP_BATCH)
+        )
+    ).all()
+    for probe in rows:
+        request_id_var.set(new_request_id())
+        await ticket(session, probe.id, actor=lifecycle.SYSTEM)
+    return len(rows)
 
 
 # --- the sweep (tasks/orders.py) ---------------------------------------------------
@@ -779,13 +1025,19 @@ __all__ = [
     "EXPIRY_WITHOUT_DEADLINE",
     "PAYMENT_CONFIRM_MAX_WAIT",
     "SWEEP_BATCH",
+    "TICKETING_MAX_SENDS",
+    "TICKETING_MAX_WAIT",
+    "TICKETING_POST_GRACE",
     "apply_snapshot",
     "confirm_payment",
     "create_order",
     "expire_unpaid",
     "get_order",
     "list_orders",
+    "recheck_processing",
     "settle_attempt",
     "settle_stale_confirmations",
     "start_payment",
+    "ticket",
+    "ticket_paid_pending",
 ]

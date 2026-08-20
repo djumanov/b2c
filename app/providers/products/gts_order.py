@@ -45,6 +45,46 @@ def is_released(status: str | None) -> bool:
     return status in RELEASED_CODES
 
 
+def is_ticketed(status: str | None) -> bool:
+    return status in TICKETED_CODES
+
+
+def is_waiting(status: str | None) -> bool:
+    return status in WAITING_CODES
+
+
+#: What GTS says when the agreement's balance cannot cover the ticket. Ours
+#: to top up, not the customer's to fix — the ticketing step raises an alarm.
+_DEPOSIT_PHRASES: Final[tuple[str, ...]] = (
+    "enough credits",
+    "insufficient balance",
+    "balance is low",
+)
+
+
+def is_deposit_empty(message: str | None) -> bool:
+    text = (message or "").lower()
+    return any(phrase in text for phrase in _DEPOSIT_PHRASES)
+
+
+def order_body(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """The order inside a GTS envelope — wherever this endpoint put it.
+
+    ``ticketing`` and ``cancel`` nest it under ``order``, ``booking`` and the
+    reads under ``data``, and older installations answer with the order flat
+    at the top. Looked for in that order; a flat answer counts only when it
+    carries an ``order_number``, so the envelope's own ``status: "success"``
+    is never mistaken for an order's status.
+    """
+    for key in ("order", "data"):
+        found = envelope.get(key)
+        if isinstance(found, dict):
+            return found
+    if "order_number" in envelope:
+        return envelope
+    return None
+
+
 def _text(value: Any) -> str | None:
     """A non-empty string, or nothing. GTS sends ``""`` where it means null."""
     return value if isinstance(value, str) and value else None
@@ -130,8 +170,12 @@ __all__ = [
     "RELEASED_CODES",
     "TICKETED_CODES",
     "WAITING_CODES",
+    "is_deposit_empty",
     "is_held",
     "is_released",
+    "is_ticketed",
+    "is_waiting",
+    "order_body",
     "passenger_names",
     "routes",
     "tickets",
