@@ -324,7 +324,7 @@ def _translate(
         upstream_message = None
         upstream_code = None
         if isinstance(payload, dict):
-            upstream_message = _message_text(payload.get("message"))
+            upstream_message = _failure_text(payload)
             upstream_code = payload.get("code")
         logger.warning("gts_rejected", path=path, upstream_code=upstream_code)
         raise UpstreamError(
@@ -347,6 +347,35 @@ def _translate(
         raise UpstreamError("GTS returned an unexpected shape")
     result: dict[str, Any] = data
     return result
+
+
+#: A sentence, not a rendered error page: a wrong path puts a whole HTML
+#: document in ``errors``, and none of it belongs in a client's error message.
+_MAX_ERROR_CHARS: Final = 300
+
+
+def _failure_text(payload: dict[str, Any]) -> str | None:
+    """GTS's own words for a failure — as close to the real reason as it gets.
+
+    ``message`` is usually the generic ``"Что то не так :("`` while the
+    sentence a customer could act on sits in ``errors``: "the passenger already
+    has a booking on this flight", "the surname is invalid" (both observed
+    live, 2026-08-20). So ``errors`` is preferred whenever it holds sentences,
+    and ``message`` answers for the envelopes that carry no ``errors`` at all.
+    """
+    return _errors_text(payload.get("errors")) or _message_text(payload.get("message"))
+
+
+def _errors_text(raw: object) -> str | None:
+    """``errors`` flattened — a list of sentences, or nothing.
+
+    Anything else is ignored on purpose: GTS puts an HTML page there for a
+    path it does not route, and ``message`` is the better answer then.
+    """
+    if not isinstance(raw, list):
+        return None
+    parts = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return "; ".join(parts)[:_MAX_ERROR_CHARS] or None
 
 
 def _message_text(raw: object) -> str | None:

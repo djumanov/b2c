@@ -19,6 +19,11 @@ answer differently between installations (``firstname`` vs ``first_name``, a
 price that is flat or nested, a deadline that is an ISO string, minutes or
 seconds), which is why every reader below reaches with ``.get`` and gives up
 to ``None`` rather than trusting one recorded example.
+
+``book`` is also the one step that makes **two** calls. The booking answer
+names the order and, on this installation, carries nothing else, so the order
+itself is read back from ``/v1/orders/{order_number}/`` — everything a
+customer sees (PNR, price, route, the payment deadline) lives there.
 """
 
 import datetime as dt
@@ -143,6 +148,63 @@ def _hide_failure(step: str, failure: AppError) -> None:
 
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _order_number(answer: dict[str, Any]) -> int | None:
+    """GTS's number for the seat it just held — wherever this installation put it.
+
+    Three shapes carry it, all of them real: the number **alone** under
+    ``data`` (live GTS, verified 2026-08-20), the whole order nested one level
+    deeper beside ``message: "booked"`` (the gateway collection's documented
+    example), and an order flat at the top (its older example). Only the depth
+    differs, so both depths are read.
+    """
+    for source in (answer, answer.get("data")):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("order_number")
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _booked_order(answer: dict[str, Any]) -> dict[str, Any]:
+    """The order as the booking answer itself carried it, if it carried one."""
+    nested = answer.get("data")
+    return nested if isinstance(nested, dict) else answer
+
+
+async def _order_detail(
+    client: GtsClient, order_number: int, *, fallback: dict[str, Any]
+) -> dict[str, Any]:
+    """The booked order, read back from GTS — the booking answer only names it.
+
+    ``POST /v1/content/booking/`` answers with the order number and nothing
+    else on this installation, while every field a customer sees lives on the
+    order, so it is fetched once here (``GET /v1/orders/{order_number}/``).
+
+    **A failure here is not a failed booking.** GTS is holding a seat by the
+    time this runs, and a seat nothing in our database points at is worse than
+    an order missing its price. So the read degrades to whatever the booking
+    answer carried, the row is written either way, and the gap is a warning
+    rather than a ``502`` — the lesson of the two live seats lost to a parsing
+    bug on 2026-08-19.
+    """
+    try:
+        return await client.get(
+            f"/v1/orders/{order_number}/", timeout=GtsTimeouts.DEFAULT_SECONDS
+        )
+    except (UpstreamError, UpstreamTimeout) as failure:
+        logger.warning(
+            "gts_order_detail_unread",
+            order_number=order_number,
+            error=str(failure),
+        )
+        return fallback
 
 
 def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
@@ -334,22 +396,28 @@ class FlightAdapter:
         And **no degradation**: unlike ``offers/``, an error here must never
         be softened into "keep polling" — nothing will improve.
 
-        The answer nests once more than the search steps: the client already
-        stripped GTS's envelope, and the order sits under a second ``data``
-        key beside ``message: "booked"``. No order number in there means we
-        could not name the seat GTS may now be holding — a 502, same as a
-        timeout, and nothing is written.
+        **The answer names the order and little else.** Live GTS replies with
+        ``{"order_number": N}`` under the envelope the client already stripped
+        — no PNR, no price, no route — so the order is read back from
+        ``/v1/orders/{N}/`` and *that* is what fills the ``BookedOrder``.
+        Installations that answer with the whole order (the gateway
+        collection's example nests it beside ``message: "booked"``) are read
+        just the same, and their copy stands in if the read-back fails.
+
+        No order number anywhere means we could not name the seat GTS may now
+        be holding — a 502, same as a timeout, and nothing is written.
         """
         _validated(_FlightBookingIn, payload)
-        data = await client.post(
+        answer = await client.post(
             "/v1/content/booking/", json=payload, timeout=GtsTimeouts.DEFAULT_SECONDS
         )
-        order = data.get("data")
-        if not isinstance(order, dict):
+        order_number = _order_number(answer)
+        if order_number is None:
+            logger.warning("gts_booking_unreadable", keys=sorted(answer))
             raise UpstreamError("the GTS booking returned an unexpected shape")
-        order_number = order.get("order_number")
-        if isinstance(order_number, bool) or not isinstance(order_number, int):
-            raise UpstreamError("the GTS booking returned an unexpected shape")
+        order = await _order_detail(
+            client, order_number, fallback=_booked_order(answer)
+        )
         amount, currency = _booking_amount(order)
         return BookedOrder(
             request_id=str(payload["request_id"]),
