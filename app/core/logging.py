@@ -66,6 +66,10 @@ _SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
         "sms_code",
         "verify_code",
         "x-auth",
+        # A payment provider's handle on a charge. For Payme it is a card
+        # token that can charge again, so it is a secret wherever it appears.
+        "provider_reference",
+        "reference",
     }
 )
 

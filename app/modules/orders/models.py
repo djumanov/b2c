@@ -39,6 +39,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Index,
+    Integer,
     SmallInteger,
     String,
     Text,
@@ -51,7 +52,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.money import currency_column, money_column
 from app.db.base import Base, Entity
-from app.db.mixins import UUIDPrimaryKeyMixin
+from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class OrderStatus(enum.StrEnum):
@@ -171,10 +172,9 @@ class Order(Entity):
     ticketing_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    #: When the sweep last read the order back from GTS while waiting.
-    ticketing_checked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    #: When the sweep last read the order back from GTS — waiting on a ticket
+    #: or checking whether an unpaid hold is still alive. The sweep's throttle.
+    gts_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: How many times the ticketing request was sent. Bounded by the sweep:
     #: a request GTS never confirms is re-sent at most once, then left to staff.
     ticketing_attempts: Mapped[int] = mapped_column(
@@ -255,11 +255,90 @@ class OrderEvent(Base, UUIDPrimaryKeyMixin):
     request_id: Mapped[str | None] = mapped_column(String(64))
 
 
+class AttemptStatus(enum.StrEnum):
+    """Where one conversation with the provider stands.
+
+    ``started`` — the row exists (it is the claim) and the code may be out;
+    ``confirming`` — the charge was sent and the answer is not back, the one
+    state in which nothing about the order may change; ``paid`` / ``failed``
+    — the provider answered; ``abandoned`` — superseded by a newer attempt
+    or given up on before any charge.
+    """
+
+    STARTED = "started"
+    CONFIRMING = "confirming"
+    PAID = "paid"
+    FAILED = "failed"
+    ABANDONED = "abandoned"
+
+
+class PaymentAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One try at charging one order — the evidence of a provider conversation.
+
+    Lives beside the order, not in ``payments``: its whole life happens under
+    the order's row lock and commits in the order's transactions, and a table
+    owned by another module would have to be written through a service that
+    may never commit. The ``payments`` module keeps the cards and the
+    provider; the attempt is the order's.
+
+    **At most one open attempt per order, and at most one paid** — the
+    partial unique index below is the structural guard against charging
+    twice, whatever the code above it does. The row is inserted **before**
+    the provider is called, so two concurrent starts collide on the index
+    rather than both sending a code.
+    """
+
+    __tablename__ = "payment_attempts"
+    __table_args__ = (
+        _values_check("status", AttemptStatus, "attempt_status"),
+        Index(
+            "uq_payment_attempts_open",
+            "order_id",
+            unique=True,
+            postgresql_where=text("status IN ('started', 'confirming', 'paid')"),
+        ),
+        # The sweep's question: "which charges have been in flight too long?"
+        Index(
+            "ix_payment_attempts_confirming",
+            "updated_at",
+            postgresql_where=text("status = 'confirming'"),
+        ),
+    )
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), nullable=False, index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: ``payme`` · ``click`` · ``sandbox``.
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount: Mapped[Decimal] = money_column(nullable=False)
+    currency: Mapped[str] = currency_column(nullable=False)
+
+    #: The saved card used, if one was; a typed card leaves only ``last4``.
+    card_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    card_last4: Mapped[str | None] = mapped_column(String(4))
+
+    #: The provider's handle, AES-GCM encrypted: for Payme it is a token that
+    #: can charge the card again, so it is a secret at rest like a password.
+    provider_reference: Mapped[str | None] = mapped_column(Text)
+    key_version: Mapped[int | None] = mapped_column(Integer)
+    #: Masked number the code was sent to — for the screen, nothing more.
+    phone_hint: Mapped[str | None] = mapped_column(String(32))
+    #: What the adapter chose to keep of the provider's answers, scrubbed.
+    provider_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    #: The provider's reason on ``failed``.
+    error: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 __all__ = [
+    "AttemptStatus",
     "CancelReason",
     "Order",
     "OrderEvent",
     "OrderStatus",
+    "PaymentAttempt",
     "PaymentStatus",
     "TicketingStatus",
 ]

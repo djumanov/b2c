@@ -14,10 +14,15 @@ Two rules that shape the code below:
 * **Only ``reveal_card`` opens the ciphertext.** It exists for a checkout that
   fills the provider's card step server-side when the client sends a
   ``card_id``, and its result must never be logged.
+
+The module also answers the one question the charge step asks of settings:
+**which provider charges** (``payment_provider``). The orders module owns the
+charge itself — the attempt row, the lock, the lifecycle — and comes here only
+for the card and the provider, so the card number crosses exactly one module
+boundary, on its way to the provider and nowhere else.
 """
 
 import uuid
-from dataclasses import dataclass
 from typing import Final
 
 import structlog
@@ -26,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import NotFound, ValidationFailed
+from app.api.errors import NotFound, UpstreamError, ValidationFailed
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -36,10 +41,16 @@ from app.api.listing import (
     page,
     paginate,
 )
+from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
+from app.db.mixins import utcnow
+from app.modules.integrations import service as integrations_service
 from app.modules.payments import repository
 from app.modules.payments.models import CustomerCard
-from app.modules.payments.schemas import CardCreateIn, CardOut
+from app.modules.payments.schemas import CardCreateIn, CardIn, CardOut
+from app.providers import payments as payment_providers
+from app.providers.payments.base import CardDetails, PaymentProvider
+from app.providers.payments.sandbox import SandboxProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -149,45 +160,91 @@ async def add_card(
 # --- revealing --------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class CardCredentials:
-    """A card number in flight, on its way out of the vault. Never logged.
-
-    The hand-written ``__repr__`` is not decoration. A dataclass carrying a
-    secret ends up inside a structlog ``exc_info``, an f-string or a failing
-    assertion sooner or later, and the default one would print the number in
-    all three.
-    """
-
-    #: Digits only.
-    number: str
-    #: ``MMYY``, the shape both provider APIs use.
-    expire: str
-
-    def __repr__(self) -> str:
-        return f"CardCredentials(last4={self.number[-4:]!r})"
-
-
 async def reveal_card(
     session: AsyncSession, customer_id: uuid.UUID, card_id: uuid.UUID
-) -> CardCredentials:
+) -> CardDetails:
     """The stored number in the clear — the only path that opens the ciphertext.
 
     One of the doors this module opens to the rest of the application
     (ARCHITECTURE.md §5): a checkout that pays with a ``card_id`` instead of a
     typed number opens the ciphertext here and hands the digits to a provider,
-    and nowhere else. Nothing calls it today — the order system that did was
-    removed — but the door is what the vault is for, so it stays.
+    and nowhere else.
     """
     card = await _require_card(session, customer_id, card_id)
     if card.pan is None:
         # Unreachable for a live row — the CHECK constraint pairs a null
         # ciphertext with a soft-deleted row, and ``owned_cards`` filters those.
         raise NotFound("Card not found")
-    return CardCredentials(
+    return CardDetails(
         number=decrypt(card.pan, card.key_version or 0),
         expire=f"{card.expiry_month:02d}{card.expiry_year % 100:02d}",
     )
+
+
+# --- charging: the card and the provider ------------------------------------------
+
+
+async def card_for_charge(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    *,
+    card_id: uuid.UUID | None,
+    card: CardIn | None,
+) -> CardDetails:
+    """The card a payment will be made with — saved (``card_id``) or typed.
+
+    Exactly one of the two; the request schema already insists, this is the
+    last line of defence. A typed card is **not** saved here: saving is the
+    customer's explicit act on ``/profile/cards/``, never a side effect of
+    paying.
+    """
+    if card_id is not None:
+        return await reveal_card(session, customer_id, card_id)
+    if card is not None:
+        return CardDetails(
+            number=card.number.get_secret_value(),
+            expire=card.expire.get_secret_value(),
+        )
+    raise ValidationFailed("Send a card_id or a card", field="card")
+
+
+async def mark_card_used(
+    session: AsyncSession, customer_id: uuid.UUID, card_id: uuid.UUID
+) -> None:
+    """Stamp ``last_used_at`` on a successful charge. No commit — the charge's."""
+    card = await repository.card_by_id(session, customer_id, card_id)
+    if card is not None:
+        card.last_used_at = utcnow()
+
+
+async def payment_provider(session: AsyncSession) -> PaymentProvider:
+    """The provider that charges on this installation.
+
+    In order: a test's pinned provider; the provider the panel enabled, if
+    this release ships its adapter; the sandbox, when ``DEBUG`` is on and no
+    real provider is enabled — never otherwise, so a staging database copied
+    to production cannot carry a fake provider with it. Anything else is a
+    ``502``: the installation cannot take money yet.
+
+    **Call it before taking a row lock.** Reading the panel's rows commits
+    the session when one is open (``integrations.service``), and a commit in
+    the middle of a locked transaction quietly drops the lock.
+    """
+    pinned = payment_providers.get_override()
+    if pinned is not None:
+        return pinned
+    configured = await integrations_service.active_payment_provider(session)
+    if configured is not None:
+        factory = payment_providers.ADAPTERS.get(configured.code)
+        if factory is None:
+            raise UpstreamError(
+                f"payment provider {configured.code.value} is not available "
+                "in this release"
+            )
+        return factory(configured.credentials)
+    if settings.debug:
+        return SandboxProvider()
+    raise UpstreamError("no payment provider is configured on this installation")
 
 
 # --- removing ---------------------------------------------------------------------
@@ -222,11 +279,13 @@ async def forget_cards(session: AsyncSession, customer_id: uuid.UUID) -> None:
 
 
 __all__ = [
-    "CardCredentials",
     "add_card",
+    "card_for_charge",
     "delete_card",
     "forget_cards",
     "get_card",
     "list_cards",
+    "mark_card_used",
+    "payment_provider",
     "reveal_card",
 ]

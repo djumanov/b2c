@@ -101,7 +101,27 @@ class CardCreateIn(BaseModel):
         return _clean_expire(value)
 
 
+class CardIn(BaseModel):
+    """A card typed at checkout — the same rules as saving one, not stored."""
+
+    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+
+    number: SecretStr
+    expire: SecretStr
+
+    @field_validator("number")
+    @classmethod
+    def _valid_number(cls, value: SecretStr) -> SecretStr:
+        return _clean_number(value)
+
+    @field_validator("expire")
+    @classmethod
+    def _valid_expire(cls, value: SecretStr) -> SecretStr:
+        return _clean_expire(value)
+
+
 __all__ = [
     "CardCreateIn",
+    "CardIn",
     "CardOut",
 ]

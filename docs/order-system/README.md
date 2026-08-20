@@ -3,9 +3,9 @@
 Bu hujjat buyurtma (order) hayotiy sikli bo'yicha **manba**. Kod unga
 ergashadi; farq topilsa avval shu fayl tuzatiladi, keyin kod.
 
-Bosqichlar: **1 — lifecycle** (shu hujjat tasvirlagan model, joriy),
-2 — to'lov (port + sandbox provider), 3 — GTS ticketing va sweep,
-4 — admin/support. Keyingi bosqichlarga tegishli qismlar shunday belgilangan.
+Bosqichlar: **1 — lifecycle**, **2 — to'lov** (port + sandbox provider, `payment_attempts`,
+sweep) — joriy; 3 — GTS ticketing; 4 — admin/support. Keyingi bosqichlarga
+tegishli qismlar shunday belgilangan.
 
 ## 1. Uchta lifecycle, bitta qator
 
@@ -28,7 +28,7 @@ status=cancelled payment=pending                     → to'lanmasdan bekor bo'l
 
 Yordamchi ustunlar: `cancel_reason` (`customer` · `expired` · `staff`),
 `paid_at`, `ticketed_at`, `cancelled_at`, `ticketing_requested_at`
-(GTS'dan chipta so'ralgan vaqt), `ticketing_checked_at` (sweep oxirgi marta
+(GTS'dan chipta so'ralgan vaqt), `gts_checked_at` (sweep oxirgi marta
 GTS'dan o'qigan vaqt), `ticketing_attempts` (so'rov necha marta yuborilgan),
 `ticketing_error` (GTS'ning xato matni). `gts_status` va `gts_response` —
 GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi.
@@ -94,6 +94,62 @@ Kim (`order_events.actor`): `customer`, `system` (sweep), `staff:<uuid>`.
 `data` — faqat kod va id'lar (`gts_order_number`, urinish id); xom GTS javobi
 `orders.gts_response` da, karta haqida hech narsa hech qayerda.
 
+## 4a. To'lov — `payment_attempts` va ikki qadam
+
+Provider bilan har suhbat — `payment_attempts` da bir qator: `order_id,
+customer_id, provider, status` (`started` · `confirming` · `paid` · `failed` ·
+`abandoned`)`, amount, currency, card_id, card_last4, provider_reference`
+(**shifrlangan** — Payme'da bu kartadan yana yechadigan token)`, phone_hint,
+provider_data, error, paid_at`.
+
+**Strukturaviy kafolat:** partial unique index `uq_payment_attempts_open` —
+bir order uchun `started | confirming | paid` holatida **bitta** qator. Ikki
+parallel start indeksda to'qnashadi, ikki marta pul yechish mumkin emas —
+kod ustida nima bo'lishidan qat'i nazar.
+
+Qadamlar (`orders/service.py`):
+
+1. **`POST /public/orders/{id}/payment/`** — body `{card_id}` yoki
+   `{card: {number, expire}}` (aynan bittasi). Tartib: provider va GTS client
+   **qulfdan oldin** olinadi (ular sessiyani commit qiladi); `GET
+   /v1/orders/{n}/` — bron tirikmi, narx qancha (GTS narxi bizning narxdan
+   ustun); GTS `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
+   `offer_expired`**. Qulf ostida: tekshiruvlar, eski `started` urinish →
+   `abandoned`, yangi `started` qatori (**claim**, provider'dan oldin),
+   commit. So'ng `provider.start()` → reference (shifrlab) va `phone_hint`
+   yoziladi. Provider rad etsa (`PaymentDeclined`) → urinish `failed`,
+   `payment_status=failed`, javob 200 (`payment.status=failed`, `error`);
+   provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
+2. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
+   Qulf ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa —
+   provider chaqirilmaydi, joriy holat qaytadi (o'qish); muddat o'tgan bo'lsa
+   → `abandoned` + `cancelled/expired` + 409. Urinish `confirming`, **commit**
+   — charge provider'ga hech qachon ikki marta ketmaydi. So'ng
+   `provider.confirm()` qulfsiz; natija `settle_attempt` bilan **qayta qulf +
+   qayta o'qish** ostida qo'llanadi (sweep bilan poyga): `paid` → urinish
+   `paid`, `payment=paid`, karta `last_used_at`; `failed` → `payment=failed`,
+   javob 200; exception (javob noma'lum) → `confirming` qoladi, javob 200
+   `stage=payment_processing`.
+
+Provider tanlovi (`payments.service.payment_provider`): test override →
+panelda yoqilgan provider adapteri (Payme/Click kelgunicha "bu relizda
+yo'q" → 502) → `DEBUG=true` va hech biri yoqilmagan → **sandbox** → aks
+holda 502. Sandbox kodlari: `000000` paid · `111111` declined · `222222`
+timeout (noma'lum) · `333333` pending · boshqasi — noto'g'ri kod.
+
+Sweep (`app/tasks/orders.py::reconcile_orders`, beat 30 s, har qator o'z
+tranzaksiyasida, `SKIP LOCKED`):
+
+- `confirming` va 120 s dan eski → `provider.status()`; `paid/failed` →
+  qo'llanadi; `pending` → kutiladi; 15 daqiqadan keyin ham `pending` →
+  `failed` "the provider never confirmed this charge" + `ERROR
+  payment_unconfirmed` (support provider panelini tekshiradi).
+- To'lanmagan, muddati 10 daqiqadan ko'p o'tgan (yoki muddatsiz va 24 soatdan
+  eski) orderlar → `GET /v1/orders/{n}/`: GTS `CB/VO/STATUS_VOID` →
+  `cancelled/expired`; hali `BO` → muddat yangilanadi, `gts_checked_at` 10
+  daqiqa throttle; `confirming` urinish bor → o'tkazib yuboriladi; 10
+  daqiqadan eski `started` → `abandoned`.
+
 ## 5. API
 
 Javob shakli hamma joyda bir xil — `BookingResultOut`:
@@ -123,8 +179,8 @@ to'lanmasdan bekor bo'lgan order uchun `cancelled`.
 | POST | `/public/{product}/booking/` | customer | 1 — **idempotent**: bir xil so'rov ikkinchi marta o'sha orderni **hozirgi holatida** qaytaradi; GTS xatosi claim'ni bo'shatadi, GTS timeout — **bo'shatmaydi** (60 s) |
 | GET | `/public/orders/` | customer | 1 — ro'yxat: `status`, `payment_status`, `ticketing_status`, `stage`, `routes`, yo'lovchi ismlari |
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
-| POST | `/public/orders/{id}/payment/` | customer | 2 — OTP yuboradi, 201 |
-| POST | `/public/orders/{id}/payment/confirm/` | customer | 2 — pul yechadi, so'ng ticketing (3) |
+| POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
+| POST | `/public/orders/{id}/payment/confirm/` | customer | 2 — `{payment_id, otp}`; 200; so'ng ticketing (3) |
 | GET/POST | `/admin/orders/…` | staff | 4 — ro'yxat, detal, `refund/`, `ticketing/retry/` |
 
 Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`

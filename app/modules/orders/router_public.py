@@ -9,18 +9,40 @@ saved-cards arrangement.
 ``GET`` here never writes. The "is my ticket ready yet?" screen polls this
 endpoint, and the sweep — not the read — is what asks GTS; two polls racing a
 sweep must not be able to move an order twice.
+
+Paying is two ``POST``s on the order — ``payment/`` sends the code,
+``payment/confirm/`` charges with it — both under the tight ``payment`` rate
+limit and both idempotent (API.md §10): a repeat answers with the order as it
+stands now, and never reaches the provider twice. The row lock and the
+attempt table are what make the charge single; the idempotency key only
+spares the provider a call. Every failure releases the key — nothing is
+charged at ``start``, and ``confirm`` answers a lost provider call with the
+order rather than an error, so there is no outcome a kept claim would guard.
 """
 
 import uuid
 
 from fastapi import Depends
 
-from app.api.deps import CurrentCustomer, LanguageDep, PaginationDep, current_customer
+from app.api.deps import (
+    CurrentCustomer,
+    LanguageDep,
+    PaginationDep,
+    RateLimit,
+    current_customer,
+)
 from app.api.envelope import Page, enveloped_router
+from app.api.errors import AppError
+from app.api.idempotency import IdempotencyKey
 from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.orders import service
-from app.modules.orders.schemas import BookingResultOut, OrderListItemOut
+from app.modules.orders.schemas import (
+    BookingResultOut,
+    OrderListItemOut,
+    PaymentConfirmIn,
+    PaymentStartIn,
+)
 
 router = enveloped_router(
     prefix="/orders",
@@ -49,6 +71,62 @@ async def get_order(
     return await service.get_order(
         session, customer.id, id, language=language.requested
     )
+
+
+@router.post(
+    "/{id}/payment/",
+    summary="Pay — step 1: choose the card, receive the code",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def start_payment(
+    id: uuid.UUID,
+    payload: PaymentStartIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    idempotency: IdempotencyKey,
+    language: LanguageDep,
+) -> BookingResultOut:
+    if idempotency.is_replay:
+        return await service.get_order(
+            session, customer.id, id, language=language.requested
+        )
+    try:
+        result = await service.start_payment(
+            session, customer.id, id, payload, language=language.requested
+        )
+    except AppError:
+        await idempotency.release()
+        raise
+    await idempotency.store({"order_id": str(id)})
+    return result
+
+
+@router.post(
+    "/{id}/payment/confirm/",
+    summary="Pay — step 2: confirm with the code",
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def confirm_payment(
+    id: uuid.UUID,
+    payload: PaymentConfirmIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    idempotency: IdempotencyKey,
+    language: LanguageDep,
+) -> BookingResultOut:
+    if idempotency.is_replay:
+        return await service.get_order(
+            session, customer.id, id, language=language.requested
+        )
+    try:
+        result = await service.confirm_payment(
+            session, customer.id, id, payload, language=language.requested
+        )
+    except AppError:
+        await idempotency.release()
+        raise
+    await idempotency.store({"order_id": str(id)})
+    return result
 
 
 __all__ = ["router"]

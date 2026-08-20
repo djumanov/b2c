@@ -37,7 +37,7 @@ celery_app = Celery(
     "b2c",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.heartbeat", "app.tasks.uploads"],
+    include=["app.tasks.heartbeat", "app.tasks.orders", "app.tasks.uploads"],
 )
 
 celery_app.conf.update(
@@ -72,6 +72,12 @@ celery_app.conf.beat_schedule = {
     "sweep-unlinked-uploads-hourly": {
         "task": "app.tasks.uploads.sweep_unlinked_uploads",
         "schedule": 3600.0,
+    },
+    # Lost provider answers, released GTS holds, tickets GTS finished issuing
+    # — every half minute, because a customer may be watching the screen.
+    "reconcile-orders": {
+        "task": "app.tasks.orders.reconcile_orders",
+        "schedule": 30.0,
     },
 }
 

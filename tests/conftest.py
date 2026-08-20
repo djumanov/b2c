@@ -26,7 +26,7 @@ os.environ.setdefault("POSTGRES_PASSWORD", "")
 os.environ["ENCRYPTION_KEYS"] = "1:MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 os.environ["ENCRYPTION_KEY_VERSION"] = "1"
 
-from collections.abc import AsyncIterator  # noqa: E402
+from collections.abc import AsyncIterator, Iterator  # noqa: E402
 from typing import Any  # noqa: E402
 
 import fakeredis.aioredis  # noqa: E402
@@ -101,7 +101,14 @@ async def clean_tables(engine: AsyncEngine) -> AsyncIterator[None]:
     """The services genuinely commit, so isolation is cleanup, not rollback."""
     yield
     async with engine.begin() as connection:
-        for table in ("order_events", "orders", "customers", "gts_credentials"):
+        for table in (
+            "payment_attempts",
+            "order_events",
+            "orders",
+            "customer_cards",
+            "customers",
+            "gts_credentials",
+        ):
             await connection.execute(text(f"DELETE FROM {table}"))
 
 
@@ -184,3 +191,182 @@ async def gts_credential(db_session: AsyncSession) -> GtsCredential:
 async def flight_enabled(fake_redis: Any) -> None:
     """Seed the site-config cache so the product gate answers for ``flight``."""
     await settings_cache.write({"products": [{"code": "flight", "enabled": True}]})
+
+
+# --- GTS mocks shared by the flows after booking ---------------------------------
+
+ORDER_NUMBER = 61453
+
+
+def gts_envelope(data: Any) -> dict[str, Any]:
+    """GTS's own envelope — distinct from ours."""
+    return {"status": "success", "message": "Все ок.", "code": 0, "data": data}
+
+
+def mock_gts_signin() -> None:
+    import respx
+
+    respx.post(f"{GTS}/v1/auth/signin/").mock(
+        return_value=httpx.Response(
+            200,
+            json=gts_envelope(
+                {
+                    "session_key": "sess-abc",
+                    "token": "tok-abc",
+                    "timeout_minutes": 360.0,
+                }
+            ),
+        )
+    )
+
+
+def gts_order_body(**overrides: Any) -> dict[str, Any]:
+    """One order as ``GET /v1/orders/{n}/`` returns it, a day before its deadline."""
+    from datetime import timedelta
+
+    deadline = (utcnow() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    order: dict[str, Any] = {
+        "order_number": ORDER_NUMBER,
+        "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+        "status": "BO",
+        "gds_pnr": "UBPLKW",
+        "trip_type": "OW",
+        "ticket_time_limit": deadline,
+        "price_info": {"price": 287500.0, "currency": "UZS", "commission_amount": 0},
+        "routes": [
+            {
+                "route_index": 1,
+                "direction": "TAS-VKO",
+                "segments": [{"leg": "TAS-VKO", "flight_number": "12"}],
+            }
+        ],
+        "passengers_count": 1,
+        "passengers": [
+            {"firstname": "Azimjon", "lastname": "Yusufov", "ticket_number": None}
+        ],
+    }
+    order.update(overrides)
+    return order
+
+
+def mock_gts_order(
+    order: dict[str, Any] | None, *, order_number: int = ORDER_NUMBER
+) -> Any:
+    """``GET /v1/orders/{n}/``; ``None`` makes GTS fail the read."""
+    import respx
+
+    return respx.get(f"{GTS}/v1/orders/{order_number}/").mock(
+        return_value=httpx.Response(200, json=gts_envelope(order))
+        if order is not None
+        else httpx.Response(500, json={"status": "error", "message": "boom"})
+    )
+
+
+async def make_order(
+    session: AsyncSession, customer: Customer, **overrides: Any
+) -> Any:
+    """A booked, unpaid order a day before its deadline — the payment tests' start."""
+    from datetime import timedelta
+
+    from app.modules.orders.models import Order
+
+    fields: dict[str, Any] = {
+        "customer_id": customer.id,
+        "product": "flight",
+        "status": "booked",
+        "payment_status": "pending",
+        "ticketing_status": "pending",
+        "request_id": "req-abc",
+        "offer_id": "offer-abc",
+        "gts_order_number": ORDER_NUMBER,
+        "gts_status": "BO",
+        "pnr": "UBPLKW",
+        "amount": 20,
+        "currency": "UZS",
+        "route_summary": "TAS-VKO",
+        "ticket_time_limit_at": utcnow() + timedelta(days=1),
+        "gts_response": {"order_number": ORDER_NUMBER},
+    }
+    fields.update(overrides)
+    order = Order(**fields)
+    session.add(order)
+    await session.commit()
+    await session.refresh(order)
+    return order
+
+
+# --- a scripted payment provider ------------------------------------------------------
+
+
+class FakeProvider:
+    """Implements ``PaymentProvider`` from a script the test writes.
+
+    ``confirm_outcomes`` / ``status_outcomes`` are consumed in order; an
+    exception in the list is raised instead of returned. ``calls`` records
+    every call for assertions such as "the provider was charged once".
+    """
+
+    code = "fake"
+
+    def __init__(self) -> None:
+        from app.providers.payments.base import PaymentOutcome
+
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.start_error: Exception | None = None
+        self.confirm_outcomes: list[PaymentOutcome | Exception] = []
+        self.status_outcomes: list[PaymentOutcome | Exception] = []
+        self.references: list[str] = []
+
+    def _next(self, script: list[Any], default: Any) -> Any:
+        outcome = script.pop(0) if script else default
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def start(self, *, card: Any, amount: Any, order_ref: str) -> Any:
+        from app.providers.payments.base import PaymentStart
+
+        self.calls.append(
+            (
+                "start",
+                {
+                    "last4": card.last4,
+                    "amount": str(amount.amount),
+                    "order_ref": order_ref,
+                },
+            )
+        )
+        if self.start_error is not None:
+            raise self.start_error
+        reference = f"ref-{len(self.references) + 1}"
+        self.references.append(reference)
+        return PaymentStart(reference=reference, phone_hint="+99890***1234")
+
+    async def confirm(self, *, reference: str, otp: str) -> Any:
+        from app.providers.payments.base import PaymentOutcome
+
+        self.calls.append(("confirm", {"reference": reference, "otp": otp}))
+        return self._next(
+            self.confirm_outcomes, PaymentOutcome("paid", reference=reference)
+        )
+
+    async def status(self, *, reference: str) -> Any:
+        from app.providers.payments.base import PaymentOutcome
+
+        self.calls.append(("status", {"reference": reference}))
+        return self._next(
+            self.status_outcomes, PaymentOutcome("pending", reference=reference)
+        )
+
+    def count(self, name: str) -> int:
+        return sum(1 for call, _ in self.calls if call == name)
+
+
+@pytest.fixture
+def fake_provider() -> Iterator[FakeProvider]:
+    from app.providers import payments as payment_providers
+
+    provider = FakeProvider()
+    payment_providers.set_provider(provider)
+    yield provider
+    payment_providers.set_provider(None)

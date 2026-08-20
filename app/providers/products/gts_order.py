@@ -18,7 +18,31 @@ while the read-back of ``GET /v1/orders/{n}/`` failed carries no routes at
 all, and that is a thin card, not a 500.
 """
 
-from typing import Any
+from typing import Any, Final
+
+# --- GTS's status codes, the two vocabularies it uses ---------------------------
+# ``BO``/``PW``/``TI``/``TE``/``CB``/``VO`` is the documented set; live
+# ``/v1/orders/`` has also answered ``STATUS_BOOK`` and ``STATUS_VOID``. Both
+# are read. A code in none of the sets is simply unknown — never assumed.
+
+#: The hold is alive and unticketed (``PW`` = GTS is issuing, still alive).
+HELD_CODES: Final[frozenset[str]] = frozenset({"BO", "STATUS_BOOK", "PW"})
+#: GTS is working on the ticket.
+WAITING_CODES: Final[frozenset[str]] = frozenset({"PW"})
+#: The ticket is issued.
+TICKETED_CODES: Final[frozenset[str]] = frozenset({"TI"})
+#: The hold or the ticket is gone — nothing more will come of this order.
+#: ``TE`` (ticketing error) is deliberately not here: it is a verdict on the
+#: ticket, not on the hold, and the ticketing step reads it itself.
+RELEASED_CODES: Final[frozenset[str]] = frozenset({"CB", "VO", "STATUS_VOID"})
+
+
+def is_held(status: str | None) -> bool:
+    return status in HELD_CODES
+
+
+def is_released(status: str | None) -> bool:
+    return status in RELEASED_CODES
 
 
 def _text(value: Any) -> str | None:
@@ -101,4 +125,14 @@ def tickets(body: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
-__all__ = ["passenger_names", "routes", "tickets"]
+__all__ = [
+    "HELD_CODES",
+    "RELEASED_CODES",
+    "TICKETED_CODES",
+    "WAITING_CODES",
+    "is_held",
+    "is_released",
+    "passenger_names",
+    "routes",
+    "tickets",
+]

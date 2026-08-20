@@ -29,12 +29,13 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr, model_validator
 
 from app.core.money import Money
 from app.modules.orders.lifecycle import CONFIRMING, Stage, stage_of
 from app.modules.orders.messages import message_for
 from app.modules.orders.models import Order, OrderStatus, PaymentStatus
+from app.modules.payments.schemas import CardIn
 from app.modules.settings.service import SupportContact
 from app.providers.products import gts_order
 
@@ -197,6 +198,39 @@ class OrderListItemOut(BaseModel):
         )
 
 
+class PaymentStartIn(BaseModel):
+    """Step 1 of paying: which card. A saved one by id, or one typed now.
+
+    Exactly one of the two. ``hide_input_in_errors`` for the same reason as
+    on ``CardCreateIn``: a validation error must not echo a card number.
+    """
+
+    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+
+    card_id: uuid.UUID | None = None
+    card: CardIn | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "PaymentStartIn":
+        if (self.card_id is None) == (self.card is None):
+            raise ValueError("Send either card_id or card")
+        return self
+
+
+class PaymentConfirmIn(BaseModel):
+    """Step 2: the code the cardholder received, for the attempt it belongs to.
+
+    ``payment_id`` is required on purpose: after a second ``payment/`` the
+    customer may still be typing the first SMS's code, and "confirm the open
+    attempt" would silently pair it with the wrong one.
+    """
+
+    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+
+    payment_id: uuid.UUID
+    otp: SecretStr
+
+
 class PaymentAttemptView(BaseModel):
     """The open or latest payment attempt, as the payment block shows it.
 
@@ -332,7 +366,9 @@ __all__ = [
     "OrderOut",
     "PassengerNameOut",
     "PaymentAttemptView",
+    "PaymentConfirmIn",
     "PaymentOut",
+    "PaymentStartIn",
     "TicketOut",
     "TicketingOut",
 ]

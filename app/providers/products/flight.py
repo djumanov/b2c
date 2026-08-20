@@ -42,6 +42,7 @@ from app.providers.products.base import (
     SEARCH_IN_PROCESS,
     BookedOrder,
     FlowStep,
+    OrderSnapshot,
     ProductCode,
 )
 
@@ -206,6 +207,28 @@ async def _order_detail(
             error=str(failure),
         )
         return fallback
+
+
+def _snapshot(order_number: int, order: dict[str, Any]) -> OrderSnapshot:
+    """Read one GTS order into the fields the orders module keeps.
+
+    Shared by ``book`` (the read-back right after the hold) and ``retrieve``
+    (every later read), so "where GTS hides the price" is known in one place.
+    """
+    amount, currency = _booking_amount(order)
+    return OrderSnapshot(
+        gts_order_number=order_number,
+        gts_order_uid=_text(order.get("order_uid")),
+        gts_status=_text(order.get("status")) or "",
+        pnr=_text(order.get("gds_pnr")),
+        trip_type=_text(order.get("trip_type")),
+        amount=amount,
+        currency=currency,
+        route_summary=_route_summary(order),
+        passenger_count=_passenger_count(order),
+        ticket_time_limit_at=_ticket_deadline(order.get("ticket_time_limit")),
+        raw=order,
+    )
 
 
 def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
@@ -421,22 +444,24 @@ class FlightAdapter:
         order = await _order_detail(
             client, order_number, fallback=_booked_order(answer)
         )
-        amount, currency = _booking_amount(order)
         return BookedOrder(
             request_id=str(payload["request_id"]),
             offer_id=str(payload["offer_id"]),
-            gts_order_number=order_number,
-            gts_order_uid=_text(order.get("order_uid")),
-            gts_status=_text(order.get("status")) or "",
-            pnr=_text(order.get("gds_pnr")),
-            trip_type=_text(order.get("trip_type")),
-            amount=amount,
-            currency=currency,
-            route_summary=_route_summary(order),
-            passenger_count=_passenger_count(order),
-            ticket_time_limit_at=_ticket_deadline(order.get("ticket_time_limit")),
-            raw=order,
+            **_snapshot(order_number, order).model_dump(),
         )
+
+    async def retrieve(self, client: GtsClient, order_number: int) -> OrderSnapshot:
+        """``GET /v1/orders/{n}/`` — the order as GTS holds it right now.
+
+        Unlike the read-back inside ``book``, this one **does not degrade**:
+        its callers are about to charge a card, release a hold or settle a
+        ticket on the strength of the answer, and "could not read it" must
+        reach them as the ``502``/``504`` it is, never as a stale guess.
+        """
+        order = await client.get(
+            f"/v1/orders/{order_number}/", timeout=GtsTimeouts.DEFAULT_SECONDS
+        )
+        return _snapshot(order_number, order)
 
 
 __all__ = ["FlightAdapter"]
