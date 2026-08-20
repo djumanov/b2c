@@ -667,6 +667,253 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Pay — step 1 (sandbox: any Luhn-valid card)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/payment/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                "payment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"card\": {\n    \"number\": \"4111111111111111\",\n    \"expire\": \"1230\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.payment) {",
+                  "  pm.collectionVariables.set('payment_id', body.data.payment.payment_id);",
+                  "  console.log('payment', body.data.payment.status, body.data.payment.phone_hint);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay — step 2 (sandbox OTP: 000000 paid · 111111 declined · 222222 lost · 333333 pending)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/payment/confirm/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                "payment",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_id\": \"{{payment_id}}\",\n  \"otp\": \"000000\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data) console.log('stage', body.data.order.stage, '| payment', body.data.payment.status, '| ticketing', body.data.ticketing.status);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "admin — orders",
+      "item": [
+        {
+          "name": "Orders — support inbox",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/?attention=true&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "?attention=true&page=1&page_size=20"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Orders — all (filters: status, payment_status, ticketing_status, search)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/?page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "?page=1&page_size=20"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Order — detail with events and payments",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/{{order_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "{{order_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Order — mark refund",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/{{order_id}}/refund/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "{{order_id}}",
+                "refund"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"refunding\",\n  \"note\": \"Provider cabinet, request #\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Order — sync with GTS and the provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/{{order_id}}/sync/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "{{order_id}}",
+                "sync"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Order — retry ticketing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/{{order_id}}/ticketing/retry/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "{{order_id}}",
+                "ticketing",
+                "retry"
+              ]
+            }
+          }
         }
       ]
     }
@@ -722,6 +969,10 @@
     },
     {
       "key": "credential_id",
+      "value": ""
+    },
+    {
+      "key": "payment_id",
       "value": ""
     }
   ]

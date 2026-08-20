@@ -3,9 +3,9 @@
 Bu hujjat buyurtma (order) hayotiy sikli bo'yicha **manba**. Kod unga
 ergashadi; farq topilsa avval shu fayl tuzatiladi, keyin kod.
 
-Bosqichlar: **1 — lifecycle**, **2 — to'lov** (port + sandbox provider,
-`payment_attempts`, sweep), **3 — GTS ticketing** — joriy; 4 — admin/support.
-Keyingi bosqichga tegishli qismlar shunday belgilangan.
+To'rt bosqichda qurilgan: **1 — lifecycle**, **2 — to'lov** (port + sandbox
+provider, `payment_attempts`, sweep), **3 — GTS ticketing**, **4 — support**
+(`/admin/orders/`). Hammasi joriy. Keyingi ishlar — §7.
 
 ## 1. Uchta lifecycle, bitta qator
 
@@ -226,13 +226,21 @@ to'lanmasdan bekor bo'lgan order uchun `cancelled`.
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
-| GET/POST | `/admin/orders/…` | staff | 4 — ro'yxat, detal, `refund/`, `ticketing/retry/` |
+| GET | `/admin/orders/` | staff | filtrlar `status`, `payment_status`, `ticketing_status`; `attention=true` — support inbox (ticketing failed · refund_failed · bekor qilingan, lekin to'langan); `search` — PNR yoki GTS raqami |
+| GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
+| POST | `/admin/orders/{id}/refund/` | staff | `{status: refunding \| refunded \| refund_failed, note}` — pul provider kabinetida qaytariladi, bu yozuv; `ticketed` orderga — 409 |
+| POST | `/admin/orders/{id}/sync/` | staff | GTS (va `confirming` urinish bo'lsa provider) bilan hozir solishtirish: yo'qolgan to'lov javobi, kech chiqqan chipta (`failed → ticketed`, faqat `paid`+`booked`), GTS qo'yib yuborgan bron |
+| POST | `/admin/orders/{id}/ticketing/retry/` | staff | avval sync; GTS allaqachon `TI` desa — POST yo'q; `paid`+`booked` bo'lmasa yoki GTS bronni qo'yib yuborgan bo'lsa — 409; aks holda `ticket()` (staff sweep chegarasiga bo'ysunmaydi) |
 
 Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`
 (GTS broni muddati o'tgan), `upstream_error` / `upstream_timeout`,
 `not_found` (begona order), `validation`.
 
-## 6. Qoidalar (keyingi bosqichlar uchun ham)
+Har admin amali `order_events` ga `staff:<uuid>` bilan yoziladi; audit
+middleware HTTP chaqiruvini jurnalga oladi (`resource_id` = order, `changes` =
+status o'zgarishi va izoh).
+
+## 6. Qoidalar
 
 - Har yozuv: `lock → qayta o'qish → tekshirish → o'zgartirish → commit`.
   Tarmoq chaqiruvi qulfdan oldin yoki ikki qulf orasida; faqat 15 s bilan
@@ -243,3 +251,18 @@ Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`
   Celery beat sweep (30 s) `GET /v1/orders/{n}/` bilan yakunlaydi.
 - Idempotency (Redis) — qulaylik qatlami; qulf va commit qilingan holat
   yolg'iz ushlab turishi shart.
+
+## 7. Keyingi ishlar (bu to'rt bosqichdan tashqarida)
+
+- `POST /public/orders/{id}/cancel/` — mijoz to'lanmagan bronni bekor qiladi
+  (`POST /v1/content/cancel/`, `cancelled/customer`); guard'lar tayyor.
+- Email xabarnomalar (`ticketing`, `ticketed`, `ticketing_failed`) —
+  `customers.service._send` namunasi; commit'dan keyin, faqat event qaytgan
+  yo'l yuboradi. Hozir mijoz xabarni ilovada (`order.message`) ko'radi.
+- `providers/payments/payme.py`, `click.py` — `start/confirm/status`;
+  `ADAPTERS` jadvaliga bir qator.
+- Provider refund API (`refund()` porti) — hozir support provider kabinetida
+  qaytaradi va `refund/` bilan belgilaydi.
+- `reprice_check` — ticketing o'zi reprice qiladimi, GTS bilan aniqlash kerak.
+- Contract test sweep (trailing slash, envelope) ni qayta tiklash; CLAUDE.md
+  hujjat jadvalini tozalash (`docs/API.md` va boshqalar yo'q).
