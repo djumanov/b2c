@@ -37,6 +37,7 @@ from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationF
 from app.core.logging import get_logger
 from app.core.money import quantize
 from app.providers.gts.base import GtsClient, GtsTimeouts
+from app.providers.products import gts_order
 from app.providers.products.base import (
     SEARCH_IN_PROCESS,
     BookedOrder,
@@ -224,11 +225,13 @@ def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
 
 
 def _route_summary(order: dict[str, Any]) -> str | None:
-    """``routes[].direction`` joined — ``"TAS-IST, IST-TAS"`` for a round trip."""
-    routes = order.get("routes")
-    if not isinstance(routes, list):
-        return None
-    directions = [route.get("direction") for route in routes if isinstance(route, dict)]
+    """``routes[].direction`` joined — ``"TAS-IST, IST-TAS"`` for a round trip.
+
+    Where the routes are is ``gts_order``'s knowledge, not this function's:
+    live GTS nests them under ``offer``, and looking only beside the order
+    left this summary ``None`` on every real booking.
+    """
+    directions = [route.get("direction") for route in gts_order.routes(order)]
     summary = ", ".join(part for part in directions if isinstance(part, str) and part)
     return summary[:128] or None
 
