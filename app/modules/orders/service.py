@@ -29,11 +29,11 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Final, Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import String, and_, cast, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import Pagination
+from app.api.deps import Pagination, Staff
 from app.api.envelope import Page
 from app.api.errors import (
     Conflict,
@@ -56,6 +56,7 @@ from app.core.logging import get_logger, new_request_id, request_id_var
 from app.core.money import Money
 from app.db.mixins import utcnow
 from app.db.repository import live
+from app.modules.audit import context as audit_context
 from app.modules.integrations import service as integrations_service
 from app.modules.orders import lifecycle
 from app.modules.orders.models import (
@@ -70,10 +71,15 @@ from app.modules.orders.models import (
 )
 from app.modules.orders.schemas import (
     BookingResultOut,
+    OrderAdminListItemOut,
+    OrderAdminOut,
+    OrderEventOut,
     OrderListItemOut,
+    PaymentAttemptAdminOut,
     PaymentAttemptView,
     PaymentConfirmIn,
     PaymentStartIn,
+    RefundIn,
 )
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
@@ -1018,6 +1024,261 @@ async def expire_unpaid(session: AsyncSession) -> int:
     return expired
 
 
+# --- support (``/admin/orders/``) --------------------------------------------------
+
+
+async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
+    support = await settings_service.support_contact()
+    attempts = (
+        await session.scalars(
+            select(PaymentAttempt)
+            .where(PaymentAttempt.order_id == order.id)
+            .order_by(PaymentAttempt.created_at)
+        )
+    ).all()
+    events = (
+        await session.scalars(
+            select(OrderEvent)
+            .where(OrderEvent.order_id == order.id)
+            .order_by(OrderEvent.created_at)
+        )
+    ).all()
+    latest = attempts[-1] if attempts else None
+    customer_view = BookingResultOut.from_order(
+        order, language=None, support=support, attempt=_view(latest)
+    )
+    return OrderAdminOut(
+        **customer_view.model_dump(),
+        customer_id=order.customer_id,
+        ticketing_attempts=order.ticketing_attempts,
+        ticketing_requested_at=order.ticketing_requested_at,
+        gts_checked_at=order.gts_checked_at,
+        events=[OrderEventOut.model_validate(event) for event in events],
+        payments=[
+            PaymentAttemptAdminOut(
+                id=attempt.id,
+                created_at=attempt.created_at,
+                updated_at=attempt.updated_at,
+                provider=attempt.provider,
+                status=attempt.status,
+                amount=Money(amount=attempt.amount, currency=attempt.currency),
+                card_last4=attempt.card_last4,
+                phone_hint=attempt.phone_hint,
+                error=attempt.error,
+                paid_at=attempt.paid_at,
+            )
+            for attempt in attempts
+        ],
+    )
+
+
+async def _require(session: AsyncSession, order_id: uuid.UUID) -> Order:
+    order = await session.scalar(live(Order).where(Order.id == order_id))
+    if order is None:
+        raise NotFound("Order not found")
+    return order
+
+
+async def _require_locked(session: AsyncSession, order_id: uuid.UUID) -> Order:
+    order = await _locked(session, order_id)
+    if order is None:
+        raise NotFound("Order not found")
+    return order
+
+
+async def list_orders_admin(
+    session: AsyncSession,
+    pagination: Pagination,
+    query: ListQuery,
+    *,
+    status: str | None = None,
+    payment_status: str | None = None,
+    ticketing_status: str | None = None,
+    attention: bool = False,
+) -> Page[OrderAdminListItemOut]:
+    """Every order, newest first; ``attention`` is the support inbox.
+
+    "Needs attention" is what a human must do something about: the ticket
+    did not come out, a refund failed, or money was taken on an order that
+    is not going to be ticketed.
+    """
+    stmt = live(Order)
+    if status is not None:
+        stmt = stmt.where(Order.status == status)
+    if payment_status is not None:
+        stmt = stmt.where(Order.payment_status == payment_status)
+    if ticketing_status is not None:
+        stmt = stmt.where(Order.ticketing_status == ticketing_status)
+    if attention:
+        stmt = stmt.where(
+            or_(
+                Order.ticketing_status == TicketingStatus.FAILED,
+                Order.payment_status == PaymentStatus.REFUND_FAILED,
+                and_(
+                    Order.status == OrderStatus.CANCELLED,
+                    Order.payment_status == PaymentStatus.PAID,
+                ),
+            )
+        )
+    stmt = apply_search(stmt, query, Order.pnr, cast(Order.gts_order_number, String))
+    stmt = apply_created_range(stmt, query, Order.created_at)
+    stmt = apply_ordering(
+        stmt,
+        query,
+        allowed=_ORDER_ORDERING,
+        default="-created_at",
+        tiebreak=Order.id,
+    )
+    rows, total = await paginate(session, stmt, pagination)
+    return page(
+        [OrderAdminListItemOut.from_order(row) for row in rows], pagination, total
+    )
+
+
+async def get_order_admin(session: AsyncSession, order_id: uuid.UUID) -> OrderAdminOut:
+    return await _admin_view(session, await _require(session, order_id))
+
+
+async def mark_refund(
+    session: AsyncSession, order_id: uuid.UUID, data: RefundIn, *, staff: Staff
+) -> OrderAdminOut:
+    """Where the refund stands, as support says — the money moves in the
+    provider's own cabinet, and this is the record that it did."""
+    order = await _require_locked(session, order_id)
+    before = order.payment_status
+    session.add_all(
+        lifecycle.transition(
+            order,
+            actor=lifecycle.staff(staff.id),
+            payment=PaymentStatus(data.status),
+            note=data.note,
+        )
+    )
+    await session.commit()
+    audit_context.describe(
+        resource_id=order.id,
+        changes={"payment_status": [before, order.payment_status], "note": data.note},
+    )
+    logger.info(
+        "refund_marked",
+        order_id=str(order.id),
+        payment_status=order.payment_status,
+        staff_id=str(staff.id),
+    )
+    return await _admin_view(session, order)
+
+
+async def sync_order(
+    session: AsyncSession, order_id: uuid.UUID, *, staff: Staff
+) -> OrderAdminOut:
+    """Compare the order with GTS (and the provider) right now, and settle.
+
+    The sweep's questions, asked for one order on a human's request: a
+    charge whose answer was lost, a ticket GTS finished or never started, a
+    hold GTS released. What it finds is applied through the same steps the
+    sweep uses, so "sync" can never do something the sweep could not.
+    """
+    actor = lifecycle.staff(staff.id)
+    order = await _require(session, order_id)
+
+    attempt = await _open_attempt(session, order.id)
+    if attempt is not None and attempt.status == AttemptStatus.CONFIRMING:
+        provider = await payments_service.payment_provider(session)
+        if attempt.provider_reference is not None:
+            outcome = await provider.status(
+                reference=decrypt(attempt.provider_reference, attempt.key_version or 0)
+            )
+            await settle_attempt(session, attempt.id, outcome, actor=actor)
+
+    client = await integrations_service.gts_client(session)
+    snapshot = await _adapter(order).retrieve(client, order.gts_order_number)
+    order = await _require_locked(session, order_id)
+    if order.ticketing_status == TicketingStatus.PROCESSING:
+        await session.rollback()
+        decision = await _apply_ticketing(
+            session, order_id, snapshot, error=None, actor=actor
+        )
+        if decision == "resend":
+            await ticket(session, order_id, actor=actor)
+        order = await _require(session, order_id)
+        audit_context.describe(resource_id=order.id)
+        return await _admin_view(session, order)
+
+    before = (order.status, order.payment_status, order.ticketing_status)
+    apply_snapshot(order, snapshot)
+    if (
+        order.ticketing_status == TicketingStatus.FAILED
+        and gts_order.is_ticketed(snapshot.gts_status)
+        and order.payment_status == PaymentStatus.PAID
+        and order.status == OrderStatus.BOOKED
+    ):
+        # GTS issued late. Allowed for a paid, live order; anything else is
+        # left as it is and the mismatch logged for a human.
+        order.ticketing_error = None
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=actor,
+                ticketing=TicketingStatus.TICKETED,
+                data={"gts_status": snapshot.gts_status},
+            )
+        )
+    elif order.ticketing_status != TicketingStatus.TICKETED and gts_order.is_ticketed(
+        snapshot.gts_status
+    ):
+        logger.error(
+            "ticketed_after_refund",
+            order_id=str(order.id),
+            payment_status=order.payment_status,
+            status=order.status,
+        )
+    elif (
+        order.status == OrderStatus.BOOKED
+        and order.payment_status in (PaymentStatus.PENDING, PaymentStatus.FAILED)
+        and gts_order.is_released(snapshot.gts_status)
+    ):
+        open_attempt = await _open_attempt(session, order.id, for_update=True)
+        if open_attempt is not None and open_attempt.status == AttemptStatus.STARTED:
+            open_attempt.status = AttemptStatus.ABANDONED
+        if open_attempt is None or open_attempt.status != AttemptStatus.CONFIRMING:
+            session.add_all(_released(order, snapshot))
+    await session.commit()
+    after = (order.status, order.payment_status, order.ticketing_status)
+    audit_context.describe(
+        resource_id=order.id,
+        changes={"before": list(before), "after": list(after)}
+        if before != after
+        else None,
+    )
+    return await _admin_view(session, order)
+
+
+async def retry_ticketing(
+    session: AsyncSession, order_id: uuid.UUID, *, staff: Staff
+) -> OrderAdminOut:
+    """Ask GTS for the ticket again — after the deposit was topped up, say.
+
+    Synced first, so a ticket GTS issued in the meantime is recorded rather
+    than requested twice; refused while the order is not paid, not live, or
+    GTS shows the hold gone. Staff are not bound by the sweep's send cap —
+    that cap exists to stop a machine, not a person who has looked.
+    """
+    await sync_order(session, order_id, staff=staff)
+    order = await _require(session, order_id)
+    if order.ticketing_status == TicketingStatus.TICKETED:
+        return await _admin_view(session, order)
+    if order.status != OrderStatus.BOOKED or order.payment_status != PaymentStatus.PAID:
+        raise Conflict("Only a paid, live order can be ticketed")
+    if order.ticketing_status == TicketingStatus.PROCESSING:
+        raise Conflict("A ticketing request is already in flight — sync again later")
+    if gts_order.is_released(order.gts_status):
+        raise Conflict(f"GTS has released this order (status {order.gts_status})")
+    await ticket(session, order_id, actor=lifecycle.staff(staff.id))
+    order = await _require(session, order_id)
+    audit_context.describe(resource_id=order.id)
+    return await _admin_view(session, order)
+
+
 __all__ = [
     "ATTEMPT_STARTED_MAX_AGE",
     "CONFIRMING_STALE_AFTER",
@@ -1033,11 +1294,16 @@ __all__ = [
     "create_order",
     "expire_unpaid",
     "get_order",
+    "get_order_admin",
     "list_orders",
+    "list_orders_admin",
+    "mark_refund",
     "recheck_processing",
+    "retry_ticketing",
     "settle_attempt",
     "settle_stale_confirmations",
     "start_payment",
+    "sync_order",
     "ticket",
     "ticket_paid_pending",
 ]

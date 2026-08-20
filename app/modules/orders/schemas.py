@@ -27,9 +27,9 @@ The rest of GTS's answer stays on ``{id}/``.
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.money import Money
 from app.modules.orders.lifecycle import CONFIRMING, Stage, stage_of
@@ -324,6 +324,46 @@ class TicketingOut(BaseModel):
         )
 
 
+class OrderEventOut(BaseModel):
+    """One line of the order's history, for the support screen."""
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    created_at: datetime
+    event: str
+    from_value: str | None
+    to_value: str | None
+    actor: str
+    note: str | None
+    data: dict[str, Any] | None
+    request_id: str | None
+
+
+class PaymentAttemptAdminOut(BaseModel):
+    """A payment attempt as support sees it — never the provider reference."""
+
+    id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    provider: str
+    status: str
+    amount: Money
+    card_last4: str | None
+    phone_hint: str | None
+    error: str | None
+    paid_at: datetime | None
+
+
+class RefundIn(BaseModel):
+    """Support marking where the refund stands — the money moves elsewhere."""
+
+    model_config = {"extra": "forbid"}
+
+    status: Literal["refunding", "refunded", "refund_failed"]
+    note: str | None = Field(default=None, max_length=500)
+
+
 class BookingResultOut(BaseModel):
     """The booking response, the order-detail response and the payment
     responses — one shape for all of them."""
@@ -360,15 +400,49 @@ class BookingResultOut(BaseModel):
         )
 
 
+class OrderAdminListItemOut(OrderListItemOut):
+    """A list row for support: the customer's row plus who and which GTS order."""
+
+    customer_id: uuid.UUID
+    gts_order_number: int
+    gts_status: str
+
+    @classmethod
+    def from_order(cls, order: Order) -> "OrderAdminListItemOut":
+        base = OrderListItemOut.from_order(order)
+        return cls(
+            **base.model_dump(),
+            customer_id=order.customer_id,
+            gts_order_number=order.gts_order_number,
+            gts_status=order.gts_status,
+        )
+
+
+class OrderAdminOut(BookingResultOut):
+    """The detail for support: the customer's view plus the books behind it."""
+
+    customer_id: uuid.UUID
+    ticketing_attempts: int
+    ticketing_requested_at: datetime | None
+    gts_checked_at: datetime | None
+    events: list[OrderEventOut]
+    payments: list[PaymentAttemptAdminOut]
+
+
 __all__ = [
     "BookingResultOut",
+    "OrderAdminListItemOut",
+    "OrderAdminOut",
+    "OrderEventOut",
     "OrderListItemOut",
     "OrderOut",
     "PassengerNameOut",
+    "PaymentAttemptAdminOut",
     "PaymentAttemptView",
     "PaymentConfirmIn",
     "PaymentOut",
     "PaymentStartIn",
+    "RefundIn",
     "TicketOut",
     "TicketingOut",
 ]

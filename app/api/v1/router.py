@@ -29,6 +29,7 @@ from app.modules.customers import router_public as customers_public
 from app.modules.integrations import router_admin as integrations_admin
 from app.modules.leads import router_admin as leads_admin
 from app.modules.leads import router_public as leads_public
+from app.modules.orders import router_admin as orders_admin
 from app.modules.orders import router_public as orders_public
 from app.modules.payments import router_cards as payments_cards
 from app.modules.products import router_public as products_public
@@ -89,6 +90,7 @@ admin_router.include_router(customers_admin.deletion_reasons_router)
 admin_router.include_router(leads_admin.topics_router)
 admin_router.include_router(leads_admin.support_router)
 admin_router.include_router(leads_admin.router)
+admin_router.include_router(orders_admin.router)
 admin_router.include_router(staff_admin.router)
 admin_router.include_router(system_admin.router)
 admin_router.include_router(audit_admin.router)

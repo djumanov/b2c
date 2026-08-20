@@ -108,6 +108,8 @@ async def clean_tables(engine: AsyncEngine) -> AsyncIterator[None]:
             "customer_cards",
             "customers",
             "gts_credentials",
+            "audit_log",
+            "staff",
         ):
             await connection.execute(text(f"DELETE FROM {table}"))
 
@@ -415,3 +417,42 @@ def mock_gts_ticketing(
     return respx.post(f"{GTS}/v1/content/ticketing/").mock(
         return_value=httpx.Response(200, json=body)
     )
+
+
+# --- staff ----------------------------------------------------------------------
+
+
+async def make_staff(session: AsyncSession, email: str, *, role: str = "owner") -> Any:
+    from app.core.roles import Role
+    from app.modules.staff.models import Staff
+
+    row = Staff(
+        email=email,
+        password_hash=hash_password("staff-password-1"),
+        name="Support",
+        role=Role(role),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+def staff_bearer(staff: Any) -> dict[str, str]:
+    token, _ = create_token(
+        subject_id=staff.id,
+        audience=Audience.ADMIN,
+        token_type=TokenType.ACCESS,
+        role=staff.role.value,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def staff(db_session: AsyncSession) -> Any:
+    return await make_staff(db_session, "support@brand.uz")
+
+
+@pytest.fixture
+def staff_headers(staff: Any) -> dict[str, str]:
+    return staff_bearer(staff)
