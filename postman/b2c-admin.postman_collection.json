@@ -1,0 +1,728 @@
+{
+  "info": {
+    "name": "b2c-admin",
+    "description": "Manual testing collection for the B2C platform API.\n\nRun order:\n1. admin — setup: Staff login → GTS credentials create → activate (once per environment); health should say gts: ok\n2. auth — customer: Login (or Register + confirm)\n3. flight: Search → Offers (repeat until search_status is \"success\") → Verify → Booking\n4. orders: list and detail\n\nTokens, request_id, offer_id and order_id are captured into collection variables automatically. Every response uses the {status, data, errors, meta} envelope; errors carry GTS's own message in meta.upstream.\n\nWARNING: Booking against a live GTS account creates a real hold at the supplier.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "admin — setup",
+      "description": "One-time setup: sign in as staff, store the GTS agent account and activate it. `health` should then report `gts: ok`.",
+      "item": [
+        {
+          "name": "Staff login",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Owner/admin sign-in. Saves {{admin_access_token}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"login\": \"{{admin_email}}\",\n    \"password\": \"{{admin_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.status === \"success\" && body.data && body.data.access_token) {",
+                  "    pm.collectionVariables.set(\"admin_access_token\", body.data.access_token);",
+                  "    pm.collectionVariables.set(\"admin_refresh_token\", body.data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GTS credentials — list",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/gts/credentials/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "gts",
+                "credentials",
+                ""
+              ]
+            },
+            "description": "Stored GTS accounts, passwords masked.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GTS credentials — create",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/gts/credentials/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "gts",
+                "credentials",
+                ""
+              ]
+            },
+            "description": "Store the GTS agent account. Saves {{credential_id}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"label\": \"Main agent\",\n    \"email\": \"agent@example.com\",\n    \"password\": \"gts-password\",\n    \"base_url\": \"https://api2.globaltravel.space\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.data && body.data.id) {",
+                  "    pm.collectionVariables.set(\"credential_id\", body.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GTS credentials — activate",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/gts/credentials/{{credential_id}}/activate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "gts",
+                "credentials",
+                "{{credential_id}}",
+                "activate",
+                ""
+              ]
+            },
+            "description": "Use this account for every GTS call from now on (owner only).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "System health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/system/health/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "system",
+                "health",
+                ""
+              ]
+            },
+            "description": "Expect `gts: ok` once a credential is active.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "auth — customer",
+      "description": "Register once (the code is emailed; without SMTP in dev, read it from the `email_otps` table), or just log in. Tokens are saved automatically.",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/auth/register/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "auth",
+                "register",
+                ""
+              ]
+            },
+            "description": "204. Sends the confirmation code to the address.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"{{customer_email}}\",\n    \"password\": \"{{customer_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register — confirm",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/auth/register/confirm/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "auth",
+                "register",
+                "confirm",
+                ""
+              ]
+            },
+            "description": "Exchange the emailed code for tokens. Saves {{access_token}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"{{customer_email}}\",\n    \"code\": \"123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.status === \"success\" && body.data && body.data.access_token) {",
+                  "    pm.collectionVariables.set(\"access_token\", body.data.access_token);",
+                  "    pm.collectionVariables.set(\"refresh_token\", body.data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Sign in. Saves {{access_token}} and {{refresh_token}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"login\": \"{{customer_email}}\",\n    \"password\": \"{{customer_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.status === \"success\" && body.data && body.data.access_token) {",
+                  "    pm.collectionVariables.set(\"access_token\", body.data.access_token);",
+                  "    pm.collectionVariables.set(\"refresh_token\", body.data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/auth/refresh/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "auth",
+                "refresh",
+                ""
+              ]
+            },
+            "description": "Rotate the refresh token for a new pair.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.status === \"success\" && body.data && body.data.access_token) {",
+                  "    pm.collectionVariables.set(\"access_token\", body.data.access_token);",
+                  "    pm.collectionVariables.set(\"refresh_token\", body.data.refresh_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "flight",
+      "description": "search → offers (poll until search_status is \"success\") → verify → booking. The search steps need no token; booking needs the customer token. WARNING: booking against a live GTS creates a real hold.",
+      "item": [
+        {
+          "name": "Search",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/flight/search/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "flight",
+                "search",
+                ""
+              ]
+            },
+            "description": "Start a search. Saves {{request_id}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"directions\": [\n        {\n            \"departure\": \"TAS\",\n            \"arrival\": \"IST\",\n            \"departure_date\": \"2026-10-01\"\n        }\n    ],\n    \"adt\": 1,\n    \"chd\": 0,\n    \"inf\": 0,\n    \"ins\": 0,\n    \"class\": \"E\",\n    \"direct\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.data && body.data.request_id) {",
+                  "    pm.collectionVariables.set(\"request_id\", body.data.request_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offers",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/flight/offers/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "flight",
+                "offers",
+                ""
+              ]
+            },
+            "description": "One page of offers. Poll until search_status is \"success\". Saves the first offer's id into {{offer_id}} — change it by hand to book a different one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"request_id\": \"{{request_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "var data = body && body.data;",
+                  "console.log(\"search_status:\", data && data.search_status);",
+                  "if (data && Array.isArray(data.offers) && data.offers.length > 0",
+                  "        && data.offers[0].offer_id) {",
+                  "    pm.collectionVariables.set(\"offer_id\", data.offers[0].offer_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Upsell",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/flight/upsell/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "flight",
+                "upsell",
+                ""
+              ]
+            },
+            "description": "Branded fares of the chosen offer. Each variant carries a NEW offer_id — copy it into {{offer_id}} yourself if you pick one (not saved automatically).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"request_id\": \"{{request_id}}\",\n    \"offer_id\": \"{{offer_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/flight/verify/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "flight",
+                "verify",
+                ""
+              ]
+            },
+            "description": "Re-check price and availability right before booking.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"request_id\": \"{{request_id}}\",\n    \"offer_id\": \"{{offer_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Booking",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/flight/booking/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "flight",
+                "booking",
+                ""
+              ]
+            },
+            "description": "Book the verified offer. 201 answers {order, payment, order_data}. Saves our order id into {{order_id}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"request_id\": \"{{request_id}}\",\n    \"offer_id\": \"{{offer_id}}\",\n    \"passengers\": [\n        {\n            \"type\": \"ADT\",\n            \"gender\": \"M\",\n            \"first_name\": \"Azimjon\",\n            \"last_name\": \"Yusufov\",\n            \"middle_name\": \"Kamoliddin\",\n            \"birth_date\": \"2002-12-20\",\n            \"citizenship\": \"UZ\",\n            \"document\": {\n                \"type\": \"PSP\",\n                \"number\": \"FA2145157\",\n                \"issue_date\": \"2019-05-30\",\n                \"expire_date\": \"2029-05-29\"\n            },\n            \"email\": \"{{customer_email}}\",\n            \"phone\": {\n                \"phone_code\": \"998\",\n                \"phone_number\": \"901234567\"\n            }\n        }\n    ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "if (body && body.data && body.data.order && body.data.order.id) {",
+                  "    pm.collectionVariables.set(\"order_id\", body.data.order.id);",
+                  "    console.log(\"booked:\", body.data.order.gts_order_number,",
+                  "        body.data.order.pnr);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "description": "The customer's own bookings — the rows booking/ created.",
+      "item": [
+        {
+          "name": "My orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/orders/?page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Newest first. Supports search=, ordering=, created_from/to.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "One order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                ""
+              ]
+            },
+            "description": "{order, payment, order_data} — same shape booking answered.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "admin_email",
+      "value": "owner@example.com"
+    },
+    {
+      "key": "admin_password",
+      "value": "change-me"
+    },
+    {
+      "key": "customer_email",
+      "value": "traveller@example.com"
+    },
+    {
+      "key": "customer_password",
+      "value": "secret-password-1"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "refresh_token",
+      "value": ""
+    },
+    {
+      "key": "admin_access_token",
+      "value": ""
+    },
+    {
+      "key": "admin_refresh_token",
+      "value": ""
+    },
+    {
+      "key": "request_id",
+      "value": ""
+    },
+    {
+      "key": "offer_id",
+      "value": ""
+    },
+    {
+      "key": "order_id",
+      "value": ""
+    },
+    {
+      "key": "credential_id",
+      "value": ""
+    }
+  ]
+}
