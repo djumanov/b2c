@@ -70,24 +70,21 @@ class FlowStep(StrEnum):
 SEARCH_IN_PROCESS: Final = "In process"
 
 
-class BookedOrder(BaseModel):
-    """What ``book()`` hands back: the GTS answer, read once.
+class OrderSnapshot(BaseModel):
+    """One GTS order, read once into the fields the orders module keeps.
 
-    GTS spells its booking answer inconsistently between installations
-    (``firstname`` vs ``first_name``, prices flat or nested, a deadline that
-    may be an ISO string, minutes or seconds), so reading it is the adapter's
-    job and happens exactly once, here. The typed fields are what the orders
-    module stores in columns; ``raw`` is the full inner answer, kept verbatim.
+    GTS spells its order inconsistently between installations (``firstname``
+    vs ``first_name``, prices flat or nested, a deadline that may be an ISO
+    string, minutes or seconds), so reading it is the adapter's job and
+    happens exactly once, here. The typed fields are what the orders module
+    stores in columns; ``raw`` is the full order, kept verbatim.
 
-    Every field an inconsistent GTS might omit is optional — a booking with a
+    Every field an inconsistent GTS might omit is optional — an order with a
     confirmed ``gts_order_number`` is worth recording even when a price or a
-    deadline could not be read.
+    deadline could not be read. The same shape comes back from ``book`` (as a
+    ``BookedOrder``) and from ``retrieve``, so refreshing a stored order is
+    one function whatever asked for the read.
     """
-
-    #: Echoed from the request, not read from the answer — the pair that names
-    #: the search and the offer this booking came from.
-    request_id: str
-    offer_id: str
 
     gts_order_number: int
     gts_order_uid: str | None = None
@@ -100,6 +97,15 @@ class BookedOrder(BaseModel):
     passenger_count: int | None = None
     ticket_time_limit_at: dt.datetime | None = None
     raw: dict[str, Any]
+
+
+class BookedOrder(OrderSnapshot):
+    """What ``book()`` hands back: the snapshot plus where it came from."""
+
+    #: Echoed from the request, not read from the answer — the pair that names
+    #: the search and the offer this booking came from.
+    request_id: str
+    offer_id: str
 
 
 @runtime_checkable
@@ -152,6 +158,11 @@ class ProductAdapter(Protocol):
         """Book one verified offer at GTS. Never retried, never degraded."""
         ...
 
+    async def retrieve(self, client: GtsClient, order_number: int) -> OrderSnapshot:
+        """Read one order back from GTS — the truth about a hold, a price,
+        a deadline and a ticket. A GET, so safe to ask as often as needed."""
+        ...
+
 
 class ProductRegistry:
     """Product code → adapter. Adding a vertical is one registration."""
@@ -179,6 +190,7 @@ __all__ = [
     "SEARCH_IN_PROCESS",
     "BookedOrder",
     "FlowStep",
+    "OrderSnapshot",
     "ProductAdapter",
     "ProductCode",
     "ProductRegistry",

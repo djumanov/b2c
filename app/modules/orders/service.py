@@ -1,22 +1,47 @@
-"""Create on booking, read back by owner — and the helpers every later step shares.
+"""Orders: create on booking, read back by owner, pay, and keep the books straight.
 
 ``create_order`` is called by ``products.service.book()`` **after** GTS
 confirmed the booking; it is the flow's only write and its own transaction.
 There is nothing here for a failed booking on purpose: no row is the record.
 
+Paying is two calls — ``start_payment`` sends the cardholder a code,
+``confirm_payment`` charges with it — and every write between them follows
+one shape: **lock → re-read → validate → mutate → commit**. A network call
+sits either before the first lock (a pure read) or between two locks, never
+inside the transaction whose state it decides, so a slow provider cannot hold
+a row and a crashed worker cannot leave one half-written. The provider is
+resolved before any lock because reading the panel's rows commits the
+session (``integrations.service``).
+
+What keeps the money right is not the Redis idempotency layer but two facts
+on disk: a charge is sent only after the attempt row says ``confirming``
+(so it is never sent twice), and the partial unique index on
+``payment_attempts`` allows one open attempt per order (so two starts cannot
+both reach the provider). The sweep (``tasks/orders.py``) settles whatever a
+lost answer left open by asking the provider, and releases unpaid holds GTS
+has let go.
+
 Everything returned crosses a module boundary, so everything returned is a
-schema, never a model row (the ``add_card → CardOut`` convention). The
-customer's language and the support contact ride into the schema because
-``order.message`` is rendered here, on the server, for every client alike.
+schema, never a model row (the ``add_card → CardOut`` convention).
 """
 
 import uuid
+from datetime import timedelta
+from typing import Final
 
+from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination
 from app.api.envelope import Page
-from app.api.errors import NotFound
+from app.api.errors import (
+    Conflict,
+    NotFound,
+    OfferExpired,
+    UpstreamError,
+    UpstreamTimeout,
+)
 from app.api.listing import (
     ListQuery,
     OrderingMap,
@@ -26,28 +51,198 @@ from app.api.listing import (
     page,
     paginate,
 )
-from app.core.logging import get_logger
+from app.core.crypto import decrypt, encrypt
+from app.core.logging import get_logger, new_request_id, request_id_var
+from app.core.money import Money
+from app.db.mixins import utcnow
 from app.db.repository import live
+from app.modules.integrations import service as integrations_service
 from app.modules.orders import lifecycle
 from app.modules.orders.models import (
+    AttemptStatus,
+    CancelReason,
     Order,
+    OrderEvent,
     OrderStatus,
+    PaymentAttempt,
     PaymentStatus,
     TicketingStatus,
 )
-from app.modules.orders.schemas import BookingResultOut, OrderListItemOut
+from app.modules.orders.schemas import (
+    BookingResultOut,
+    OrderListItemOut,
+    PaymentAttemptView,
+    PaymentConfirmIn,
+    PaymentStartIn,
+)
+from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
-from app.providers.products.base import BookedOrder
+from app.providers.payments.base import PaymentDeclined, PaymentOutcome
+from app.providers.products import gts_order
+from app.providers.products.base import (
+    BookedOrder,
+    OrderSnapshot,
+    ProductAdapter,
+    registry,
+)
 
 logger = get_logger(__name__)
 
 _ORDER_ORDERING: OrderingMap = {"created_at": Order.created_at}
 
+# --- the sweep's clocks (properties of providers and GTS, not of a client) ---------
 
-async def _present(order: Order, *, language: str | None) -> BookingResultOut:
+#: A charge whose answer has been missing this long is asked about. Longer
+#: than any provider's own timeout, so a slow answer still arrives first.
+CONFIRMING_STALE_AFTER: Final = timedelta(seconds=120)
+#: ...and one still unanswered this long is given up on, so the customer can
+#: pay again. Logged at ERROR: support checks the provider's own panel.
+PAYMENT_CONFIRM_MAX_WAIT: Final = timedelta(minutes=15)
+#: A code that was sent and never typed is forgotten after this.
+ATTEMPT_STARTED_MAX_AGE: Final = timedelta(minutes=10)
+#: An unpaid hold is checked against GTS this long after its deadline, and
+#: again no more often than this while GTS still says it is alive.
+EXPIRY_GRACE: Final = timedelta(minutes=10)
+#: ...and one whose deadline GTS never spelled out, once it is this old.
+EXPIRY_WITHOUT_DEADLINE: Final = timedelta(hours=24)
+#: How many rows one sweep pass handles per question.
+SWEEP_BATCH: Final = 20
+
+
+# --- reading ---------------------------------------------------------------------
+
+
+def _view(attempt: PaymentAttempt | None) -> PaymentAttemptView | None:
+    if attempt is None:
+        return None
+    return PaymentAttemptView(
+        id=attempt.id,
+        status=attempt.status,
+        provider=attempt.provider,
+        card_last4=attempt.card_last4,
+        phone_hint=attempt.phone_hint,
+        paid_at=attempt.paid_at,
+        error=attempt.error,
+    )
+
+
+async def _latest_attempt(
+    session: AsyncSession, order_id: uuid.UUID
+) -> PaymentAttempt | None:
+    row: PaymentAttempt | None = await session.scalar(
+        select(PaymentAttempt)
+        .where(PaymentAttempt.order_id == order_id)
+        .order_by(PaymentAttempt.created_at.desc())
+        .limit(1)
+    )
+    return row
+
+
+async def _open_attempt(
+    session: AsyncSession, order_id: uuid.UUID, *, for_update: bool = False
+) -> PaymentAttempt | None:
+    """The attempt that is ``started`` or ``confirming`` — at most one exists."""
+    stmt = select(PaymentAttempt).where(
+        PaymentAttempt.order_id == order_id,
+        PaymentAttempt.status.in_([AttemptStatus.STARTED, AttemptStatus.CONFIRMING]),
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    row: PaymentAttempt | None = await session.scalar(stmt)
+    return row
+
+
+async def _present(
+    session: AsyncSession, order: Order, *, language: str | None
+) -> BookingResultOut:
     """The detail shape, with the message rendered for this request."""
     support = await settings_service.support_contact()
-    return BookingResultOut.from_order(order, language=language, support=support)
+    attempt = await _latest_attempt(session, order.id)
+    return BookingResultOut.from_order(
+        order, language=language, support=support, attempt=_view(attempt)
+    )
+
+
+async def _owned(
+    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> Order:
+    """One order — 404 for a missing one **and** for somebody else's.
+
+    Two situations, one answer on purpose: whether an order id exists is
+    nobody's business but its owner's (the saved-cards rule).
+    """
+    order = await session.scalar(
+        live(Order).where(Order.id == order_id, Order.customer_id == customer_id)
+    )
+    if order is None:
+        raise NotFound("Order not found")
+    return order
+
+
+async def _locked(
+    session: AsyncSession,
+    order_id: uuid.UUID,
+    *,
+    customer_id: uuid.UUID | None = None,
+    skip_locked: bool = False,
+) -> Order | None:
+    """The row under ``FOR UPDATE`` — every write starts here.
+
+    Always taken **before** the attempt's lock, so two writers that want both
+    rows take them in the same order and cannot deadlock. ``skip_locked`` is
+    for the sweep: a row another worker holds is simply somebody else's turn.
+    """
+    stmt = live(Order).where(Order.id == order_id)
+    if customer_id is not None:
+        stmt = stmt.where(Order.customer_id == customer_id)
+    row: Order | None = await session.scalar(
+        stmt.with_for_update(skip_locked=skip_locked)
+    )
+    return row
+
+
+async def _owned_locked(
+    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> Order:
+    order = await _locked(session, order_id, customer_id=customer_id)
+    if order is None:
+        raise NotFound("Order not found")
+    return order
+
+
+def _adapter(order: Order) -> ProductAdapter:
+    adapter = registry.get(order.product)
+    if adapter is None:
+        raise UpstreamError(f"no adapter serves product {order.product!r}")
+    return adapter
+
+
+def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
+    """Refresh the columns from a fresh GTS read. ``None`` never overwrites.
+
+    The deadline is taken as read: live GTS spells it as an absolute time, and
+    an installation that sends minutes-remaining shrinks it on every read
+    rather than extending it.
+    """
+    if snapshot.gts_status:
+        order.gts_status = snapshot.gts_status
+    if snapshot.gts_order_uid:
+        order.gts_order_uid = snapshot.gts_order_uid
+    if snapshot.pnr:
+        order.pnr = snapshot.pnr
+    if snapshot.amount is not None and snapshot.currency:
+        order.amount = snapshot.amount
+        order.currency = snapshot.currency
+    if snapshot.trip_type:
+        order.trip_type = snapshot.trip_type
+    if snapshot.route_summary:
+        order.route_summary = snapshot.route_summary
+    if snapshot.passenger_count:
+        order.passenger_count = snapshot.passenger_count
+    if snapshot.ticket_time_limit_at is not None:
+        order.ticket_time_limit_at = snapshot.ticket_time_limit_at
+    order.gts_response = snapshot.raw
+    order.gts_checked_at = utcnow()
 
 
 async def create_order(
@@ -103,7 +298,7 @@ async def create_order(
         gts_order_number=order.gts_order_number,
         gts_status=order.gts_status,
     )
-    return await _present(order, language=language)
+    return await _present(session, order, language=language)
 
 
 async def list_orders(
@@ -126,22 +321,6 @@ async def list_orders(
     return page([OrderListItemOut.from_order(row) for row in rows], pagination, total)
 
 
-async def _owned(
-    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
-) -> Order:
-    """One order — 404 for a missing one **and** for somebody else's.
-
-    Two situations, one answer on purpose: whether an order id exists is
-    nobody's business but its owner's (the saved-cards rule).
-    """
-    order = await session.scalar(
-        live(Order).where(Order.id == order_id, Order.customer_id == customer_id)
-    )
-    if order is None:
-        raise NotFound("Order not found")
-    return order
-
-
 async def get_order(
     session: AsyncSession,
     customer_id: uuid.UUID,
@@ -150,8 +329,463 @@ async def get_order(
     language: str | None = None,
 ) -> BookingResultOut:
     return await _present(
-        await _owned(session, customer_id, order_id), language=language
+        session, await _owned(session, customer_id, order_id), language=language
     )
 
 
-__all__ = ["create_order", "get_order", "list_orders"]
+# --- paying ----------------------------------------------------------------------
+
+
+def _require_payable(order: Order) -> None:
+    """The order can take a payment right now, or the reason it cannot."""
+    if order.status != OrderStatus.BOOKED:
+        raise Conflict("This order is cancelled")
+    if order.payment_status == PaymentStatus.PAID:
+        raise Conflict("This order is already paid")
+    if order.payment_status not in (PaymentStatus.PENDING, PaymentStatus.FAILED):
+        raise Conflict("This order is being refunded")
+    if order.ticketing_status != TicketingStatus.PENDING:
+        raise Conflict("This order is already being ticketed")
+
+
+def _released(order: Order, snapshot: OrderSnapshot) -> list[OrderEvent]:
+    """GTS let the hold go — record it, so the customer is told to search again."""
+    return lifecycle.transition(
+        order,
+        actor=lifecycle.SYSTEM,
+        status=OrderStatus.CANCELLED,
+        cancel_reason=CancelReason.EXPIRED,
+        note=f"GTS status {snapshot.gts_status}",
+        data={"gts_status": snapshot.gts_status},
+    )
+
+
+async def start_payment(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    data: PaymentStartIn,
+    *,
+    language: str | None = None,
+) -> BookingResultOut:
+    """Step 1: confirm the hold is alive at GTS, claim the attempt, send the code.
+
+    The GTS read-back comes first and is not optional: charging for a hold
+    GTS has already released would only turn into a refund. Its price wins
+    over ours, too — it is the amount GTS will debit at ticketing.
+
+    The attempt row is written **before** the provider is called. It is the
+    claim: a second start for the same order, racing this one, collides on
+    the partial unique index instead of sending a second code.
+    """
+    # Everything that talks to the outside world, before any lock.
+    provider = await payments_service.payment_provider(session)
+    client = await integrations_service.gts_client(session)
+    order = await _owned(session, customer_id, order_id)
+    _require_payable(order)
+    card = await payments_service.card_for_charge(
+        session, customer_id, card_id=data.card_id, card=data.card
+    )
+    snapshot = await _adapter(order).retrieve(client, order.gts_order_number)
+
+    order = await _owned_locked(session, customer_id, order_id)
+    open_attempt = await _open_attempt(session, order.id, for_update=True)
+    if open_attempt is not None and open_attempt.status == AttemptStatus.CONFIRMING:
+        raise Conflict("A payment for this order is being confirmed")
+    apply_snapshot(order, snapshot)
+    if gts_order.is_released(snapshot.gts_status):
+        session.add_all(_released(order, snapshot))
+        await session.commit()
+        raise OfferExpired("The booking has expired at GTS — please search again")
+    _require_payable(order)
+    if order.amount is None or order.currency is None:
+        raise UpstreamError("GTS did not report a price for this order")
+    if open_attempt is not None:
+        # A code was sent and never typed; this start supersedes it.
+        open_attempt.status = AttemptStatus.ABANDONED
+
+    attempt = PaymentAttempt(
+        id=uuid.uuid4(),
+        order_id=order.id,
+        customer_id=customer_id,
+        provider=provider.code,
+        status=AttemptStatus.STARTED,
+        amount=order.amount,
+        currency=order.currency,
+        card_id=data.card_id,
+        card_last4=card.last4,
+    )
+    session.add(attempt)
+    session.add(
+        lifecycle.event(
+            order,
+            event="payment.started",
+            actor=lifecycle.CUSTOMER,
+            data={"attempt": str(attempt.id), "provider": provider.code},
+        )
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise Conflict("Another payment for this order is already open") from None
+
+    try:
+        started = await provider.start(
+            card=card,
+            amount=Money(amount=attempt.amount, currency=attempt.currency),
+            order_ref=str(order.id),
+        )
+    except PaymentDeclined as exc:
+        await _fail_attempt(session, attempt.id, error=str(exc))
+        return await _present(
+            session, await _owned(session, customer_id, order_id), language=language
+        )
+    except (UpstreamError, UpstreamTimeout) as exc:
+        # Nothing is charged at this step, so failing the attempt is safe and
+        # the customer may simply try again.
+        await _fail_attempt(session, attempt.id, error=str(exc))
+        raise
+
+    order = await _owned_locked(session, customer_id, order_id)
+    row = await session.get(PaymentAttempt, attempt.id, with_for_update=True)
+    if row is not None and row.status == AttemptStatus.STARTED:
+        row.provider_reference, row.key_version = encrypt(started.reference)
+        row.phone_hint = started.phone_hint
+        row.provider_data = {"start": started.raw}
+    await session.commit()
+    logger.info(
+        "payment_started",
+        order_id=str(order.id),
+        attempt=str(attempt.id),
+        provider=provider.code,
+    )
+    return await _present(session, order, language=language)
+
+
+async def _fail_attempt(
+    session: AsyncSession, attempt_id: uuid.UUID, *, error: str
+) -> None:
+    """Close an attempt the provider refused at ``start``; the order reads failed."""
+    probe = await session.get(PaymentAttempt, attempt_id)
+    if probe is None:
+        return
+    order = await _locked(session, probe.order_id)
+    attempt = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
+    if order is None or attempt is None or attempt.status != AttemptStatus.STARTED:
+        return
+    attempt.status = AttemptStatus.FAILED
+    attempt.error = error[:500]
+    session.add_all(
+        lifecycle.transition(
+            order,
+            actor=lifecycle.CUSTOMER,
+            payment=PaymentStatus.FAILED,
+            note=attempt.error,
+            data={"attempt": str(attempt.id)},
+        )
+    )
+    await session.commit()
+    logger.info("payment_start_failed", order_id=str(order.id), attempt=str(attempt.id))
+
+
+async def confirm_payment(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    data: PaymentConfirmIn,
+    *,
+    language: str | None = None,
+) -> BookingResultOut:
+    """Step 2: charge with the code — exactly once.
+
+    The attempt is marked ``confirming`` and **committed before** the
+    provider is called, so whatever happens next — a timeout, a crash, a
+    retry from the customer — the charge is never sent a second time. An
+    unknown answer leaves the attempt ``confirming``; the sweep asks the
+    provider what became of it. A repeat of this call while the attempt is
+    ``confirming`` is a read, not a second charge.
+    """
+    provider = await payments_service.payment_provider(session)
+
+    order = await _owned_locked(session, customer_id, order_id)
+    attempt = await _open_attempt(session, order.id, for_update=True)
+    if attempt is None or attempt.id != data.payment_id:
+        raise Conflict("This payment is not open — start the payment again")
+    if attempt.status == AttemptStatus.CONFIRMING:
+        return await _present(session, order, language=language)
+    if attempt.provider_reference is None:
+        raise Conflict("This payment was not started — start the payment again")
+    if (
+        order.ticket_time_limit_at is not None
+        and order.ticket_time_limit_at <= utcnow()
+    ):
+        # The hold lapsed while the code was being typed. Charging now would
+        # buy nothing; GTS's own status is re-read by the sweep.
+        attempt.status = AttemptStatus.ABANDONED
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=lifecycle.SYSTEM,
+                status=OrderStatus.CANCELLED,
+                cancel_reason=CancelReason.EXPIRED,
+                note="payment deadline passed before confirmation",
+            )
+        )
+        await session.commit()
+        raise OfferExpired("The payment deadline has passed — please search again")
+    reference = decrypt(attempt.provider_reference, attempt.key_version or 0)
+    attempt.status = AttemptStatus.CONFIRMING
+    session.add(
+        lifecycle.event(
+            order,
+            event="payment.confirming",
+            actor=lifecycle.CUSTOMER,
+            data={"attempt": str(attempt.id)},
+        )
+    )
+    await session.commit()
+
+    try:
+        outcome = await provider.confirm(
+            reference=reference, otp=data.otp.get_secret_value()
+        )
+    except (UpstreamError, UpstreamTimeout) as exc:
+        logger.warning(
+            "payment_confirm_unknown",
+            order_id=str(order.id),
+            attempt=str(attempt.id),
+            error=str(exc),
+        )
+        return await _present(session, order, language=language)
+
+    await settle_attempt(session, attempt.id, outcome, actor=lifecycle.CUSTOMER)
+    return await _present(
+        session, await _owned(session, customer_id, order_id), language=language
+    )
+
+
+async def settle_attempt(
+    session: AsyncSession,
+    attempt_id: uuid.UUID,
+    outcome: PaymentOutcome,
+    *,
+    actor: str,
+    skip_locked: bool = False,
+) -> bool:
+    """Apply the provider's verdict to a ``confirming`` attempt — once.
+
+    Shared by the confirm handler and the sweep, which can race each other:
+    both re-lock and re-read, and whichever finds the attempt no longer
+    ``confirming`` does nothing. ``True`` when this call settled it.
+    """
+    probe = await session.get(PaymentAttempt, attempt_id)
+    if probe is None:
+        return False
+    order = await _locked(session, probe.order_id, skip_locked=skip_locked)
+    if order is None:
+        return False
+    attempt = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
+    if attempt is None or attempt.status != AttemptStatus.CONFIRMING:
+        await session.rollback()
+        return False
+
+    data = {**(attempt.provider_data or {}), "outcome": outcome.raw}
+    if outcome.status == "paid":
+        attempt.status = AttemptStatus.PAID
+        attempt.paid_at = utcnow()
+        attempt.provider_data = data
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=actor,
+                payment=PaymentStatus.PAID,
+                data={"attempt": str(attempt.id)},
+            )
+        )
+        if attempt.card_id is not None:
+            await payments_service.mark_card_used(
+                session, attempt.customer_id, attempt.card_id
+            )
+        await session.commit()
+        logger.info("payment_paid", order_id=str(order.id), attempt=str(attempt.id))
+        await _after_paid(session, order)
+        return True
+    if outcome.status == "failed":
+        attempt.status = AttemptStatus.FAILED
+        attempt.error = (outcome.error or "declined")[:500]
+        attempt.provider_data = data
+        session.add_all(
+            lifecycle.transition(
+                order,
+                actor=actor,
+                payment=PaymentStatus.FAILED,
+                note=attempt.error,
+                data={"attempt": str(attempt.id)},
+            )
+        )
+        await session.commit()
+        logger.info("payment_failed", order_id=str(order.id), attempt=str(attempt.id))
+        return True
+    # Still pending at the provider: restart the sweep's clock and wait.
+    attempt.provider_data = data
+    attempt.updated_at = utcnow()
+    await session.commit()
+    return False
+
+
+async def _after_paid(session: AsyncSession, order: Order) -> None:
+    """What follows a successful charge — the ticketing step, when it lands."""
+
+
+# --- the sweep (tasks/orders.py) ---------------------------------------------------
+
+
+async def settle_stale_confirmations(session: AsyncSession) -> int:
+    """Ask the provider about charges whose answer never came back.
+
+    A ``confirming`` attempt older than ``CONFIRMING_STALE_AFTER`` is asked
+    about; one the provider still calls pending after
+    ``PAYMENT_CONFIRM_MAX_WAIT`` is given up on and marked failed, so the
+    customer is not locked out of paying — logged at ERROR because a human
+    should look at the provider's panel. Returns how many were settled.
+    """
+    provider = await payments_service.payment_provider(session)
+    now = utcnow()
+    rows = (
+        await session.scalars(
+            select(PaymentAttempt)
+            .where(
+                PaymentAttempt.status == AttemptStatus.CONFIRMING,
+                PaymentAttempt.updated_at < now - CONFIRMING_STALE_AFTER,
+            )
+            .order_by(PaymentAttempt.updated_at)
+            .limit(SWEEP_BATCH)
+        )
+    ).all()
+    settled = 0
+    for probe in rows:
+        request_id_var.set(new_request_id())
+        if probe.provider_reference is None:
+            outcome = PaymentOutcome("failed", error="no provider reference")
+        else:
+            try:
+                outcome = await provider.status(
+                    reference=decrypt(probe.provider_reference, probe.key_version or 0)
+                )
+            except (UpstreamError, UpstreamTimeout) as exc:
+                logger.warning(
+                    "payment_status_unread", attempt=str(probe.id), error=str(exc)
+                )
+                continue
+        if (
+            outcome.status == "pending"
+            and probe.created_at < now - PAYMENT_CONFIRM_MAX_WAIT
+        ):
+            logger.error(
+                "payment_unconfirmed",
+                order_id=str(probe.order_id),
+                attempt=str(probe.id),
+                provider=probe.provider,
+            )
+            outcome = PaymentOutcome(
+                "failed",
+                reference=outcome.reference,
+                error="the provider never confirmed this charge",
+                raw=outcome.raw,
+            )
+        if await settle_attempt(
+            session, probe.id, outcome, actor=lifecycle.SYSTEM, skip_locked=True
+        ):
+            settled += 1
+    return settled
+
+
+async def expire_unpaid(session: AsyncSession) -> int:
+    """Release unpaid holds GTS has let go — after asking GTS, never by the clock.
+
+    Our deadline is a best-effort reading of a field GTS spells three ways,
+    so an order past it is only a *candidate*: the hold is released here
+    when GTS's own status says so, and left alone (deadline refreshed) when
+    GTS still holds it. An order with a code in flight is skipped; a code
+    nobody typed for ``ATTEMPT_STARTED_MAX_AGE`` is forgotten first.
+    """
+    client = await integrations_service.gts_client(session)
+    now = utcnow()
+    rows = (
+        await session.scalars(
+            live(Order)
+            .where(
+                Order.status == OrderStatus.BOOKED,
+                Order.payment_status.in_([PaymentStatus.PENDING, PaymentStatus.FAILED]),
+                or_(
+                    Order.ticket_time_limit_at < now - EXPIRY_GRACE,
+                    and_(
+                        Order.ticket_time_limit_at.is_(None),
+                        Order.created_at < now - EXPIRY_WITHOUT_DEADLINE,
+                    ),
+                ),
+                or_(
+                    Order.gts_checked_at.is_(None),
+                    Order.gts_checked_at < now - EXPIRY_GRACE,
+                ),
+            )
+            .order_by(Order.ticket_time_limit_at)
+            .limit(SWEEP_BATCH)
+        )
+    ).all()
+    expired = 0
+    for probe in rows:
+        request_id_var.set(new_request_id())
+        try:
+            snapshot = await _adapter(probe).retrieve(client, probe.gts_order_number)
+        except (UpstreamError, UpstreamTimeout) as exc:
+            logger.warning(
+                "expiry_check_unread", order_id=str(probe.id), error=str(exc)
+            )
+            continue
+        order = await _locked(session, probe.id, skip_locked=True)
+        if (
+            order is None
+            or order.status != OrderStatus.BOOKED
+            or order.payment_status not in (PaymentStatus.PENDING, PaymentStatus.FAILED)
+        ):
+            await session.rollback()
+            continue
+        open_attempt = await _open_attempt(session, order.id, for_update=True)
+        if open_attempt is not None:
+            if (
+                open_attempt.status == AttemptStatus.CONFIRMING
+                or open_attempt.created_at > now - ATTEMPT_STARTED_MAX_AGE
+            ):
+                await session.rollback()
+                continue
+            open_attempt.status = AttemptStatus.ABANDONED
+        apply_snapshot(order, snapshot)
+        if gts_order.is_released(snapshot.gts_status):
+            session.add_all(_released(order, snapshot))
+            expired += 1
+            logger.info(
+                "order_expired", order_id=str(order.id), gts_status=snapshot.gts_status
+            )
+        await session.commit()
+    return expired
+
+
+__all__ = [
+    "ATTEMPT_STARTED_MAX_AGE",
+    "CONFIRMING_STALE_AFTER",
+    "EXPIRY_GRACE",
+    "EXPIRY_WITHOUT_DEADLINE",
+    "PAYMENT_CONFIRM_MAX_WAIT",
+    "SWEEP_BATCH",
+    "apply_snapshot",
+    "confirm_payment",
+    "create_order",
+    "expire_unpaid",
+    "get_order",
+    "list_orders",
+    "settle_attempt",
+    "settle_stale_confirmations",
+    "start_payment",
+]
