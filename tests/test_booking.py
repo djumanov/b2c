@@ -251,6 +251,28 @@ async def test_booking_answer_carrying_the_whole_order_is_read(
 
 
 @respx.mock
+async def test_route_nested_under_offer_is_still_read(
+    client: httpx.AsyncClient, customer_headers: dict[str, str]
+) -> None:
+    """Live GTS keeps the journey under ``offer``, not beside the order.
+
+    Looking only beside it left ``route_summary`` ``None`` on every real
+    booking, and with it the whole order card.
+    """
+    order = _gts_order()
+    order["offer"] = {"routes": order.pop("routes")}
+
+    _mock_signin()
+    _mock_booking()
+    _mock_order(order)
+
+    response = await client.post(BOOKING_URL, json=PAYLOAD, headers=customer_headers)
+
+    assert response.status_code == 201
+    assert response.json()["data"]["order"]["route_summary"] == "TAS-VKO"
+
+
+@respx.mock
 async def test_gts_failure_names_the_reason(
     client: httpx.AsyncClient,
     customer_headers: dict[str, str],

@@ -12,6 +12,13 @@ A booking answers — and ``GET /public/orders/{id}/`` repeats — three blocks:
   GTS's shapes throughout the search flow. Commission and cost fields are
   stripped on the way out — agent economics are not the customer's business —
   while the stored copy keeps them.
+
+The list (``GET /public/orders/``) is a fourth shape, and it takes GTS's
+``routes`` with it: an order card shows the airline, the flight number, the
+times and the airports, and every one of those lives in a segment. Passengers
+come along as **names only** — a card says who is flying, and a passport number
+has no business riding on a request that returns twenty rows (PROJECT.md §13).
+The rest of GTS's answer stays on ``{id}/``.
 """
 
 import uuid
@@ -22,6 +29,7 @@ from pydantic import BaseModel
 
 from app.core.money import Money
 from app.modules.orders.models import Order, OrderStatus
+from app.providers.products import gts_order
 
 
 def _money(order: Order) -> Money | None:
@@ -85,8 +93,29 @@ class OrderOut(BaseModel):
         )
 
 
+class PassengerNameOut(BaseModel):
+    """Who is flying, as a list card names them — nothing more.
+
+    Three fields, all of them nullable: GTS omits a middle name more often
+    than it sends one, and a card that cannot name the traveller is still a
+    card. Everything else about a passenger — document, birth date,
+    citizenship, gender, contacts — is on ``{id}/`` and only there.
+    """
+
+    first_name: str | None
+    last_name: str | None
+    middle_name: str | None
+
+
 class OrderListItemOut(BaseModel):
-    """One row of "my orders" — enough to render the list, nothing heavy."""
+    """One row of "my orders" — enough to draw the card, and no more.
+
+    "No more" used to mean the columns alone, with ``route_summary`` standing
+    in for the journey. One string cannot carry an airline, a flight number
+    and two clock times, so GTS's ``routes`` ride along whole. What stays
+    behind is the rest of the answer: fares, baggage, and every passenger
+    field but the name.
+    """
 
     id: uuid.UUID
     product: str
@@ -98,6 +127,11 @@ class OrderListItemOut(BaseModel):
     amount: Money | None
     ticket_time_limit_at: datetime | None
     created_at: datetime
+    #: GTS's route objects, verbatim — segments, flight numbers, times.
+    #: Empty when the stored answer carried none.
+    routes: list[dict[str, Any]]
+    #: Names only; documents and contacts live on ``{id}/``.
+    passengers: list[PassengerNameOut]
 
     @classmethod
     def from_order(cls, order: Order) -> "OrderListItemOut":
@@ -112,6 +146,14 @@ class OrderListItemOut(BaseModel):
             amount=_money(order),
             ticket_time_limit_at=order.ticket_time_limit_at,
             created_at=order.created_at,
+            routes=[
+                _strip_commission(route)
+                for route in gts_order.routes(order.gts_response)
+            ],
+            passengers=[
+                PassengerNameOut.model_validate(person)
+                for person in gts_order.passenger_names(order.gts_response)
+            ],
         )
 
 
@@ -159,5 +201,6 @@ __all__ = [
     "BookingResultOut",
     "OrderListItemOut",
     "OrderOut",
+    "PassengerNameOut",
     "PaymentOut",
 ]
