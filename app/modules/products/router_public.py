@@ -25,6 +25,16 @@ relay GTS untouched; ``booking/`` holds the seat at GTS and records the order
 check so a vertical this installation does not sell answers ``404`` even to
 an anonymous caller (API.md §41).
 
+Booking is also **idempotent** (API.md §10): the same request twice — a
+double tap, a retried timeout — must not hold two seats. The first outcome is
+remembered by order id only, and a repeat answers with that order **as it
+stands now**, not with a snapshot of how it stood when booked: by the time
+the retry arrives the order may be paid or cancelled, and a stale answer
+would send the screen backwards. A GTS refusal releases the claim so the
+customer may try again; a GTS **timeout does not** — GTS may be holding a
+seat we could not name, and a minute's cooling-off is cheaper than a second
+seat.
+
 **The bodies stay ``dict``, the documentation does not.** Every step carries an
 ``openapi_extra`` from ``products/openapi.py`` describing what it sends and
 returns, because a passthrough that annotates nothing publishes a schema that
@@ -33,14 +43,17 @@ The check that does run is the adapter's, and it is looser on purpose
 (``providers/products/flight.py``).
 """
 
+import uuid
 from typing import Annotated, Any
 
 from fastapi import Depends, Path
 
 from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
-from app.api.errors import NotFound
+from app.api.errors import AppError, NotFound, UpstreamTimeout
+from app.api.idempotency import IdempotencyKey
 from app.db.session import SessionDep
+from app.modules.orders import service as orders_service
 from app.modules.orders.schemas import BookingResultOut
 from app.modules.products import service
 from app.modules.products.openapi import (
@@ -169,11 +182,38 @@ async def booking(
     payload: dict[str, Any],
     session: SessionDep,
     # ``adapter`` before ``customer`` on purpose: a step that does not exist
-    # here must 404 before anybody is asked to log in (API.md §41).
+    # here must 404 before anybody is asked to log in (API.md §41) — and
+    # ``customer`` before ``idempotency``, so a rejected token never burns
+    # a claim.
     adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
     customer: CurrentCustomer,
+    idempotency: IdempotencyKey,
+    language: LanguageDep,
 ) -> BookingResultOut:
-    return await service.book(session, adapter, payload, customer_id=customer.id)
+    if idempotency.is_replay and idempotency.replayed is not None:
+        return await orders_service.get_order(
+            session,
+            customer.id,
+            uuid.UUID(idempotency.replayed["order_id"]),
+            language=language.requested,
+        )
+    try:
+        result = await service.book(
+            session,
+            adapter,
+            payload,
+            customer_id=customer.id,
+            language=language.requested,
+        )
+    except UpstreamTimeout:
+        # The outcome at GTS is unknown; keep the claim for its minute.
+        raise
+    except AppError:
+        await idempotency.release()
+        raise
+    # The order is committed by now, so an answer that replays it is safe.
+    await idempotency.store({"order_id": str(result.order.id)})
+    return result
 
 
 __all__ = ["RequireProductStep", "router"]

@@ -81,6 +81,7 @@ async def book(
     payload: dict[str, Any],
     *,
     customer_id: uuid.UUID,
+    language: str | None = None,
 ) -> BookingResultOut:
     """Book at GTS, then record the order — in that order, on purpose.
 
@@ -93,7 +94,11 @@ async def book(
     client = await integrations_service.gts_client(session)
     booked = await adapter.book(client, payload)
     return await orders_service.create_order(
-        session, customer_id=customer_id, product=adapter.code, booked=booked
+        session,
+        customer_id=customer_id,
+        product=adapter.code,
+        booked=booked,
+        language=language,
     )
 
 

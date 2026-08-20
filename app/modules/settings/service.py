@@ -12,6 +12,7 @@ than in each endpoint, so an endpoint added later cannot skip it.
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -464,6 +465,32 @@ async def mail_brand() -> MailBrand:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SupportContact:
+    """How a customer reaches support — both optional, both panel settings."""
+
+    phone: str | None = None
+    email: str | None = None
+
+    def text(self) -> str:
+        return ", ".join(part for part in (self.phone, self.email) if part)
+
+
+async def support_contact() -> SupportContact:
+    """Who to call when an order needs a human (``Site`` settings).
+
+    Session-less like ``mail_brand``: it is read while an order response is
+    being assembled, and sometimes from the sweep, with no request in sight. A
+    cached document that carries no ``site`` yet — a partially seeded test
+    cache — reads as "no contact configured", which is the honest default.
+    """
+    site: dict[str, Any] = (await _document()).get("site") or {}
+    return SupportContact(
+        phone=site.get("support_phone") or None,
+        email=site.get("support_email") or None,
+    )
+
+
 async def purge_cache() -> None:
     """``POST /admin/settings/cache/purge/`` (API.md §28).
 
@@ -487,6 +514,8 @@ __all__ = [
     "product_enabled",
     "purge_cache",
     "site_config",
+    "SupportContact",
+    "support_contact",
     "update_branding",
     "update_currencies",
     "update_features",

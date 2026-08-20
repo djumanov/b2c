@@ -101,7 +101,7 @@ async def clean_tables(engine: AsyncEngine) -> AsyncIterator[None]:
     """The services genuinely commit, so isolation is cleanup, not rollback."""
     yield
     async with engine.begin() as connection:
-        for table in ("orders", "customers", "gts_credentials"):
+        for table in ("order_events", "orders", "customers", "gts_credentials"):
             await connection.execute(text(f"DELETE FROM {table}"))
 
 
