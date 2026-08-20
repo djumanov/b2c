@@ -17,9 +17,9 @@ Two details that are easy to get wrong and expensive to get wrong:
   at the same moment; without a lock they all re-authenticate at once, and GTS
   sees a burst of logins from one machine account.
 The canonical status vocabulary is **not** here: it is ours, not the
-boundary's, and it lives in ``modules/orders/states.py`` with the table of
-legal moves that gives it meaning. Each vertical's adapter maps GTS's codes
-onto it (order-system/03-design.md §3.5).
+boundary's, and it belongs to whichever module owns the states. Nothing owns
+them today — the order system was removed to be rebuilt — so the codes above
+are relayed and nothing maps them.
 
 * **Booking and payment are never retried** (API.md §12). A retried booking is
   a second booking. Only idempotent ``GET``s retry — twice, with backoff.
@@ -55,8 +55,8 @@ class GtsClient(Protocol):
     """Every outbound GTS call goes through here.
 
     Implementations translate the GTS envelope, map its error codes into the
-    catalogue (default ``502 upstream_error``, with ``offer_expired`` and
-    ``payment_failed`` broken out), keep the original text in ``message`` and
+    catalogue (default ``502 upstream_error``, with ``offer_expired`` broken
+    out), keep the original text in ``message`` and
     the original code in ``meta.upstream``, and forward ``X-Request-Id``.
     """
 

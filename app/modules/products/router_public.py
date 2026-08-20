@@ -16,24 +16,11 @@ indistinguishable (API.md §41).
 **Auth is optional on the search steps** (§20's ``(✓)``): the search form is
 public. A presented but invalid token still 401s — ``OptionalCustomer``
 forgives absence, not garbage — and the search rate limit keys on the subject
-when there is one, the IP otherwise. ``booking/`` is the exception and demands
-a customer (§20's ``✓``, PROJECT.md D4: no guest purchase).
+when there is one, the IP otherwise.
 
-**The gate runs before the token** on booking: ``adapter`` is declared ahead of
-the principal, so a vertical this installation does not sell answers 404 to an
-anonymous caller rather than 401. Which verticals we sell must not be readable
-from the difference (API.md §41).
-
-**Booking is a money endpoint.** It is idempotent and sits in the 10/min
-payment bucket, because it writes an order and takes real inventory (API.md
-§10, §14). The client is not asked for a key: one is derived from the request
-when the header is absent.
-
-**Cancelling is not here any more.** It moved to
-``POST /public/orders/{id}/cancel/``: releasing a reservation is an operation on
-the order, not a step of the search flow, and it needed the order's state to
-decide whether it is allowed at all (API.md §16, order-system/03-design.md
-``O3``).
+**Booking and cancelling are not here.** They belonged to the order system,
+which was removed to be rebuilt; ``FlowStep.BOOKING`` is still in the
+catalogue, no adapter declares it, and the gate below answers ``404``.
 
 **The bodies stay ``dict``, the documentation does not.** Every step carries an
 ``openapi_extra`` from ``products/openapi.py`` describing what it sends and
@@ -47,14 +34,12 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Path
 
-from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
+from app.api.deps import LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
-from app.api.errors import NotFound, UpstreamError
-from app.api.idempotency import IdempotencyKey
+from app.api.errors import NotFound
 from app.db.session import SessionDep
 from app.modules.products import service
 from app.modules.products.openapi import (
-    FLIGHT_BOOKING,
     FLIGHT_OFFERS,
     FLIGHT_SEARCH,
     FLIGHT_UPSELL,
@@ -166,56 +151,6 @@ async def verify(
     _customer: OptionalCustomer,
 ) -> dict[str, Any]:
     return await service.verify(session, adapter, payload)
-
-
-@router.post(
-    "/booking/",
-    summary="Book the verified offer",
-    dependencies=[Depends(RateLimit("payment"))],
-    openapi_extra=FLIGHT_BOOKING,
-)
-async def booking(
-    payload: dict[str, Any],
-    session: SessionDep,
-    adapter: Annotated[ProductAdapter, Depends(RequireProductStep(FlowStep.BOOKING))],
-    customer: CurrentCustomer,
-    idempotency: IdempotencyKey,
-) -> dict[str, Any]:
-    """Book, once, whatever the network does to the request.
-
-    ``idempotency`` is declared **last** on purpose. FastAPI resolves the
-    parameters in order, so a vertical this installation does not sell still
-    answers ``404`` and an anonymous caller still answers ``401`` before any
-    of this runs (API.md §41). It also means the derived key is computed for a
-    caller who has already passed both gates.
-
-    The key is released only when the booking was **refused**: nothing was
-    taken, so the customer may try again. A timeout keeps its claim, because
-    the seat may be real and a retry could take a second one — the order row's
-    own unique key holds that line even after Redis forgets
-    (order-system/03-design.md §3.8). Both hold whether the key came from the
-    client or was derived; the derived one is the same on every retry of the
-    same request, which is what makes it worth anything.
-
-    ``RateLimit("payment")`` — 10/min/user (API.md §14). Booking spends the
-    installation's GTS credential and takes real inventory; it stopped being an
-    ordinary public read the moment it started writing orders.
-    """
-    if idempotency.replayed is not None:
-        return idempotency.replayed
-    try:
-        answer = await service.book(
-            session,
-            adapter,
-            payload,
-            customer_id=customer.id,
-            idempotency_key=idempotency.key,
-        )
-    except UpstreamError:
-        await idempotency.release()
-        raise
-    await idempotency.store(answer)
-    return answer
 
 
 __all__ = ["RequireProductStep", "router"]

@@ -15,16 +15,14 @@ migration that seeds data is frozen the moment it ships.
 """
 
 import uuid
-from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, Integer, String, text
+from sqlalchemy import Boolean, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.i18n import DEFAULT_LANGUAGE
-from app.core.money import money_column
 from app.db.base import Base, Entity
 from app.db.mixins import (
     SingletonMixin,
@@ -114,45 +112,6 @@ class Features(Entity, SingletonMixin):
 
     flags: Mapped[dict[str, bool]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-
-
-class OrderSettings(Entity, SingletonMixin):
-    """The two numbers the ticketing step needs, and both belong to the client.
-
-    They pass PROJECT.md §7's test — "could two clients want different values?"
-    — and the answer is plainly yes. An agency selling long-haul wants a wider
-    ticketing margin than one selling same-week domestic; one that absorbs
-    small fare movements out of margin wants a tolerance above zero, and one
-    that does not wants exactly zero.
-
-    Both are stored as minutes and money rather than as free-form settings so
-    the panel can show them as what they are.
-    """
-
-    __tablename__ = "order_settings"
-    __table_args__ = (
-        singleton_check(),
-        CheckConstraint("ticket_margin_minutes >= 0", name="ticket_margin"),
-        CheckConstraint("reprice_tolerance >= 0", name="reprice_tolerance"),
-        CheckConstraint("hold_fallback_minutes > 0", name="hold_fallback"),
-    )
-
-    #: How long before the provider's deadline ticketing must have finished.
-    #: Retries stop here, not at the deadline itself: a ticket bought one
-    #: second before the hold lapses is a race nobody wins.
-    ticket_margin_minutes: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("30")
-    )
-    #: How much dearer the fare may become between paying and ticketing before
-    #: the order is refunded instead. ``0`` means any increase stops it.
-    reprice_tolerance: Mapped[Decimal] = money_column(
-        nullable=False, server_default=text("0")
-    )
-    #: What to assume when the provider states no deadline at all. Not a guess
-    #: at *their* rule — a bound on how long we will hold an unpaid order open.
-    hold_fallback_minutes: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("180")
     )
 
 

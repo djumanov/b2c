@@ -12,7 +12,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, SecretStr, field_validator
 
 #: A card number is 13–19 digits (ISO/IEC 7812). Spaces and dashes are stripped
 #: before this is applied — people paste what is printed on the card.
@@ -101,69 +101,7 @@ class CardCreateIn(BaseModel):
         return _clean_expire(value)
 
 
-class CardPaymentIn(BaseModel):
-    """The card step of a checkout — a new card, or a saved one (API.md §22).
-
-    Exactly one of the two forms. Both together is a request that means two
-    things, and neither is a request that means nothing; both are the client's
-    mistake and both are a ``422``.
-
-    Validation is the same as saving a card, deliberately: a number that would
-    be refused at ``profile/cards/`` must not be spent against the
-    installation's merchant account either.
-    """
-
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
-
-    number: SecretStr | None = None
-    expire: SecretStr | None = None
-    #: A card already saved by this customer. The server opens the stored
-    #: ciphertext itself (``reveal_card``); the client never handles the number.
-    card_id: uuid.UUID | None = None
-
-    @field_validator("number")
-    @classmethod
-    def _valid_number(cls, value: SecretStr | None) -> SecretStr | None:
-        return None if value is None else _clean_number(value)
-
-    @field_validator("expire")
-    @classmethod
-    def _valid_expire(cls, value: SecretStr | None) -> SecretStr | None:
-        return None if value is None else _clean_expire(value)
-
-    @model_validator(mode="after")
-    def _exactly_one_form(self) -> "CardPaymentIn":
-        typed = self.number is not None or self.expire is not None
-        if typed and self.card_id is not None:
-            raise ValueError("Send either a card number or a card_id, not both")
-        if not typed and self.card_id is None:
-            raise ValueError("Send either a card number or a card_id")
-        if typed and (self.number is None or self.expire is None):
-            raise ValueError("A typed card needs both number and expire")
-        return self
-
-
-class OtpConfirmIn(BaseModel):
-    """The code the provider texted (API.md §22).
-
-    **The field is ``otp_code`` and not ``code``**, and that is a security
-    decision rather than a naming one: ``core.logging`` deliberately leaves
-    ``code`` out of its redaction keys — it is also the provider code, the error
-    code and the currency code — so a field called ``code`` would have written
-    every one-time password into the journal. ``otp_code`` is redacted.
-
-    The value is not checked here beyond its shape. The provider issued the code
-    and the provider rules on it (API.md §22).
-    """
-
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
-
-    otp_code: str = Field(min_length=4, max_length=12, pattern=r"^\d+$")
-
-
 __all__ = [
     "CardCreateIn",
     "CardOut",
-    "CardPaymentIn",
-    "OtpConfirmIn",
 ]
