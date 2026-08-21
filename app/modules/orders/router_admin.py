@@ -10,7 +10,7 @@ and the audit middleware journals the HTTP call.
 """
 
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import Depends, Query
 
@@ -20,6 +20,7 @@ from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.orders import service
 from app.modules.orders.lifecycle import Stage
+from app.modules.orders.models import OrderStatus, PaymentStatus, TicketingStatus
 from app.modules.orders.schemas import (
     OrderAdminListItemOut,
     OrderAdminOut,
@@ -71,51 +72,44 @@ async def update_message(
 
 # --- the orders themselves ------------------------------------------------------------
 #
-# The filters are the raw columns, named as the admin row names them. There
-# is no filter on the customer's ``status``: it is not a column, and the
-# inbox a human works from is ``attention``.
+# Four filters: the customer's ``status`` — the word the row shows, matched
+# in SQL by the same rule that derives it — and the three raw columns, named
+# as the admin row names them. The vocabularies are the enums themselves, so
+# a value added to one is accepted here the same day.
 
-BookingParam = Annotated[
-    Literal["booked", "cancelled"] | None, Query(alias="booking_status")
-]
-PaymentParam = Annotated[
-    Literal["pending", "paid", "failed", "refunding", "refunded", "refund_failed"]
-    | None,
-    Query(alias="payment_status"),
-]
-TicketingParam = Annotated[
-    Literal["pending", "processing", "ticketed", "failed"] | None,
-    Query(alias="ticketing_status"),
-]
-AttentionParam = Annotated[
-    bool,
+StatusParam = Annotated[
+    Stage | None,
     Query(
         description=(
-            "Only orders a human must act on: the ticket did not come out, a "
-            "refund failed, or money was taken on a cancelled order."
+            "The customer's status, as the row shows it. "
+            "`ticketing_failed` is the support inbox: every order whose screen "
+            "says to contact support, and none whose money has gone back."
         )
     ),
 ]
+BookingParam = Annotated[OrderStatus | None, Query(alias="booking_status")]
+PaymentParam = Annotated[PaymentStatus | None, Query(alias="payment_status")]
+TicketingParam = Annotated[TicketingStatus | None, Query(alias="ticketing_status")]
 
 
-@router.get("/", summary="All orders, with the support inbox filter")
+@router.get("/", summary="All orders, filterable by the customer's status")
 async def list_orders(
     session: SessionDep,
     pagination: PaginationDep,
     query: ListQueryDep,
+    status: StatusParam = None,
     booking_status: BookingParam = None,
     payment_status: PaymentParam = None,
     ticketing_status: TicketingParam = None,
-    attention: AttentionParam = False,
 ) -> Page[OrderAdminListItemOut]:
     return await service.list_orders_admin(
         session,
         pagination,
         query,
+        status=status,
         booking_status=booking_status,
         payment_status=payment_status,
         ticketing_status=ticketing_status,
-        attention=attention,
     )
 
 

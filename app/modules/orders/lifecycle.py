@@ -23,6 +23,8 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Final
 
+from sqlalchemy import ColumnElement, tuple_
+
 from app.api.errors import Conflict
 from app.core.logging import request_id_var
 from app.db.mixins import utcnow
@@ -273,26 +275,62 @@ class Stage(enum.StrEnum):
     CANCELLED = "cancelled"
 
 
-def stage_of(order: Order) -> Stage:
+def _stage(status: str, payment: str, ticketing: str) -> Stage:
     """Total over the three columns: every combination has an answer, the
     unreachable ones land on the side that asks a human to look."""
-    payment = order.payment_status
     if payment == PaymentStatus.REFUNDED:
         return Stage.REFUNDED
     if payment in (PaymentStatus.PENDING, PaymentStatus.FAILED):
-        if order.status == OrderStatus.CANCELLED:
+        if status == OrderStatus.CANCELLED:
             return Stage.CANCELLED
         return Stage.BOOKED
     # Money was taken: paid, refunding or refund_failed.
-    if order.ticketing_status == TicketingStatus.TICKETED:
+    if ticketing == TicketingStatus.TICKETED:
         return Stage.TICKETED
     if (
-        order.status == OrderStatus.CANCELLED
+        status == OrderStatus.CANCELLED
         or payment != PaymentStatus.PAID
-        or order.ticketing_status == TicketingStatus.FAILED
+        or ticketing == TicketingStatus.FAILED
     ):
         return Stage.TICKETING_FAILED
     return Stage.TICKET_WAITING
+
+
+def stage_of(order: Order) -> Stage:
+    """The one ``status`` a client reads, off the row's three columns."""
+    return _stage(order.status, order.payment_status, order.ticketing_status)
+
+
+#: Which column combinations read as which status — ``_stage`` evaluated over
+#: all 48 of them once, at import. This is what makes a list filterable by
+#: the customer's word without a second spelling of the rule.
+STAGE_COMBINATIONS: Final[dict[Stage, tuple[tuple[str, str, str], ...]]] = {
+    stage: tuple(
+        (status.value, payment.value, ticketing.value)
+        for status in OrderStatus
+        for payment in PaymentStatus
+        for ticketing in TicketingStatus
+        if _stage(status, payment, ticketing) is stage
+    )
+    for stage in Stage
+}
+
+
+def stage_filter(stage: Stage) -> ColumnElement[bool]:
+    """``WHERE`` the row reads as ``stage`` — the same function as ``stage_of``,
+    applied to the columns in SQL rather than to a loaded row.
+
+    A hand-written clause per status would be a second copy of the rule,
+    and the copy drifts: the inbox this replaced kept showing orders whose
+    money had already gone back. Here the filter *is* ``stage_of``, so the
+    word a row is listed under and the word it shows are the same word by
+    construction. A row-value ``IN`` list of at most a few dozen triples;
+    the table is operator-sized and the list is scanned by every other filter
+    already.
+    """
+    return tuple_(Order.status, Order.payment_status, Order.ticketing_status).in_(
+        STAGE_COMBINATIONS[stage]
+    )
 
 
 __all__ = [
@@ -300,12 +338,14 @@ __all__ = [
     "CUSTOMER",
     "ORDER_STATUS",
     "PAYMENT_STATUS",
+    "STAGE_COMBINATIONS",
     "SYSTEM",
     "TICKETING_STATUS",
     "Stage",
     "event",
     "is_staff",
     "staff",
+    "stage_filter",
     "stage_of",
     "transition",
 ]

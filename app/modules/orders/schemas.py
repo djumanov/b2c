@@ -431,14 +431,22 @@ class OrderMessageIn(BaseModel):
 
 class OrderAdminListItemOut(OrderListItemOut):
     """A list row for support: the customer's row, the three columns behind
-    its ``status``, and who and which GTS order."""
+    its ``status``, who and which GTS order — and the reason, so the inbox
+    reads without opening every row."""
 
     booking_status: str
     payment_status: str
     ticketing_status: str
+    #: Why a ``cancelled`` order was cancelled.
+    cancel_reason: str | None
+    #: GTS's words when the ticket did not come out — the inbox's "why".
+    ticketing_error: str | None
     customer_id: uuid.UUID
     gts_order_number: int
     gts_status: str
+    #: The last time anything about the order moved; ``ordering=-updated_at``
+    #: puts the freshest trouble first.
+    updated_at: datetime
 
     @classmethod
     def from_order(cls, order: Order) -> "OrderAdminListItemOut":
@@ -448,9 +456,12 @@ class OrderAdminListItemOut(OrderListItemOut):
             booking_status=order.status,
             payment_status=order.payment_status,
             ticketing_status=order.ticketing_status,
+            cancel_reason=order.cancel_reason,
+            ticketing_error=order.ticketing_error,
             customer_id=order.customer_id,
             gts_order_number=order.gts_order_number,
             gts_status=order.gts_status,
+            updated_at=order.updated_at,
         )
 
 

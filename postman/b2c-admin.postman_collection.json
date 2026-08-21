@@ -821,7 +821,7 @@
           }
         },
         {
-          "name": "Orders — support inbox",
+          "name": "Orders — support inbox (status=ticketing_failed, freshest first)",
           "request": {
             "method": "GET",
             "header": [
@@ -831,20 +831,20 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/admin/orders/?attention=true&page=1&page_size=20",
+              "raw": "{{base_url}}/admin/orders/?status=ticketing_failed&ordering=-updated_at&page=1&page_size=20",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "admin",
                 "orders",
-                "?attention=true&page=1&page_size=20"
+                "?status=ticketing_failed&ordering=-updated_at&page=1&page_size=20"
               ]
             }
           }
         },
         {
-          "name": "Orders — all (filters: booking_status, payment_status, ticketing_status, attention, search)",
+          "name": "Orders — all (filters: status, booking_status, payment_status, ticketing_status, search; ordering: created_at, updated_at)",
           "request": {
             "method": "GET",
             "header": [

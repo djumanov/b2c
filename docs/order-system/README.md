@@ -111,7 +111,7 @@ Guard'lar (natijaviy order ustida tekshiriladi; bir chaqiruvda
   to'langanini — faqat staff.
 - `payment → paid | failed`: **har doim ruxsat** — pul fakti rad etilmaydi
   (bekor qilingan orderda ham yoziladi; mijoz `status = ticketing_failed`
-  ko'radi, admin `attention` inbox'ida chiqadi).
+  ko'radi, admin `status=ticketing_failed` ro'yxatida chiqadi).
 - `payment → refunding | refunded | refund_failed`: faqat staff; ticketing
   `ticketed` bo'lmasa.
 - `ticketing → processing | ticketed`: `payment = paid` va `status = booked`.
@@ -120,10 +120,16 @@ Kim (`order_events.actor`): `customer`, `system` (sweep), `staff:<uuid>`.
 
 ## 4. Tarix — `order_events`
 
-`order_id, created_at, event` (`payment.paid`, `ticketing.failed`,
+`order_id, created_at, seq, event` (`payment.paid`, `ticketing.failed`,
 `order.created`…)`, from_value, to_value, actor, note, data, request_id`.
 `data` — faqat kod va id'lar (`gts_order_number`, urinish id); xom GTS javobi
 `orders.gts_response` da, karta haqida hech narsa hech qayerda.
+
+`created_at` — `now()`, ya'ni tranzaksiya boshlangan vaqt: bitta commit
+yozgan qatorlar (`ticketing.processing` + `ticketing.requested`) bir xil
+tamg'a oladi. `seq` — bazaning o'z hisoblagichi (identity), yozilish tartibi;
+tarix `created_at, seq` bo'yicha o'qiladi, shuning uchun tartib hech qachon
+tasodifiy emas.
 
 ## 4a. To'lov — `payment_attempts` va ikki qadam
 
@@ -261,7 +267,7 @@ qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
-| GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`; filtrlar shu uchta xom ustun bo'yicha; `attention=true` — support inbox (ticketing failed · refund_failed · bekor qilingan, lekin to'langan); `search` — PNR yoki GTS raqami |
+| GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`, sabab uchun `cancel_reason`, `ticketing_error`, `updated_at`; filtrlar: `status` (§2 dagi oltita so'z — SQL `stage_of` ning o'zidan hosil qilinadi, `lifecycle.stage_filter`) va uchta xom ustun, birga ishlaydi; **support inbox = `status=ticketing_failed`** — ekrani "supportga murojaat qiling" deydigan har bir order, puli qaytgani emas; `ordering` — `created_at` yoki `updated_at` (`-updated_at` — eng so'nggi o'zgargan birinchi); `search` — PNR yoki GTS raqami |
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
 | POST | `/admin/orders/{id}/refund/` | staff | `{status: refunding \| refunded \| refund_failed, note}` — pul provider kabinetida qaytariladi, bu yozuv; `ticketed` orderga — 409 |
 | POST | `/admin/orders/{id}/sync/` | staff | GTS (va `confirming` urinish bo'lsa provider) bilan hozir solishtirish: yo'qolgan to'lov javobi, kech chiqqan chipta (`failed → ticketed`, faqat `paid`+`booked`), GTS qo'yib yuborgan bron |

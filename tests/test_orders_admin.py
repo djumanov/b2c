@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.mixins import utcnow
 from app.modules.audit.models import AuditLog
 from app.modules.customers.models import Customer
-from app.modules.orders.models import OrderEvent, PaymentAttempt
+from app.modules.orders.lifecycle import Stage, stage_of
+from app.modules.orders.models import (
+    OrderEvent,
+    OrderStatus,
+    PaymentAttempt,
+    PaymentStatus,
+    TicketingStatus,
+)
 from tests.conftest import (
     FakeProvider,
     gts_order_body,
@@ -48,7 +55,7 @@ async def test_customer_token_is_403_and_no_token_401(
     assert (await client.get(ADMIN_URL, headers=customer_headers)).status_code == 403
 
 
-async def test_list_filters_and_attention_inbox(
+async def test_list_filters_and_the_inbox_is_the_customers_word(
     client: httpx.AsyncClient,
     customer: Customer,
     staff_headers: dict[str, str],
@@ -72,10 +79,15 @@ async def test_list_filters_and_attention_inbox(
         payment_status="paid",
         gts_order_number=1003,
     )
+    # The money went back: the ticket still reads ``failed``, the case is closed.
+    refunded = await _failed_ticketing(
+        db_session, customer, payment_status="refunded", gts_order_number=1004
+    )
 
     everything = await client.get(ADMIN_URL, headers=staff_headers)
-    assert everything.json()["meta"]["total"] == 4
-    row = next(item for item in everything.json()["data"] if item["id"] == str(fine.id))
+    assert everything.json()["meta"]["total"] == 5
+    rows = {item["id"]: item for item in everything.json()["data"]}
+    row = rows[str(fine.id)]
     assert row["customer_id"] == str(customer.id)
     assert row["gts_order_number"] == 61453
     # The customer's word and the three columns it was read from, side by side.
@@ -83,20 +95,33 @@ async def test_list_filters_and_attention_inbox(
     assert row["booking_status"] == "booked"
     assert row["payment_status"] == "pending"
     assert row["ticketing_status"] == "pending"
-    paid_row = next(
-        item
-        for item in everything.json()["data"]
-        if item["id"] == str(cancelled_paid.id)
-    )
+    assert row["cancel_reason"] is None
+    assert row["ticketing_error"] is None
+    assert row["updated_at"] is not None
+    paid_row = rows[str(cancelled_paid.id)]
     assert paid_row["status"] == "ticketing_failed"
     assert paid_row["booking_status"] == "cancelled"
     assert paid_row["payment_status"] == "paid"
+    assert paid_row["cancel_reason"] == "staff"
+    # The inbox reads without opening the row: GTS's reason is on it.
+    assert rows[str(failed.id)]["ticketing_error"].startswith("user don't have")
+    assert rows[str(refunded.id)]["status"] == "refunded"
 
+    # ``status=ticketing_failed`` is the inbox — and a refunded order is not
+    # in it, whatever its ticketing column still says.
     inbox = await client.get(
-        ADMIN_URL, params={"attention": "true"}, headers=staff_headers
+        ADMIN_URL, params={"status": "ticketing_failed"}, headers=staff_headers
     )
     ids = {item["id"] for item in inbox.json()["data"]}
     assert ids == {str(failed.id), str(refund_failed.id), str(cancelled_paid.id)}
+    closed = await client.get(
+        ADMIN_URL, params={"status": "refunded"}, headers=staff_headers
+    )
+    assert [item["id"] for item in closed.json()["data"]] == [str(refunded.id)]
+    unknown = await client.get(
+        ADMIN_URL, params={"status": "attention"}, headers=staff_headers
+    )
+    assert unknown.status_code == 422
 
     by_ticketing = await client.get(
         ADMIN_URL, params={"ticketing_status": "failed"}, headers=staff_headers
@@ -104,7 +129,15 @@ async def test_list_filters_and_attention_inbox(
     assert {item["id"] for item in by_ticketing.json()["data"]} == {
         str(failed.id),
         str(refund_failed.id),
+        str(refunded.id),
     }
+    # The two kinds of filter combine: the word, narrowed by a column.
+    combined = await client.get(
+        ADMIN_URL,
+        params={"status": "ticketing_failed", "payment_status": "refund_failed"},
+        headers=staff_headers,
+    )
+    assert [item["id"] for item in combined.json()["data"]] == [str(refund_failed.id)]
     by_number = await client.get(
         ADMIN_URL, params={"search": "1003"}, headers=staff_headers
     )
@@ -116,10 +149,83 @@ async def test_list_filters_and_attention_inbox(
     assert [item["id"] for item in by_booking.json()["data"]] == [
         str(cancelled_paid.id)
     ]
-    ignored = await client.get(
-        ADMIN_URL, params={"status": "cancelled"}, headers=staff_headers
+    assert (
+        await client.get(
+            ADMIN_URL, params={"booking_status": "paid"}, headers=staff_headers
+        )
+    ).status_code == 422
+
+    # Freshest trouble first: the oldest row, touched last, is the first shown.
+    fine.route_summary = "TAS-IST"
+    await db_session.commit()
+    freshest = await client.get(
+        ADMIN_URL, params={"ordering": "-updated_at"}, headers=staff_headers
     )
-    assert ignored.json()["meta"]["total"] == 4
+    assert freshest.json()["data"][0]["id"] == str(fine.id)
+    newest = await client.get(ADMIN_URL, headers=staff_headers)
+    assert newest.json()["data"][0]["id"] == str(refunded.id)
+
+
+async def test_status_filter_lists_every_row_under_the_word_it_shows(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """All 48 column combinations, each listed under exactly the ``status``
+    its own row reports — the filter and the word are one rule."""
+    expected: dict[Stage, set[str]] = {stage: set() for stage in Stage}
+    for booking in OrderStatus:
+        for payment in PaymentStatus:
+            for ticketing in TicketingStatus:
+                order = await make_order(
+                    db_session,
+                    customer,
+                    status=booking,
+                    payment_status=payment,
+                    ticketing_status=ticketing,
+                    cancelled_at=(
+                        utcnow() if booking == OrderStatus.CANCELLED else None
+                    ),
+                )
+                expected[stage_of(order)].add(str(order.id))
+
+    listed: dict[Stage, set[str]] = {}
+    for stage in Stage:
+        response = await client.get(
+            ADMIN_URL,
+            params={"status": stage.value, "page_size": 100},
+            headers=staff_headers,
+        )
+        assert response.status_code == 200
+        rows = response.json()["data"]
+        assert {row["status"] for row in rows} <= {stage.value}
+        listed[stage] = {row["id"] for row in rows}
+
+    assert listed == expected
+    assert sum(len(ids) for ids in listed.values()) == 48
+
+
+async def test_detail_history_keeps_the_order_it_was_written_in(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """Lines one commit writes share a ``created_at`` (``now()`` is the
+    transaction's start); the history still reads in insertion order."""
+    order = await make_order(db_session, customer, payment_status="paid")
+    names = [f"step.{index}" for index in range(8)]
+    db_session.add_all(
+        OrderEvent(order_id=order.id, event=name, actor="system") for name in names
+    )
+    await db_session.commit()
+
+    response = await client.get(f"{ADMIN_URL}{order.id}/", headers=staff_headers)
+
+    events = response.json()["data"]["events"]
+    assert len({event["created_at"] for event in events}) == 1
+    assert [event["event"] for event in events] == names
 
 
 async def test_detail_carries_events_and_attempts_without_reference(

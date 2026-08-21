@@ -101,7 +101,10 @@ from app.providers.products.base import (
 
 logger = get_logger(__name__)
 
-_ORDER_ORDERING: OrderingMap = {"created_at": Order.created_at}
+_ORDER_ORDERING: OrderingMap = {
+    "created_at": Order.created_at,
+    "updated_at": Order.updated_at,
+}
 
 # --- the sweep's clocks (properties of providers and GTS, not of a client) ---------
 
@@ -1131,7 +1134,7 @@ async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
         await session.scalars(
             select(OrderEvent)
             .where(OrderEvent.order_id == order.id)
-            .order_by(OrderEvent.created_at)
+            .order_by(OrderEvent.created_at, OrderEvent.seq)
         )
     ).all()
     latest = attempts[-1] if attempts else None
@@ -1183,38 +1186,30 @@ async def list_orders_admin(
     pagination: Pagination,
     query: ListQuery,
     *,
-    booking_status: str | None = None,
-    payment_status: str | None = None,
-    ticketing_status: str | None = None,
-    attention: bool = False,
+    status: Stage | None = None,
+    booking_status: OrderStatus | None = None,
+    payment_status: PaymentStatus | None = None,
+    ticketing_status: TicketingStatus | None = None,
 ) -> Page[OrderAdminListItemOut]:
-    """Every order, newest first; ``attention`` is the support inbox.
+    """Every order, newest first, filterable by the customer's word and by
+    the three columns behind it.
 
-    The three filters are the raw columns, named as the admin row names
-    them — ``status`` is the customer's word and is not a column.
-
-    "Needs attention" is what a human must do something about: the ticket
-    did not come out, a refund failed, or money was taken on an order that
-    is not going to be ticketed.
+    ``status`` is the filter support works from: a row is listed under the
+    word its customer sees (``lifecycle.stage_filter``), so
+    ``status=ticketing_failed`` is the inbox — every order whose screen says
+    "contact support", and none whose money has already gone back. The
+    column filters are for the narrower questions ("which refunds are
+    still under way?").
     """
     stmt = live(Order)
+    if status is not None:
+        stmt = stmt.where(lifecycle.stage_filter(status))
     if booking_status is not None:
         stmt = stmt.where(Order.status == booking_status)
     if payment_status is not None:
         stmt = stmt.where(Order.payment_status == payment_status)
     if ticketing_status is not None:
         stmt = stmt.where(Order.ticketing_status == ticketing_status)
-    if attention:
-        stmt = stmt.where(
-            or_(
-                Order.ticketing_status == TicketingStatus.FAILED,
-                Order.payment_status == PaymentStatus.REFUND_FAILED,
-                and_(
-                    Order.status == OrderStatus.CANCELLED,
-                    Order.payment_status == PaymentStatus.PAID,
-                ),
-            )
-        )
     stmt = apply_search(stmt, query, Order.pnr, cast(Order.gts_order_number, String))
     stmt = apply_created_range(stmt, query, Order.created_at)
     stmt = apply_ordering(
