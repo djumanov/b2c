@@ -39,6 +39,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Identity,
     Index,
     Integer,
     SmallInteger,
@@ -240,9 +241,14 @@ class OrderEvent(Base, UUIDPrimaryKeyMixin):
     #: No foreign key on purpose, like every cross-row reference here: the
     #: order is never deleted, and an index is all the lookup needs.
     order_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: ``now()`` is the transaction's start, so every line one commit writes
+    #: carries the same stamp — ``ticketing.processing`` and
+    #: ``ticketing.requested`` do, always. ``seq`` is the database's own
+    #: count of inserts, and the tiebreak the history is read in.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
     #: ``"<lifecycle>.<new value>"`` — ``payment.paid``, ``ticketing.failed``,
     #: ``order.created`` — so a filter needs no joins and no parsing.
     event: Mapped[str] = mapped_column(String(48), nullable=False)
