@@ -146,8 +146,27 @@ ProviderTitle = Annotated[str, Field(min_length=1, max_length=64)]
 Credentials = Annotated[dict[str, str | None], Field(max_length=20)]
 
 
+class ProviderFieldOut(BaseModel):
+    """One setting the provider's adapter reads — what the panel's form shows.
+
+    ``secret`` values come back masked in ``credentials``; the others are
+    shown as written. ``choices`` is non-empty for a ``choice`` field.
+    """
+
+    key: str
+    kind: str
+    required: bool
+    choices: list[str]
+    default: str | None
+
+
 class PaymentProviderOut(BaseModel):
-    """One provider as the panel sees it. ``credentials`` values are masked."""
+    """One provider as the panel sees it. Secret ``credentials`` are masked.
+
+    ``fields`` is empty for a provider this release has no adapter for: the
+    panel then shows its free key/value editor, and every value comes back
+    masked because nothing says which ones are secret.
+    """
 
     code: PaymentProviderCode
     enabled: bool
@@ -156,6 +175,7 @@ class PaymentProviderOut(BaseModel):
     logo_url: str | None
     sort_order: int
     credentials: dict[str, str]
+    fields: list[ProviderFieldOut]
     last_tested_at: datetime | None
     last_test_ok: bool | None
     last_test_error: str | None
@@ -176,6 +196,15 @@ class PaymentProviderIn(BaseModel):
     logo_id: uuid.UUID | None = None
     sort_order: Annotated[int, Field(ge=0, le=9999)] | None = None
     credentials: Credentials | None = None
+
+
+class PaymentTestOut(BaseModel):
+    """What the provider said to the stored settings (the ``SmtpTestOut``
+    shape): ``ok: false`` with the reason is an answer, not an error."""
+
+    ok: bool
+    detail: str | None
+    tested_at: datetime
 
 
 # --- social sign-in (API.md §29) ----------------------------------------------------
@@ -210,6 +239,8 @@ __all__ = [
     "CredentialUpdateIn",
     "PaymentProviderIn",
     "PaymentProviderOut",
+    "PaymentTestOut",
+    "ProviderFieldOut",
     "SmtpIn",
     "SmtpOut",
     "SmtpTestIn",

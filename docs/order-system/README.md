@@ -3,9 +3,10 @@
 Bu hujjat buyurtma (order) hayotiy sikli bo'yicha **manba**. Kod unga
 ergashadi; farq topilsa avval shu fayl tuzatiladi, keyin kod.
 
-To'rt bosqichda qurilgan: **1 — lifecycle**, **2 — to'lov** (port + sandbox
-provider, `payment_attempts`, sweep), **3 — GTS ticketing**, **4 — support**
-(`/admin/orders/`). Hammasi joriy. Keyingi ishlar — §7.
+To'rt bosqichda qurilgan: **1 — lifecycle**, **2 — to'lov** (port, sandbox,
+**Payme Subscribe API** adapteri, `payment_attempts`, sweep), **3 — GTS
+ticketing**, **4 — support** (`/admin/orders/`). Hammasi joriy. Keyingi
+ishlar — §7.
 
 ## 1. Uchta lifecycle, bitta qator
 
@@ -159,8 +160,11 @@ Qadamlar (`orders/service.py`):
    provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
 2. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
    Qulf ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa —
-   provider chaqirilmaydi, joriy holat qaytadi (o'qish); muddat o'tgan bo'lsa
-   → `abandoned` + `cancelled/expired` + 409. Urinish `confirming`, **commit**
+   provider chaqirilmaydi, joriy holat qaytadi (o'qish); urinishni boshqa
+   provider boshlagan bo'lsa (panel o'rtada almashtirgan) → `abandoned` +
+   409 "start again" — `start` pul yechmaydi, yangi urinish hozirgi provider
+   bilan ochiladi; muddat o'tgan bo'lsa → `abandoned` + `cancelled/expired`
+   + 409. Urinish `confirming`, **commit**
    — charge provider'ga hech qachon ikki marta ketmaydi. So'ng
    `provider.confirm()` qulfsiz; natija `settle_attempt` bilan **qayta qulf +
    qayta o'qish** ostida qo'llanadi (sweep bilan poyga): `paid` → urinish
@@ -170,10 +174,45 @@ Qadamlar (`orders/service.py`):
    qolaveradi — §2).
 
 Provider tanlovi (`payments.service.payment_provider`): test override →
-panelda yoqilgan provider adapteri (Payme/Click kelgunicha "bu relizda
-yo'q" → 502) → `DEBUG=true` va hech biri yoqilmagan → **sandbox** → aks
-holda 502. Sandbox kodlari: `000000` paid · `111111` declined · `222222`
-timeout (noma'lum) · `333333` pending · boshqasi — noto'g'ri kod.
+panelda yoqilgan provider adapteri (`ADAPTERS`: hozir **Payme**; Click
+kelgunicha "bu relizda yo'q" → 502) → `DEBUG=true` va hech biri yoqilmagan
+→ **sandbox** → aks holda 502. Sandbox kodlari: `000000` paid · `111111`
+declined · `222222` timeout (noma'lum) · `333333` pending · boshqasi —
+noto'g'ri kod.
+
+**Payme** (`providers/payments/payme.py`, Subscribe API, JSON-RPC
+`POST {base}/api`). Merchant — loyiha egasi, Payme Business kassasi bilan;
+mijoz ilovadan chiqmaydi. Port qadamlari Payme metodlariga shunday tushadi:
+
+| Port | Payme | Izoh |
+|---|---|---|
+| `start` | `receipts.create` (tiyin, `account: {account_field: order.id}`, ixtiyoriy `detail`) → `cards.create {save: false}` → `cards.get_verify_code` | chek **birinchi**: karta tegilmasdan va SMS ketmasdan `merchant_id:key` tekshiriladi. Token bitta urinish uchun — saqlangan karta bizda PAN (shifrlangan), Payme tokeni emas. `reference` = `{v, token, receipt}` JSON (orders shifrlab saqlaydi); `phone_hint` = Payme'ning masklangan raqami |
+| `confirm` | `cards.verify {token, code}` → `receipts.pay {id, token}` | `receipts.pay` urinish boshiga **bir marta** (`confirming` commit'i kafolatlaydi). Chek holati 4/5 → `paid`; 50 → `failed`; boshqasi → `pending` |
+| `status` | `receipts.check {id}` | yo'qolgan `receipts.pay` javobi uchun |
+| `probe` | `receipts.get_all` (oxirgi 24 soat, `count: 1`) | panel "test" tugmasi; pul ko'chirmaydi |
+
+`X-Auth`: `cards.*` → `{merchant_id}`, `receipts.*` → `{merchant_id}:{key}`.
+Faqat `UZS`; boshqa valyuta yoki `0` narx — hech narsa chaqirilmasdan 502.
+
+Xato qoidasi (port: **faqat natija noma'lum bo'lsa raise**): tarmoq/timeout,
+HTTP ≠ 200, JSON emas, kutilmagan shakl, JSON-RPC kod `≤ -32000` (auth,
+tizim) → `UpstreamError`/`UpstreamTimeout`. JSON-RPC `-31xxx` (biznes rad):
+`receipts.create` da → `UpstreamError` (summa yoki kassa — karta emas, mijozga
+"boshqa karta" deyilmaydi); `cards.create`/`get_verify_code` da →
+`PaymentDeclined` (200, `payment.error` = Payme matni); `confirm` da →
+`failed` natija. `cards.verify` dagi tizim xatosi ham `failed` (hali hech
+narsa yechilmagan), `receipts.pay` dagi tizim xatosi — noma'lum → raise,
+sweep chekni o'qiydi. Matn: `message` satr yoki `{uz, ru, en}` → uz, ru, en
+tartibida; 300 belgi. Log'ga token, karta, kod hech qachon tushmaydi.
+
+Panel sozlamalari (`/admin/integrations/payments/payme/`, `fields` bilan
+e'lon qilinadi, noto'g'ri kalit 422): `merchant_id`, `key` (yagona sir,
+maskalanadi), `environment` (`production` | `test`), `account_field`
+(default `order_id`), ixtiyoriy fiskal `fiscal_title`, `fiscal_code` (ИКПУ),
+`fiscal_vat_percent`, `fiscal_package_code`, `fiscal_units` — to'ldirilsa
+`detail` yuboriladi. `POST /admin/integrations/payments/{code}/test/` —
+saqlangan sozlamalar bilan `probe`; `ok: false` + sabab javob, 502 emas;
+`last_tested_at/ok/error` yoziladi. Yoqish uchun `merchant_id` va `key` shart.
 
 Sweep (`app/tasks/orders.py::reconcile_orders`, beat 30 s, har qator o'z
 tranzaksiyasida, `SKIP LOCKED`):
@@ -181,7 +220,15 @@ tranzaksiyasida, `SKIP LOCKED`):
 - `confirming` va 120 s dan eski → `provider.status()`; `paid/failed` →
   qo'llanadi; `pending` → kutiladi; 15 daqiqadan keyin ham `pending` →
   `failed` "the provider never confirmed this charge" + `ERROR
-  payment_unconfirmed` (support provider panelini tekshiradi).
+  payment_unconfirmed` (support provider panelini tekshiradi). Provider
+  faqat so'raladigan qator bo'lsa hal qilinadi; hal bo'lmasa (hech biri
+  yoqilmagan, sozlama chala) — `ERROR payment_provider_unavailable`, shu
+  savol 0 bilan tugaydi, ticketing va muddat sweep'lari ishlayveradi.
+  Urinishni **faqat uni boshlagan provider** yakunlaydi: `attempt.provider`
+  hozirgisiga mos kelmasa qator o'tkazib yuboriladi (`ERROR
+  payment_provider_mismatch`) — eski provider pul yechgan bo'lishi mumkin,
+  uni odam hal qiladi. `status()` 15 daqiqadan keyin ham o'qilmasa log
+  WARNING'dan ERROR'ga ko'tariladi, holat o'zgarmaydi.
 - To'lanmagan, muddati 10 daqiqadan ko'p o'tgan (yoki muddatsiz va 24 soatdan
   eski) orderlar → `GET /v1/orders/{n}/`: GTS `CB/VO/STATUS_VOID` →
   `cancelled/expired`; hali `BO` → muddat yangilanadi, `gts_checked_at` 10
@@ -301,8 +348,8 @@ status o'zgarishi va izoh).
 - Email xabarnomalar (`ticket_waiting`, `ticketed`, `ticketing_failed`) —
   `customers.service._send` namunasi; commit'dan keyin, faqat event qaytgan
   yo'l yuboradi. Hozir mijoz xabarni ilovada (`order.message`) ko'radi.
-- `providers/payments/payme.py`, `click.py` — `start/confirm/status`;
-  `ADAPTERS` jadvaliga bir qator.
+- `providers/payments/click.py` — `start/confirm/status/probe`; `ADAPTERS`
+  va `FIELDS` jadvallariga bir qator (Payme namuna).
 - Provider refund API (`refund()` porti) — hozir support provider kabinetida
   qaytaradi va `refund/` bilan belgilaydi.
 - `reprice_check` — ticketing o'zi reprice qiladimi, GTS bilan aniqlash kerak.

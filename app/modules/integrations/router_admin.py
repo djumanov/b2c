@@ -27,6 +27,7 @@ from app.modules.integrations.schemas import (
     CredentialUpdateIn,
     PaymentProviderIn,
     PaymentProviderOut,
+    PaymentTestOut,
     SmtpIn,
     SmtpOut,
     SmtpTestIn,
@@ -185,9 +186,17 @@ async def update_payment_provider(
     return await service.update_payment_provider(session, code, data)
 
 
-# ``POST /{code}/test/`` is deliberately absent and therefore 404s. A test is a
-# real connection and the adapter is what knows how to make one; both arrive in
-# phase 2 (API.md §29, PHASES.md §2.13).
+@payments_router.post(
+    "/{code}/test/",
+    # The verb follows the ``{code}`` here, so the audit middleware reads
+    # ``integrations.payments`` / ``test`` from the path by itself.
+    dependencies=[Depends(require_owner)],
+    summary="Check the stored settings against the provider — moves no money",
+)
+async def test_payment_provider(
+    code: PaymentProviderCode, session: SessionDep
+) -> PaymentTestOut:
+    return await service.test_payment_provider(session, code)
 
 
 # --- social sign-in (API.md §29) -----------------------------------------------------

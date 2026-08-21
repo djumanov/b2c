@@ -79,15 +79,22 @@ class PaymentStart:
 OutcomeStatus = Literal["paid", "failed", "pending"]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class PaymentOutcome:
-    """The answer to ``confirm`` or ``status`` — a verdict, never an exception."""
+    """The answer to ``confirm`` or ``status`` — a verdict, never an exception.
+
+    ``repr`` shows the verdict and the reason, never ``reference``: it is the
+    same charging handle ``PaymentStart`` keeps out of its own.
+    """
 
     status: OutcomeStatus
     reference: str | None = None
     #: The provider's reason on ``failed``, in words a customer may read.
     error: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return f"PaymentOutcome(status={self.status!r}, error={self.error!r})"
 
 
 class PaymentDeclined(Exception):
@@ -126,6 +133,36 @@ class PaymentProvider(Protocol):
         """What became of a charge whose ``confirm`` answer was lost."""
         ...
 
+    async def probe(self) -> None:
+        """Prove the stored settings reach the provider — the panel's test button.
+
+        Moves no money and sends nobody a code. Raises ``UpstreamError`` with
+        the provider's own words when the settings are refused, and
+        ``UpstreamTimeout`` when it cannot be reached; returns on success.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderField:
+    """One setting a provider wants from the panel, described once.
+
+    The panel renders a form from these instead of a free key/value editor,
+    so a typo in a key name is refused at ``PATCH`` rather than discovered
+    when a payment fails. ``secret`` values come back masked; the others are
+    shown as written — an operator must be able to read ``environment``.
+    """
+
+    key: str
+    kind: Literal["text", "secret", "int", "choice"] = "text"
+    required: bool = False
+    choices: tuple[str, ...] = ()
+    default: str | None = None
+
+    @property
+    def secret(self) -> bool:
+        return self.kind == "secret"
+
 
 __all__ = [
     "CardDetails",
@@ -135,4 +172,5 @@ __all__ = [
     "PaymentProvider",
     "PaymentProviderCode",
     "PaymentStart",
+    "ProviderField",
 ]
