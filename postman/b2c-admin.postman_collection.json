@@ -176,6 +176,152 @@
           "response": []
         },
         {
+          "name": "Payment providers — list (fields, masked secrets)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                ""
+              ]
+            },
+            "description": "Every provider the release knows, with the settings form its adapter declares (`fields`). Secret values come back masked; `environment` and the rest are shown as written.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Payme — settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/payme/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                "payme",
+                ""
+              ]
+            },
+            "description": "Owner only. Keys merge; send null to delete one. `environment`: test | production. Fiscal keys are optional and go out as receipts.create → detail only when filled. Switching on needs merchant_id and key — press the test button first.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"credentials\": {\n    \"merchant_id\": \"<kassa id>\",\n    \"key\": \"<kassa kaliti>\",\n    \"environment\": \"test\",\n    \"account_field\": \"order_id\"\n  },\n  \"enabled\": false\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Payme — test the stored settings (moves no money)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/payme/test/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                "payme",
+                "test",
+                ""
+              ]
+            },
+            "description": "Owner only. receipts.get_all against the stored merchant_id:key. 200 with ok: false and Payme's words when refused; writes last_tested_at / last_test_ok / last_test_error.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Payme — switch on",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/payme/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                "payme",
+                ""
+              ]
+            },
+            "description": "Enabling one provider switches the others off.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "System health",
           "request": {
             "method": "GET",

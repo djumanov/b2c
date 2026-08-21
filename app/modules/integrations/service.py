@@ -42,6 +42,8 @@ from app.modules.integrations.schemas import (
     CredentialUpdateIn,
     PaymentProviderIn,
     PaymentProviderOut,
+    PaymentTestOut,
+    ProviderFieldOut,
     SmtpIn,
     SmtpOut,
     SmtpTestOut,
@@ -50,6 +52,7 @@ from app.modules.integrations.schemas import (
 )
 from app.modules.uploads import service as uploads_service
 from app.providers import notifications, social
+from app.providers import payments as payment_adapters
 from app.providers.gts.base import GtsClient
 from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
@@ -599,6 +602,23 @@ def _payments_aud(row: PaymentProvider) -> dict[str, Any]:
     }
 
 
+def _masked_credentials(row: PaymentProvider) -> dict[str, str]:
+    """The stored keys, secrets masked and settings shown as written.
+
+    Masked one value at a time rather than replaced wholesale: the panel has
+    to show *which* keys are set. Which values are secret is the adapter's
+    knowledge (``providers.payments.secret_keys``): ``key`` is, ``environment``
+    is not — and ``mask_secret("test")`` is four bullets, which no operator
+    can check. A code without an adapter declares nothing, and everything it
+    stores stays masked, as before.
+    """
+    secret = payment_adapters.secret_keys(row.code)
+    return {
+        key: mask_secret(value) if secret is None or key in secret else value
+        for key, value in _decode_credentials(row).items()
+    }
+
+
 async def _payments_out(
     session: AsyncSession, row: PaymentProvider
 ) -> PaymentProviderOut:
@@ -609,12 +629,17 @@ async def _payments_out(
         logo_id=row.logo_id,
         logo_url=await uploads_service.url_for(session, row.logo_id),
         sort_order=row.sort_order,
-        # Masked one value at a time rather than replaced wholesale: the panel
-        # has to show *which* keys are set, and an operator recognises their
-        # own merchant id by its last characters.
-        credentials={
-            key: mask_secret(value) for key, value in _decode_credentials(row).items()
-        },
+        credentials=_masked_credentials(row),
+        fields=[
+            ProviderFieldOut(
+                key=field.key,
+                kind=field.kind,
+                required=field.required,
+                choices=list(field.choices),
+                default=field.default,
+            )
+            for field in payment_adapters.fields(row.code)
+        ],
         last_tested_at=row.last_tested_at,
         last_test_ok=row.last_test_ok,
         last_test_error=row.last_test_error,
@@ -648,6 +673,45 @@ def _merge_credentials(
         elif not _is_masked(value):
             merged[key] = value
     return merged
+
+
+def _check_credentials(code: PaymentProviderCode, patch: dict[str, str | None]) -> None:
+    """Refuse what the adapter would not understand — at ``PATCH``, not at
+    the first payment.
+
+    Only for a code whose adapter declares its fields; the others keep the
+    free key/value editor. A ``null`` (delete) and a masked echo are never
+    checked: neither is a value.
+    """
+    declared = {field.key: field for field in payment_adapters.fields(code)}
+    if not declared:
+        return
+    for key, value in patch.items():
+        field = declared.get(key)
+        if field is None:
+            raise ValidationFailed(
+                f"{code.value.capitalize()} has no setting named {key!r}",
+                field="credentials",
+            )
+        if value is None or _is_masked(value):
+            continue
+        if field.kind == "choice" and value.strip() not in field.choices:
+            raise ValidationFailed(
+                f"{key} must be one of: {', '.join(field.choices)}",
+                field="credentials",
+            )
+        if field.kind == "int" and value.strip() and not value.strip().isdigit():
+            raise ValidationFailed(f"{key} must be a whole number", field="credentials")
+
+
+def _missing_required(
+    code: PaymentProviderCode, credentials: dict[str, str]
+) -> list[str]:
+    return [
+        field.key
+        for field in payment_adapters.fields(code)
+        if field.required and not credentials.get(field.key, "").strip()
+    ]
 
 
 async def list_payment_providers(session: AsyncSession) -> list[PaymentProviderOut]:
@@ -692,6 +756,7 @@ async def update_payment_provider(
     if data.logo_id is not None:
         await _attach_logo(session, row, data.logo_id)
     if data.credentials is not None:
+        _check_credentials(code, data.credentials)
         credentials = _merge_credentials(credentials, data.credentials)
         row.credentials, row.key_version = (
             encrypt(json.dumps(credentials)) if credentials else (None, None)
@@ -708,6 +773,10 @@ async def update_payment_provider(
                 "Add the provider's credentials before switching it on",
                 field="enabled",
             )
+        if data.enabled and (missing := _missing_required(code, credentials)):
+            raise ValidationFailed(
+                f"Add {', '.join(missing)} before switching it on", field="enabled"
+            )
         row.enabled = data.enabled
         if data.enabled:
             await _switch_others_off(session, code)
@@ -718,6 +787,47 @@ async def update_payment_provider(
     audit_context.describe(changes=audit_context.diff(before, _payments_aud(row)))
     logger.info("payment_provider_updated", code=row.code.value, enabled=row.enabled)
     return await _payments_out(session, row)
+
+
+async def test_payment_provider(
+    session: AsyncSession, code: PaymentProviderCode
+) -> PaymentTestOut:
+    """Ask the provider whether the stored settings work (``test_smtp``'s shape).
+
+    Independent of ``enabled`` and of a test's pinned provider on purpose: the
+    button is pressed *before* switching on, and it must speak to the real
+    adapter with the real keys. The adapter's ``probe`` moves no money. A
+    refusal answers ``200`` with ``ok: false`` and the provider's words — the
+    one thing this button exists to show.
+    """
+    row = await _require_provider(session, code)
+    factory = payment_adapters.ADAPTERS.get(code)
+    if factory is None:
+        raise Conflict(
+            f"payment provider {code.value} is not available in this release"
+        )
+    credentials = _decode_credentials(row)
+    if not credentials:
+        raise Conflict("Add the provider's settings first")
+
+    detail: str | None = None
+    try:
+        await factory(credentials).probe()
+        ok = True
+    except Exception as exc:  # noqa: BLE001 - the reason is the whole answer
+        ok = False
+        detail = f"{type(exc).__name__}: {exc}"[:500]
+        logger.warning("payment_provider_test_failed", code=code.value, error=detail)
+
+    row.last_tested_at = utcnow()
+    row.last_test_ok = ok
+    row.last_test_error = detail
+    await session.commit()
+    await session.refresh(row)
+
+    audit_context.describe(changes={"last_test_ok": ok})
+    logger.info("payment_provider_tested", code=code.value, ok=ok)
+    return PaymentTestOut(ok=ok, detail=detail, tested_at=row.last_tested_at)
 
 
 async def _switch_others_off(session: AsyncSession, keep: PaymentProviderCode) -> None:
@@ -971,6 +1081,7 @@ __all__ = [
     "notifier",
     "payment_providers",
     "social_verifier",
+    "test_payment_provider",
     "test_smtp",
     "update_credential",
     "update_payment_provider",

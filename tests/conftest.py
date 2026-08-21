@@ -13,6 +13,7 @@ GTS calls hit the mocks.
 """
 
 import getpass
+import json
 import os
 import subprocess
 import sys
@@ -113,6 +114,7 @@ async def clean_tables(engine: AsyncEngine) -> AsyncIterator[None]:
             "staff",
             # Settings singletons a test may write; re-created on first read.
             "languages",
+            "payment_providers",
         ):
             await connection.execute(text(f"DELETE FROM {table}"))
 
@@ -265,6 +267,128 @@ def mock_gts_order(
         if order is not None
         else httpx.Response(500, json={"status": "error", "message": "boom"})
     )
+
+
+# --- a fake Payme: one URL, answered per JSON-RPC method -----------------------------
+
+PAYME_URL = "https://checkout.test.paycom.uz/api"
+PAYME_CREDENTIALS: dict[str, str] = {
+    "merchant_id": "m-1234abcd",
+    "key": "k-secret-9f",
+    "environment": "test",
+}
+PAYME_TOKEN = "tok-secret-1"
+PAYME_RECEIPT = "62da73b0803aced907a52b46"
+
+
+def payme_card(**overrides: Any) -> dict[str, Any]:
+    card: dict[str, Any] = {
+        "number": "860006******6311",
+        "expire": "03/99",
+        "token": PAYME_TOKEN,
+        "recurrent": False,
+        "verify": False,
+    }
+    card.update(overrides)
+    return card
+
+
+def payme_receipt(**overrides: Any) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "_id": PAYME_RECEIPT,
+        "state": 0,
+        "amount": 28750000,
+        "create_time": 1700000000000,
+        "pay_time": 0,
+        "cancel_time": 0,
+        "error": None,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+#: What Payme answers when the test says nothing else — the happy path.
+PAYME_HAPPY: dict[str, Any] = {
+    "receipts.create": {"receipt": payme_receipt()},
+    "cards.create": {"card": payme_card()},
+    "cards.get_verify_code": {"sent": True, "phone": "99890*****31", "wait": 60000},
+    "cards.verify": {"card": payme_card(verify=True)},
+    "receipts.pay": {"receipt": payme_receipt(state=4, pay_time=1700000060000)},
+    "receipts.check": {"state": 4},
+    "receipts.get_all": {"receipts": []},
+}
+
+
+class RpcError:
+    """A JSON-RPC ``error`` the fake Payme should answer with."""
+
+    def __init__(self, code: int, message: Any = None) -> None:
+        self.code = code
+        self.message = message
+
+
+class PaymeCalls:
+    """What the fake Payme saw: ``(method, params, X-Auth)`` in order."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], str | None]] = []
+
+    @property
+    def methods(self) -> list[str]:
+        return [method for method, _, _ in self.calls]
+
+    def count(self, method: str) -> int:
+        return sum(1 for name, _, _ in self.calls if name == method)
+
+    def params(self, method: str) -> dict[str, Any]:
+        return next(params for name, params, _ in self.calls if name == method)
+
+    def auth(self, method: str) -> str | None:
+        return next(auth for name, _, auth in self.calls if name == method)
+
+
+def mock_payme(script: dict[str, Any] | None = None) -> PaymeCalls:
+    """Mount Payme's single endpoint under an active ``respx.mock``.
+
+    ``script`` maps a method to what it answers, overriding ``PAYME_HAPPY``:
+    a ``dict`` is the ``result``; an ``RpcError`` is a JSON-RPC error; an
+    ``httpx.Response`` is returned as is (a 500, an HTML body); an
+    ``Exception`` is raised (a timeout); a ``list`` is consumed one answer per
+    call, the happy answer taking over when it runs out.
+    """
+    import respx
+
+    calls = PaymeCalls()
+    answers: dict[str, Any] = {**PAYME_HAPPY, **(script or {})}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method = body["method"]
+        calls.calls.append(
+            (method, body.get("params", {}), request.headers.get("X-Auth"))
+        )
+        answer = answers.get(method)
+        if isinstance(answer, list):
+            answer = answer.pop(0) if answer else PAYME_HAPPY.get(method)
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, httpx.Response):
+            return answer
+        if isinstance(answer, RpcError):
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "error": {"code": answer.code, "message": answer.message},
+                },
+            )
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": body["id"], "result": answer}
+        )
+
+    respx.post(PAYME_URL).mock(side_effect=handler)
+    return calls
 
 
 async def make_order(

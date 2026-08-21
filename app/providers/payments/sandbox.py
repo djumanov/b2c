@@ -68,6 +68,10 @@ class SandboxProvider:
         # Stateless on purpose — see the module docstring.
         return PaymentOutcome("pending", reference=reference)
 
+    async def probe(self) -> None:
+        """There is nothing to reach; the sandbox is always ready."""
+        return None
+
 
 __all__ = [
     "OTP_DECLINED",
