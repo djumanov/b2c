@@ -404,8 +404,8 @@ async def test_same_booking_body_replays_fresh_order_not_second_seat(
     assert second.status_code == 201
     data = second.json()["data"]
     assert data["order"]["id"] == order_id
-    assert data["order"]["payment_status"] == "paid"
-    assert data["order"]["stage"] == "ticketing"
+    assert data["payment"]["status"] == "paid"
+    assert data["order"]["status"] == "ticket_waiting"
     assert booking_route.call_count == 1
     assert await _order_count(db_session) == 1
 
@@ -542,9 +542,8 @@ async def test_booking_writes_created_event_and_lifecycle_defaults(
 
     assert response.status_code == 201
     data = response.json()["data"]
-    assert data["order"]["payment_status"] == "pending"
-    assert data["order"]["ticketing_status"] == "pending"
-    assert data["order"]["stage"] == "awaiting_payment"
+    assert data["order"]["status"] == "booked"
+    assert data["payment"]["status"] == "pending"
     assert data["order"]["message"]
     assert data["ticketing"] == {
         "status": "pending",

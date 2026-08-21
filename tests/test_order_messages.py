@@ -18,22 +18,25 @@ ORDERS_URL = "/api/v1/public/orders/"
 
 
 async def _patch(
-    client: httpx.AsyncClient, stage: str, text: dict[str, Any], headers: dict[str, str]
+    client: httpx.AsyncClient,
+    status: str,
+    text: dict[str, Any],
+    headers: dict[str, str],
 ) -> httpx.Response:
-    return await client.patch(f"{URL}{stage}/", json={"text": text}, headers=headers)
+    return await client.patch(f"{URL}{status}/", json={"text": text}, headers=headers)
 
 
-async def test_list_seeds_every_stage_with_defaults(
+async def test_list_seeds_every_status_with_defaults(
     client: httpx.AsyncClient, staff_headers: dict[str, str], db_session: AsyncSession
 ) -> None:
     response = await client.get(URL, headers=staff_headers)
 
     assert response.status_code == 200
     items = response.json()["data"]
-    assert [item["stage"] for item in items] == [stage.value for stage in Stage]
+    assert [item["status"] for item in items] == [status.value for status in Stage]
     for item in items:
         assert item["custom"] == {}
-        assert item["default"] == DEFAULTS[Stage(item["stage"])]
+        assert item["default"] == DEFAULTS[Stage(item["status"])]
         assert item["text"] == item["default"]
         assert set(item["text"]) == {"uz", "ru", "en"}
     rows = (await db_session.scalars(select(OrderMessage))).all()
@@ -89,7 +92,7 @@ async def test_empty_string_resets_language_to_default(
     assert data["text"]["en"] == "Done."
 
 
-async def test_unknown_language_is_dropped_and_unknown_stage_is_422(
+async def test_unknown_language_is_dropped_and_unknown_status_is_422(
     client: httpx.AsyncClient, staff_headers: dict[str, str]
 ) -> None:
     dropped = await _patch(
@@ -105,11 +108,14 @@ async def test_unknown_language_is_dropped_and_unknown_stage_is_422(
     too_long = await _patch(client, "ticketed", {"uz": "x" * 1001}, staff_headers)
     assert too_long.status_code == 422
 
-    unknown_stage = await _patch(client, "shipped", {"uz": "Yo'lda"}, staff_headers)
-    assert unknown_stage.status_code == 422
+    unknown_status = await _patch(client, "shipped", {"uz": "Yo'lda"}, staff_headers)
+    assert unknown_status.status_code == 422
     assert (
         await client.get(f"{URL}shipped/", headers=staff_headers)
     ).status_code == 422
+    # A status this release retired is no more a key than one it never had.
+    retired = await _patch(client, "awaiting_payment", {"uz": "Kuting"}, staff_headers)
+    assert retired.status_code == 422
 
     empty = await client.patch(f"{URL}ticketed/", json={}, headers=staff_headers)
     assert empty.status_code == 422
@@ -125,7 +131,7 @@ async def test_text_is_verbatim_no_interpolation(
     order = await make_order(db_session, customer)
     literal = "Kutamiz {support} {} — 100% {pnr}"
 
-    await _patch(client, "awaiting_payment", {"uz": literal}, staff_headers)
+    await _patch(client, "booked", {"uz": literal}, staff_headers)
 
     response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
     assert response.json()["data"]["order"]["message"] == literal
@@ -146,19 +152,38 @@ async def test_fallback_uses_site_default_language(
         db_session, LanguagesIn(default="ru", available=["ru", "uz", "en"])
     )
     order = await make_order(db_session, customer)
-    await _patch(client, "awaiting_payment", {"ru": "Ждём оплату"}, staff_headers)
+    await _patch(client, "booked", {"ru": "Ждём оплату"}, staff_headers)
 
     response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
     assert response.json()["data"]["order"]["message"] == "Ждём оплату"
 
     # A language the panel never wrote and the defaults do not have falls
     # through the chain to the default language rather than to nothing.
-    await _patch(client, "awaiting_payment", {"uz": "", "en": ""}, staff_headers)
+    await _patch(client, "booked", {"uz": "", "en": ""}, staff_headers)
     in_de = await client.get(
         f"{ORDERS_URL}{order.id}/",
         headers={**customer_headers, "Accept-Language": "de"},
     )
     assert in_de.json()["data"]["order"]["message"] == "Ждём оплату"
+
+
+async def test_list_drops_rows_of_retired_statuses(
+    client: httpx.AsyncClient, staff_headers: dict[str, str], db_session: AsyncSession
+) -> None:
+    """The table is a registry keyed by the enum: a key no release renders any
+    more is not a setting, and goes on the next read — text and all."""
+    db_session.add(OrderMessage(key="awaiting_payment", text={"uz": "Eski matn"}))
+    db_session.add(OrderMessage(key="refund_due", text={}))
+    await db_session.commit()
+
+    response = await client.get(URL, headers=staff_headers)
+
+    assert response.status_code == 200
+    assert [item["status"] for item in response.json()["data"]] == [
+        status.value for status in Stage
+    ]
+    keys = set(await db_session.scalars(select(OrderMessage.key)))
+    assert keys == {status.value for status in Stage}
 
 
 async def test_roles_and_audit(

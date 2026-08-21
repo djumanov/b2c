@@ -2,10 +2,12 @@
 
 A booking answers — and ``GET /public/orders/{id}/`` repeats — four blocks:
 
-* ``order`` — our slim record: ids, the three lifecycle statuses, money,
-  deadline, and the one label a screen shows (``stage``) with its sentence
-  (``message``). This is the stable contract; it comes from columns, never
-  from GTS's spellings.
+* ``order`` — our slim record: ids, money, deadline, and **one** ``status``
+  with its sentence (``message``). The status is the three lifecycle columns
+  read together (``lifecycle.stage_of``); the columns themselves are for
+  staff and appear only on the admin surface, as ``booking_status``,
+  ``payment_status`` and ``ticketing_status``. This is the stable contract;
+  it comes from columns, never from GTS's spellings.
 * ``payment`` — what a payment screen needs: how much, until when, where the
   money stands, and (once a payment attempt exists) which attempt, which card,
   and the phone the OTP went to.
@@ -66,13 +68,11 @@ class OrderOut(BaseModel):
 
     id: uuid.UUID
     product: str
-    status: str
-    payment_status: str
-    ticketing_status: str
-    #: The one label a screen shows, derived from the three statuses.
-    stage: Stage
-    #: The sentence that goes with ``stage``, in the request's language.
+    #: The one status a screen shows, read off the three lifecycle columns.
+    status: Stage
+    #: The sentence that goes with ``status``, in the request's language.
     message: str
+    #: Why a ``cancelled`` order was cancelled — ``expired`` is the deadline.
     cancel_reason: str | None
     gts_status: str
     gts_order_number: int
@@ -94,20 +94,17 @@ class OrderOut(BaseModel):
         cls,
         order: Order,
         *,
-        stage: Stage,
         language: str | None,
         messages: MessageCatalogue,
     ) -> "OrderOut":
         # Assembled by hand rather than ``from_attributes`` because ``amount``
         # is two columns composed into one ``Money``.
+        status = stage_of(order)
         return cls(
             id=order.id,
             product=order.product,
-            status=order.status,
-            payment_status=order.payment_status,
-            ticketing_status=order.ticketing_status,
-            stage=stage,
-            message=messages.render(stage, language=language),
+            status=status,
+            message=messages.render(status, language=language),
             cancel_reason=order.cancel_reason,
             gts_status=order.gts_status,
             gts_order_number=order.gts_order_number,
@@ -152,10 +149,8 @@ class OrderListItemOut(BaseModel):
 
     id: uuid.UUID
     product: str
-    status: str
-    payment_status: str
-    ticketing_status: str
-    stage: Stage
+    #: The same ``status`` the detail shows — the card and the screen agree.
+    status: Stage
     pnr: str | None
     trip_type: str | None
     route_summary: str | None
@@ -171,15 +166,10 @@ class OrderListItemOut(BaseModel):
 
     @classmethod
     def from_order(cls, order: Order) -> "OrderListItemOut":
-        # No attempt lookup on a list: an open attempt reads as awaiting
-        # payment here, and the detail screen says more.
         return cls(
             id=order.id,
             product=order.product,
-            status=order.status,
-            payment_status=order.payment_status,
-            ticketing_status=order.ticketing_status,
-            stage=stage_of(order),
+            status=stage_of(order),
             pnr=order.pnr,
             trip_type=order.trip_type,
             route_summary=order.route_summary,
@@ -383,17 +373,11 @@ class BookingResultOut(BaseModel):
         messages: MessageCatalogue,
         attempt: PaymentAttemptView | None = None,
     ) -> "BookingResultOut":
-        open_attempt = (
-            attempt.status
-            if attempt and attempt.status in ("started", CONFIRMING)
-            else None
-        )
-        stage = stage_of(order, open_attempt=open_attempt)
+        # The attempt shapes the ``payment`` block only; ``order.status`` is
+        # the columns' reading and says the same on the list and here.
         return cls(
             product=order.product,
-            order=OrderOut.from_order(
-                order, stage=stage, language=language, messages=messages
-            ),
+            order=OrderOut.from_order(order, language=language, messages=messages),
             payment=PaymentOut.from_order(order, attempt),
             ticketing=TicketingOut.from_order(order),
             order_data=_strip_commission(order.gts_response),
@@ -414,9 +398,9 @@ MESSAGE_MAX_LENGTH = 1000
 
 
 class OrderMessageOut(BaseModel):
-    """One stage's sentence: what we ship, what the panel wrote, what is shown."""
+    """One status's sentence: what we ship, what the panel wrote, what is shown."""
 
-    stage: Stage
+    status: Stage
     default: i18n.Translated
     custom: i18n.Translated
     text: i18n.Translated
@@ -446,8 +430,12 @@ class OrderMessageIn(BaseModel):
 
 
 class OrderAdminListItemOut(OrderListItemOut):
-    """A list row for support: the customer's row plus who and which GTS order."""
+    """A list row for support: the customer's row, the three columns behind
+    its ``status``, and who and which GTS order."""
 
+    booking_status: str
+    payment_status: str
+    ticketing_status: str
     customer_id: uuid.UUID
     gts_order_number: int
     gts_status: str
@@ -457,15 +445,37 @@ class OrderAdminListItemOut(OrderListItemOut):
         base = OrderListItemOut.from_order(order)
         return cls(
             **base.model_dump(),
+            booking_status=order.status,
+            payment_status=order.payment_status,
+            ticketing_status=order.ticketing_status,
             customer_id=order.customer_id,
             gts_order_number=order.gts_order_number,
             gts_status=order.gts_status,
         )
 
 
+class OrderAdminOrderOut(OrderOut):
+    """The customer's ``order`` block plus the three columns its ``status``
+    was read from — support sees both the word and the reason for it."""
+
+    booking_status: str
+    payment_status: str
+    ticketing_status: str
+
+    @classmethod
+    def from_public(cls, public: OrderOut, order: Order) -> "OrderAdminOrderOut":
+        return cls(
+            **public.model_dump(),
+            booking_status=order.status,
+            payment_status=order.payment_status,
+            ticketing_status=order.ticketing_status,
+        )
+
+
 class OrderAdminOut(BookingResultOut):
     """The detail for support: the customer's view plus the books behind it."""
 
+    order: OrderAdminOrderOut
     customer_id: uuid.UUID
     ticketing_attempts: int
     ticketing_requested_at: datetime | None
@@ -477,6 +487,7 @@ class OrderAdminOut(BookingResultOut):
 __all__ = [
     "BookingResultOut",
     "OrderAdminListItemOut",
+    "OrderAdminOrderOut",
     "OrderAdminOut",
     "OrderEventOut",
     "OrderListItemOut",

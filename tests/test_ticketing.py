@@ -101,7 +101,7 @@ async def test_paid_confirm_tickets_inline_ti(
 
     data = await _pay(client, order, customer_headers)
 
-    assert data["order"]["stage"] == "ticketed"
+    assert data["order"]["status"] == "ticketed"
     assert data["order"]["message"] == "Chiptalaringiz tayyor."
     assert data["ticketing"]["status"] == "ticketed"
     assert data["ticketing"]["ticketed_at"] is not None
@@ -136,9 +136,9 @@ async def test_answer_pw_stays_processing_with_wait_message(
 
     data = await _pay(client, order, customer_headers)
 
-    assert data["order"]["stage"] == "ticketing"
-    assert data["order"]["message"].startswith("To'lovingiz muvaffaqiyatli")
-    assert "kuting" in data["order"]["message"]
+    assert data["order"]["status"] == "ticket_waiting"
+    assert data["order"]["message"].startswith("To'lov qabul qilindi")
+    assert "rasmiylashtirilmoqda" in data["order"]["message"]
     assert data["ticketing"]["status"] == "processing"
     assert data["ticketing"]["tickets"] == []
     assert data["order"]["gts_status"] == "PW"
@@ -187,12 +187,13 @@ async def test_gts_refusal_with_hold_intact_is_failed_with_support_message(
 
     data = await _pay(client, order, customer_headers)
 
-    assert data["order"]["payment_status"] == "paid"
-    assert data["order"]["ticketing_status"] == "failed"
-    assert data["order"]["stage"] == "ticketing_failed"
-    assert data["order"]["message"].endswith("support xizmatiga murojaat qiling.")
+    assert data["order"]["status"] == "ticketing_failed"
+    assert data["order"]["message"].endswith("xizmatiga murojaat qiling.")
+    assert data["ticketing"]["status"] == "failed"
     assert data["ticketing"]["error"] == "TICKETING: provider rejected the fare"
-    assert data["order"]["status"] == "booked"  # never auto-cancelled
+    assert data["payment"]["status"] == "paid"
+    await db_session.refresh(order)
+    assert order.status == "booked"  # never auto-cancelled: the hold and the money stay
     assert await _events(db_session, order) == [
         "payment.started",
         "payment.confirming",
@@ -243,9 +244,9 @@ async def test_timeout_stays_processing_without_second_post(
 
     data = await _pay(client, order, customer_headers)
 
-    assert data["order"]["payment_status"] == "paid"
+    assert data["payment"]["status"] == "paid"
     assert data["ticketing"]["status"] == "processing"
-    assert data["order"]["stage"] == "ticketing"
+    assert data["order"]["status"] == "ticket_waiting"
     assert ticketing.call_count == 1
 
     # A fresh re-check sees ``BO`` within the grace period: still waiting,

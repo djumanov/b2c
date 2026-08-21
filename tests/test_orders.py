@@ -255,12 +255,14 @@ async def test_list_requires_a_token(client: httpx.AsyncClient) -> None:
 # --- the lifecycle blocks ------------------------------------------------------------
 
 
-async def test_list_carries_the_three_statuses_and_stage(
+async def test_list_carries_one_status_and_not_the_columns(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
+    """The card reads the same word the detail does, and nothing the columns
+    spell: ``status`` on a customer's row is never the raw booking column."""
     await _make_order(
         db_session, customer, payment_status="paid", ticketing_status="failed"
     )
@@ -269,13 +271,49 @@ async def test_list_carries_the_three_statuses_and_stage(
 
     assert response.status_code == 200
     (item,) = response.json()["data"]
-    assert item["status"] == "booked"
-    assert item["payment_status"] == "paid"
-    assert item["ticketing_status"] == "failed"
-    assert item["stage"] == "ticketing_failed"
+    assert item["status"] == "ticketing_failed"
+    assert not {"payment_status", "ticketing_status", "stage", "booking_status"} & set(
+        item
+    )
 
 
-async def test_detail_carries_ticketing_block_stage_and_message(
+PUBLIC_STATUSES = {
+    "booked",
+    "ticket_waiting",
+    "ticketed",
+    "ticketing_failed",
+    "refunded",
+    "cancelled",
+}
+
+
+async def test_public_order_exposes_one_status_from_the_contract(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """The contract guard: a customer sees one ``status`` from the six-word
+    vocabulary and none of the lifecycle columns, on the list and the detail."""
+    order = await _make_order(db_session, customer, payment_status="refunded")
+
+    detail = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
+    listing = await client.get(ORDERS_URL, headers=customer_headers)
+
+    shapes = [detail.json()["data"]["order"], listing.json()["data"][0]]
+    for shape in shapes:
+        assert shape["status"] == "refunded"
+        assert shape["status"] in PUBLIC_STATUSES
+        assert not {
+            "payment_status",
+            "ticketing_status",
+            "stage",
+            "booking_status",
+        } & set(shape)
+    assert detail.json()["data"]["order"]["message"] == "Mablag'ingiz qaytarildi."
+
+
+async def test_detail_carries_ticketing_block_status_and_message(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
@@ -287,7 +325,7 @@ async def test_detail_carries_ticketing_block_stage_and_message(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["order"]["stage"] == "awaiting_payment"
+    assert data["order"]["status"] == "booked"
     assert data["order"]["message"].startswith("Bron qilindi")  # uz by default
     assert data["order"]["cancel_reason"] is None
     assert data["payment"]["status"] == "pending"
@@ -340,8 +378,8 @@ async def test_ticketing_failed_message_and_issued_tickets(
     response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
 
     data = response.json()["data"]
-    assert data["order"]["stage"] == "ticketing_failed"
-    assert data["order"]["message"].endswith("support xizmatiga murojaat qiling.")
+    assert data["order"]["status"] == "ticketing_failed"
+    assert data["order"]["message"].endswith("xizmatiga murojaat qiling.")
     assert data["ticketing"]["status"] == "failed"
     assert data["ticketing"]["error"].startswith("BOOKING: save_booking 403")
     assert data["ticketing"]["tickets"] == [
@@ -371,6 +409,8 @@ async def test_cancelled_before_payment_reads_cancelled(
     response = await client.get(f"{ORDERS_URL}{order.id}/", headers=customer_headers)
 
     data = response.json()["data"]
-    assert data["order"]["stage"] == "expired"
+    # No ``expired`` status: the deadline is a reason a booking was cancelled.
+    assert data["order"]["status"] == "cancelled"
     assert data["order"]["cancel_reason"] == "expired"
+    assert data["order"]["message"] == "Buyurtma bekor qilindi. Yangi qidiruv qiling."
     assert data["payment"]["status"] == "cancelled"

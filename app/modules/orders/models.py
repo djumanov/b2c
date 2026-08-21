@@ -15,8 +15,9 @@ column and its own small vocabulary:
 * ``ticketing_status`` — has GTS issued the ticket?
 
 ``lifecycle.py`` owns which moves are allowed between them; nothing else may
-write these columns. The UI's single label (``stage``) is derived there too,
-never stored.
+write these columns. The customer's single ``status`` is derived there too
+(``stage_of``), never stored; the columns themselves reach a client only on
+the admin surface.
 
 Two kinds of fields live side by side. The columns are what we *work* with —
 list screens, ownership, and the handles the payment/ticketing steps need
@@ -333,13 +334,15 @@ class PaymentAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class OrderMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """What the panel wrote for one stage — the overrides, never the defaults.
+    """What the panel wrote for one public status — the overrides, never the
+    defaults.
 
-    One row per ``lifecycle.Stage`` value, created on first read like every
-    other keyed setting (``payment_providers``): no data migration, and a
-    stage added in a new release gets its row the first time anybody looks.
-    ``text`` holds only the languages staff actually wrote; a language they
-    never touched — or cleared — reads from ``messages.DEFAULTS``.
+    One row per ``lifecycle.Stage`` value, reconciled on first read like
+    every other keyed setting (``payment_providers``): no data migration, a
+    status added in a new release gets its row the first time anybody looks,
+    and a status a release retired loses its row. ``text`` holds only the
+    languages staff actually wrote; a language they never touched — or
+    cleared — reads from ``messages.DEFAULTS``.
     """
 
     __tablename__ = "order_messages"

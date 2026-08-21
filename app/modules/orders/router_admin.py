@@ -36,11 +36,11 @@ router = enveloped_router(
 
 # --- the customer's sentences ---------------------------------------------------------
 #
-# A registry keyed by ``Stage``: every stage has a row, there is no POST and no
-# DELETE, and both roles write — wording is day-to-day work, like branding.
-# Its own router, mounted **before** ``router``: under one prefix the path
-# ``/orders/messages/`` would be read as ``/orders/{id}/`` and refused as a
-# malformed id.
+# A registry keyed by the public ``status`` (``Stage``): every status has a
+# row, there is no POST and no DELETE, and both roles write — wording is
+# day-to-day work, like branding. Its own router, mounted **before**
+# ``router``: under one prefix the path ``/orders/messages/`` would be read as
+# ``/orders/{id}/`` and refused as a malformed id.
 
 messages_router = enveloped_router(
     prefix="/orders/messages",
@@ -49,29 +49,35 @@ messages_router = enveloped_router(
 )
 
 
-@messages_router.get("/", summary="Every stage's sentence, in every language")
+@messages_router.get("/", summary="Every status's sentence, in every language")
 async def list_messages(session: SessionDep) -> list[OrderMessageOut]:
     return await service.list_messages(session)
 
 
-@messages_router.get("/{stage}/", summary="One stage's sentence")
-async def get_message(stage: Stage, session: SessionDep) -> OrderMessageOut:
-    return await service.get_message(session, stage)
+@messages_router.get("/{status}/", summary="One status's sentence")
+async def get_message(status: Stage, session: SessionDep) -> OrderMessageOut:
+    return await service.get_message(session, status)
 
 
 @messages_router.patch(
-    "/{stage}/",
-    summary="Rewrite a stage's sentence — per language; empty restores the default",
+    "/{status}/",
+    summary="Rewrite a status's sentence — per language; empty restores the default",
 )
 async def update_message(
-    stage: Stage, data: OrderMessageIn, session: SessionDep
+    status: Stage, data: OrderMessageIn, session: SessionDep
 ) -> OrderMessageOut:
-    return await service.update_message(session, stage, data)
+    return await service.update_message(session, status, data)
 
 
 # --- the orders themselves ------------------------------------------------------------
+#
+# The filters are the raw columns, named as the admin row names them. There
+# is no filter on the customer's ``status``: it is not a column, and the
+# inbox a human works from is ``attention``.
 
-StatusParam = Annotated[Literal["booked", "cancelled"] | None, Query(alias="status")]
+BookingParam = Annotated[
+    Literal["booked", "cancelled"] | None, Query(alias="booking_status")
+]
 PaymentParam = Annotated[
     Literal["pending", "paid", "failed", "refunding", "refunded", "refund_failed"]
     | None,
@@ -97,7 +103,7 @@ async def list_orders(
     session: SessionDep,
     pagination: PaginationDep,
     query: ListQueryDep,
-    status: StatusParam = None,
+    booking_status: BookingParam = None,
     payment_status: PaymentParam = None,
     ticketing_status: TicketingParam = None,
     attention: AttentionParam = False,
@@ -106,7 +112,7 @@ async def list_orders(
         session,
         pagination,
         query,
-        status=status,
+        booking_status=booking_status,
         payment_status=payment_status,
         ticketing_status=ticketing_status,
         attention=attention,

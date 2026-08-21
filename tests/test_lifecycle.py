@@ -196,68 +196,116 @@ def test_refund_marks_are_staff_only_and_not_for_ticketed() -> None:
 
 
 def test_paid_is_recorded_even_on_cancelled() -> None:
-    """A money fact is never refused — the order then reads ``refund_due``."""
+    """A money fact is never refused — the customer then reads
+    ``ticketing_failed``: money taken, no ticket coming, talk to support."""
     order = _order(
         status=OrderStatus.CANCELLED,
         cancel_reason=CancelReason.EXPIRED,
         cancelled_at=lifecycle.utcnow(),
     )
     transition(order, actor=lifecycle.SYSTEM, payment=PaymentStatus.PAID)
-    assert stage_of(order) is Stage.REFUND_DUE
+    assert stage_of(order) is Stage.TICKETING_FAILED
+
+
+# --- the public status ---------------------------------------------------------------
+
+
+def test_status_vocabulary_is_six_words_in_screen_order() -> None:
+    """The contract: six values, listed the way the panel shows them."""
+    assert [status.value for status in Stage] == [
+        "booked",
+        "ticket_waiting",
+        "ticketed",
+        "ticketing_failed",
+        "refunded",
+        "cancelled",
+    ]
 
 
 @pytest.mark.parametrize(
-    ("overrides", "open_attempt", "expected"),
+    ("overrides", "expected"),
     [
-        ({}, None, Stage.AWAITING_PAYMENT),
-        ({}, "started", Stage.AWAITING_PAYMENT),
-        ({}, "confirming", Stage.PAYMENT_PROCESSING),
-        ({"payment_status": "failed"}, None, Stage.PAYMENT_FAILED),
-        ({"payment_status": "failed"}, "started", Stage.AWAITING_PAYMENT),
-        ({"payment_status": "paid"}, None, Stage.TICKETING),
+        # Held, not paid — whatever the last attempt did.
+        ({}, Stage.BOOKED),
+        ({"payment_status": "failed"}, Stage.BOOKED),
+        # Paid; GTS has not answered, or has not been asked yet.
+        ({"payment_status": "paid"}, Stage.TICKET_WAITING),
         (
             {"payment_status": "paid", "ticketing_status": "processing"},
-            None,
-            Stage.TICKETING,
+            Stage.TICKET_WAITING,
         ),
-        (
-            {"payment_status": "paid", "ticketing_status": "ticketed"},
-            None,
-            Stage.TICKETED,
-        ),
+        ({"payment_status": "paid", "ticketing_status": "ticketed"}, Stage.TICKETED),
+        # Money taken, no ticket coming on its own.
         (
             {"payment_status": "paid", "ticketing_status": "failed"},
-            None,
             Stage.TICKETING_FAILED,
         ),
-        ({"payment_status": "refunding"}, None, Stage.REFUNDING),
-        ({"payment_status": "refunded"}, None, Stage.REFUNDED),
-        ({"payment_status": "refund_failed"}, None, Stage.REFUND_DUE),
+        ({"payment_status": "refunding"}, Stage.TICKETING_FAILED),
+        ({"payment_status": "refund_failed"}, Stage.TICKETING_FAILED),
         (
-            {"status": "cancelled", "cancel_reason": "expired", "cancelled_at": "x"},
-            None,
-            Stage.EXPIRED,
+            {"status": "cancelled", "payment_status": "paid", "cancelled_at": "x"},
+            Stage.TICKETING_FAILED,
         ),
         (
-            {"status": "cancelled", "cancel_reason": "customer", "cancelled_at": "x"},
-            None,
+            {"status": "cancelled", "payment_status": "refunding", "cancelled_at": "x"},
+            Stage.TICKETING_FAILED,
+        ),
+        # The money went back — terminal, wherever the booking stands.
+        ({"payment_status": "refunded"}, Stage.REFUNDED),
+        (
+            {"status": "cancelled", "payment_status": "refunded", "cancelled_at": "x"},
+            Stage.REFUNDED,
+        ),
+        # Released before any money moved; ``cancel_reason`` keeps the why.
+        (
+            {"status": "cancelled", "cancel_reason": "expired", "cancelled_at": "x"},
             Stage.CANCELLED,
         ),
         (
-            {"status": "cancelled", "payment_status": "paid", "cancelled_at": "x"},
-            None,
-            Stage.REFUND_DUE,
+            {"status": "cancelled", "cancel_reason": "customer", "cancelled_at": "x"},
+            Stage.CANCELLED,
         ),
         (
-            {"status": "cancelled", "payment_status": "refunded", "cancelled_at": "x"},
-            None,
-            Stage.REFUNDED,
+            {"status": "cancelled", "payment_status": "failed", "cancelled_at": "x"},
+            Stage.CANCELLED,
         ),
     ],
 )
-def test_stage_table(
-    overrides: dict[str, Any], open_attempt: str | None, expected: Stage
-) -> None:
+def test_status_table(overrides: dict[str, Any], expected: Stage) -> None:
     if overrides.get("cancelled_at") == "x":
         overrides = {**overrides, "cancelled_at": lifecycle.utcnow()}
-    assert stage_of(_order(**overrides), open_attempt=open_attempt) is expected
+    assert stage_of(_order(**overrides)) is expected
+
+
+def test_status_is_total_over_the_three_columns() -> None:
+    """Every combination the columns can hold has an answer — including the
+    ones the guards never let happen, which must land on the side that asks
+    a human to look rather than raise. Checked against what the customer must
+    never be told, not against the function's own branches."""
+    no_money = {PaymentStatus.PENDING, PaymentStatus.FAILED}
+    for status in OrderStatus:
+        for payment in PaymentStatus:
+            for ticketing in TicketingStatus:
+                order = _order(
+                    status=status,
+                    payment_status=payment,
+                    ticketing_status=ticketing,
+                    cancelled_at=(
+                        lifecycle.utcnow() if status == OrderStatus.CANCELLED else None
+                    ),
+                )
+                result = stage_of(order)
+                assert isinstance(result, Stage)
+                if payment in no_money:
+                    # Nothing was charged: never "contact us", never a refund.
+                    assert result in (Stage.BOOKED, Stage.CANCELLED)
+                else:
+                    # Money moved: never "just pay" or a plain cancellation.
+                    assert result not in (Stage.BOOKED, Stage.CANCELLED)
+                if payment == PaymentStatus.REFUNDED:
+                    assert result is Stage.REFUNDED
+                if result is Stage.TICKETED:
+                    assert ticketing == TicketingStatus.TICKETED
+                if result is Stage.TICKET_WAITING:
+                    assert status == OrderStatus.BOOKED
+                    assert payment == PaymentStatus.PAID
