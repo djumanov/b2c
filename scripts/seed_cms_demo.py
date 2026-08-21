@@ -1,6 +1,6 @@
 """Seed demo content: CMS pages/FAQ/fun facts, profile deletion reasons, the
-site's company contacts, leads support contact and available currencies, in
-uz / ru / en.
+site's company contacts, leads support contact, available currencies and the
+order status messages customers see while paying and ticketing, in uz / ru / en.
 
 Operational tooling, not application code — it drives the cms, customers and
 settings modules through their service functions, the same way a panel
@@ -10,10 +10,10 @@ can serve it straight away.
 Safe to run twice — locally and on the demo server alike. Pages are matched
 by slug and always **updated** to match ``PAGES`` below (this is demo
 content, meant to be kept current, not an admin's own edit). FAQ entries,
-fun facts and deletion reasons are matched by their Uzbek text, site
-settings and currencies by still being at their untouched defaults — those
-are left untouched once set, since there is no seed-vs-edited distinction to
-draw for them.
+fun facts and deletion reasons are matched by their Uzbek text; site
+settings, currencies and order messages by still being at their untouched
+defaults — those are left alone once set, since there is no seed-vs-edited
+distinction to draw for them.
 
     uv run python scripts/seed_cms_demo.py
 """
@@ -38,6 +38,9 @@ from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
 from app.modules.leads import service as leads_service
 from app.modules.leads.schemas import SupportContactIn
+from app.modules.orders import service as orders_service
+from app.modules.orders.lifecycle import Stage
+from app.modules.orders.schemas import OrderMessageIn
 from app.modules.settings import service as settings_service
 from app.modules.settings.schemas import CurrenciesIn, SiteIn
 
@@ -884,6 +887,82 @@ async def seed_support_contact(session: AsyncSession) -> None:
     print("leads support contact: seeded")
 
 
+# --- order status messages (``/admin/orders/messages/``) ----------------------------
+
+#: What the customer's screen says per public order ``status`` — the panel's
+#: wording over ``orders.messages.DEFAULTS``. Written the way an operator
+#: would: concrete, with the support line typed into the sentence itself
+#: (the message is shown verbatim, nothing is interpolated).
+ORDER_MESSAGES: dict[Stage, dict[str, str]] = {
+    Stage.BOOKED: {
+        "uz": "Joyingiz band qilindi. Chipta chiqarilishi uchun to'lovni "
+        "ko'rsatilgan muddatgacha amalga oshiring — muddat o'tsa bron "
+        "avtomatik bekor bo'ladi.",
+        "ru": "Место забронировано. Оплатите заказ до указанного срока, чтобы "
+        "билет был выписан — по истечении срока бронь снимается автоматически.",
+        "en": "Your seat is held. Pay before the deadline shown to have the "
+        "ticket issued — once it passes, the booking is released automatically.",
+    },
+    Stage.TICKET_WAITING: {
+        "uz": "To'lovingiz qabul qilindi, rahmat! Chipta hozir "
+        "rasmiylashtirilmoqda — odatda bu 1-2 daqiqa oladi. Tayyor bo'lishi "
+        "bilan SMS va ilovada xabar beramiz.",
+        "ru": "Оплата получена, спасибо! Билет оформляется — обычно это занимает "
+        "1-2 минуты. Как только он будет готов, мы сообщим по SMS и в приложении.",
+        "en": "Payment received, thank you! Your ticket is being issued — this "
+        "usually takes 1-2 minutes. We will notify you by SMS and in the app "
+        "as soon as it is ready.",
+    },
+    Stage.TICKETED: {
+        "uz": 'Chiptalaringiz tayyor! Ularni "Chiptalar" bo\'limidan yuklab '
+        "olishingiz yoki elektron pochtangizdan topishingiz mumkin. Oq yo'l!",
+        "ru": "Ваши билеты готовы! Скачайте их в разделе «Билеты» или найдите в "
+        "электронной почте. Счастливого пути!",
+        "en": "Your tickets are ready! Download them from the Tickets section or "
+        "find them in your email. Have a great trip!",
+    },
+    Stage.TICKETING_FAILED: {
+        "uz": "To'lov qabul qilindi, ammo aviakompaniya chiptani tasdiqlamadi. "
+        "Xavotir olmang — mablag' 3-5 ish kuni ichida kartangizga qaytariladi. "
+        "Savollar bo'lsa: +998 71 200 11 33 yoki @gts_support.",
+        "ru": "Оплата прошла, но авиакомпания не подтвердила билет. Не "
+        "волнуйтесь — средства вернутся на карту в течение 3-5 рабочих дней. "
+        "Вопросы: +998 71 200 11 33 или @gts_support.",
+        "en": "Your payment went through, but the airline did not confirm the "
+        "ticket. Don't worry — the money will be back on your card within 3-5 "
+        "business days. Questions: +998 71 200 11 33 or @gts_support.",
+    },
+    Stage.REFUNDED: {
+        "uz": "Mablag' kartangizga qaytarildi. Bank tomonidan aks etishi 3-5 ish "
+        "kunigacha vaqt olishi mumkin.",
+        "ru": "Средства возвращены на вашу карту. Зачисление банком может занять "
+        "до 3-5 рабочих дней.",
+        "en": "Your refund has been sent to your card. It may take your bank up "
+        "to 3-5 business days to show it.",
+    },
+    Stage.CANCELLED: {
+        "uz": "Buyurtma bekor qilindi, hech qanday to'lov olinmadi. Yangi "
+        "qidiruv qilib, qayta bron qilishingiz mumkin.",
+        "ru": "Заказ отменён, оплата не взималась. Вы можете выполнить новый "
+        "поиск и забронировать заново.",
+        "en": "The order was cancelled and nothing was charged. Search again to "
+        "make a new booking.",
+    },
+}
+
+
+async def seed_order_messages(session: AsyncSession) -> None:
+    # Same skip rule as site settings, per status: a sentence staff already
+    # rewrote in any language is theirs, and a rerun must not clobber it.
+    existing = {row.status: row for row in await orders_service.list_messages(session)}
+    for status, text in ORDER_MESSAGES.items():
+        if existing[status].custom:
+            print(f"order message {status.value!r}: already customised, skipped")
+            continue
+        await orders_service.update_message(session, status, OrderMessageIn(text=text))
+        print(f"order message {status.value!r}: seeded")
+
+
 # --- deletion reasons -------------------------------------------------------------
 
 DELETION_REASONS: list[dict] = [
@@ -964,6 +1043,7 @@ async def main() -> None:
         await seed_site_settings(session)
         await seed_support_contact(session)
         await seed_currencies(session)
+        await seed_order_messages(session)
     await dispose_engine()
 
 
