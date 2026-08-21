@@ -104,12 +104,15 @@ async def clean_tables(engine: AsyncEngine) -> AsyncIterator[None]:
         for table in (
             "payment_attempts",
             "order_events",
+            "order_messages",
             "orders",
             "customer_cards",
             "customers",
             "gts_credentials",
             "audit_log",
             "staff",
+            # Settings singletons a test may write; re-created on first read.
+            "languages",
         ):
             await connection.execute(text(f"DELETE FROM {table}"))
 

@@ -314,22 +314,14 @@ async def test_detail_message_follows_the_request_language(
     assert by_header.json()["data"]["order"]["message"].startswith("Your booking")
 
 
-async def test_ticketing_failed_message_names_support_and_lists_tickets(
+async def test_ticketing_failed_message_and_issued_tickets(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
-    """The sentence the user asked for, with the panel's support contact, and
-    the ticket numbers GTS did issue read off the stored answer."""
-    from app.modules.settings import cache as settings_cache
-
-    await settings_cache.write(
-        {
-            "products": [{"code": "flight", "enabled": True}],
-            "site": {"support_phone": "+998 90 123 45 67", "support_email": None},
-        }
-    )
+    """The sentence the user asked for, and the ticket numbers GTS did issue
+    read off the stored answer."""
     order = await _make_order(
         db_session,
         customer,
@@ -349,8 +341,7 @@ async def test_ticketing_failed_message_names_support_and_lists_tickets(
 
     data = response.json()["data"]
     assert data["order"]["stage"] == "ticketing_failed"
-    message = data["order"]["message"]
-    assert "support xizmatiga murojaat qiling: +998 90 123 45 67." in message
+    assert data["order"]["message"].endswith("support xizmatiga murojaat qiling.")
     assert data["ticketing"]["status"] == "failed"
     assert data["ticketing"]["error"].startswith("BOOKING: save_booking 403")
     assert data["ticketing"]["tickets"] == [

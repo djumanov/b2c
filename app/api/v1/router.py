@@ -90,6 +90,8 @@ admin_router.include_router(customers_admin.deletion_reasons_router)
 admin_router.include_router(leads_admin.topics_router)
 admin_router.include_router(leads_admin.support_router)
 admin_router.include_router(leads_admin.router)
+# ``messages_router`` first: ``/orders/messages/`` must not be read as an id.
+admin_router.include_router(orders_admin.messages_router)
 admin_router.include_router(orders_admin.router)
 admin_router.include_router(staff_admin.router)
 admin_router.include_router(system_admin.router)

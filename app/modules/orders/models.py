@@ -332,11 +332,30 @@ class PaymentAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class OrderMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """What the panel wrote for one stage — the overrides, never the defaults.
+
+    One row per ``lifecycle.Stage`` value, created on first read like every
+    other keyed setting (``payment_providers``): no data migration, and a
+    stage added in a new release gets its row the first time anybody looks.
+    ``text`` holds only the languages staff actually wrote; a language they
+    never touched — or cleared — reads from ``messages.DEFAULTS``.
+    """
+
+    __tablename__ = "order_messages"
+
+    key: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    text: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
 __all__ = [
     "AttemptStatus",
     "CancelReason",
     "Order",
     "OrderEvent",
+    "OrderMessage",
     "OrderStatus",
     "PaymentAttempt",
     "PaymentStatus",

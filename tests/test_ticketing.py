@@ -180,11 +180,6 @@ async def test_gts_refusal_with_hold_intact_is_failed_with_support_message(
     db_session: AsyncSession,
     fake_provider: FakeProvider,
 ) -> None:
-    from app.modules.settings import cache as settings_cache
-
-    await settings_cache.write(
-        {"site": {"support_phone": "+998 71 200 00 00", "support_email": "help@x.uz"}}
-    )
     mock_gts_signin()
     mock_gts_order(gts_order_body())
     mock_gts_ticketing(error="TICKETING: provider rejected the fare")
@@ -195,9 +190,7 @@ async def test_gts_refusal_with_hold_intact_is_failed_with_support_message(
     assert data["order"]["payment_status"] == "paid"
     assert data["order"]["ticketing_status"] == "failed"
     assert data["order"]["stage"] == "ticketing_failed"
-    assert data["order"]["message"].endswith(
-        "support xizmatiga murojaat qiling: +998 71 200 00 00, help@x.uz."
-    )
+    assert data["order"]["message"].endswith("support xizmatiga murojaat qiling.")
     assert data["ticketing"]["error"] == "TICKETING: provider rejected the fare"
     assert data["order"]["status"] == "booked"  # never auto-cancelled
     assert await _events(db_session, order) == [

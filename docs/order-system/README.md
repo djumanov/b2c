@@ -40,8 +40,13 @@ provider kabineti orqali qaytariladi (4-bosqich).
 ## 2. `stage` — ekran uchun bitta yorliq
 
 Uchta ustundan **serverda** hisoblanadi, saqlanmaydi (`lifecycle.stage_of`).
-Har bir klient bir xil o'qisin deb. Har `stage` ga mos `message` (uz/ru/en,
-so'rov tilidan — `?lang=` yoki `Accept-Language`) `orders/messages.py` da.
+Har bir klient bir xil o'qisin deb. Har `stage` ga mos `message` — **admin
+panel matni** (`/admin/orders/messages/`, uz/ru/en, har qanday staff
+tahrirlaydi); admin yozmagan til/stage uchun `orders/messages.py::DEFAULTS`
+ko'rsatiladi. Matn **aynan yozilganidek** chiqadi — placeholder yo'q; support
+kontakti kerak bo'lsa matnning o'ziga yoziladi. Til — so'rovniki (`?lang=`
+yoki `Accept-Language`), fallback zanjiri — sayt sozlamasidagi
+`languages.default/available`.
 
 | `stage` | Qachon |
 |---|---|
@@ -55,8 +60,9 @@ so'rov tilidan — `?lang=` yoki `Accept-Language`) `orders/messages.py` da.
 | `refund_due` | pul olingan, lekin order bekor yoki `refund_failed` — kimdir qaytarishi kerak |
 | `refunding` / `refunded` | refund jarayonda / yakunlangan |
 
-`ticketing_failed` va `refund_due` matnlariga `Site` sozlamalaridagi
-`support_phone` / `support_email` qo'shiladi.
+Saqlash: `order_messages` (`key` = stage, `text` JSONB — faqat admin yozgan
+tillar; `{}` = hammasi default). PATCH tillar bo'yicha merge qiladi; bo'sh
+satr o'sha tilni default'ga qaytaradi.
 
 ## 3. O'tishlar (`orders/lifecycle.py`)
 
@@ -230,6 +236,7 @@ to'lanmasdan bekor bo'lgan order uchun `cancelled`.
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
 | POST | `/admin/orders/{id}/refund/` | staff | `{status: refunding \| refunded \| refund_failed, note}` — pul provider kabinetida qaytariladi, bu yozuv; `ticketed` orderga — 409 |
 | POST | `/admin/orders/{id}/sync/` | staff | GTS (va `confirming` urinish bo'lsa provider) bilan hozir solishtirish: yo'qolgan to'lov javobi, kech chiqqan chipta (`failed → ticketed`, faqat `paid`+`booked`), GTS qo'yib yuborgan bron |
+| GET / PATCH | `/admin/orders/messages/` · `/{stage}/` | staff | mijoz xabarlari: `{stage, default, custom, text}`; PATCH `{text: {uz, ru, en}}` — merge, `""` → default; noma'lum til tashlanadi; 1000 belgi |
 | POST | `/admin/orders/{id}/ticketing/retry/` | staff | avval sync; GTS allaqachon `TI` desa — POST yo'q; `paid`+`booked` bo'lmasa yoki GTS bronni qo'yib yuborgan bo'lsa — 409; aks holda `ticket()` (staff sweep chegarasiga bo'ysunmaydi) |
 
 Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`

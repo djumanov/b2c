@@ -19,13 +19,57 @@ from app.api.envelope import Page, enveloped_router
 from app.api.listing import ListQueryDep
 from app.db.session import SessionDep
 from app.modules.orders import service
-from app.modules.orders.schemas import OrderAdminListItemOut, OrderAdminOut, RefundIn
+from app.modules.orders.lifecycle import Stage
+from app.modules.orders.schemas import (
+    OrderAdminListItemOut,
+    OrderAdminOut,
+    OrderMessageIn,
+    OrderMessageOut,
+    RefundIn,
+)
 
 router = enveloped_router(
     prefix="/orders",
     tags=["orders"],
     dependencies=[Depends(current_staff)],
 )
+
+# --- the customer's sentences ---------------------------------------------------------
+#
+# A registry keyed by ``Stage``: every stage has a row, there is no POST and no
+# DELETE, and both roles write — wording is day-to-day work, like branding.
+# Its own router, mounted **before** ``router``: under one prefix the path
+# ``/orders/messages/`` would be read as ``/orders/{id}/`` and refused as a
+# malformed id.
+
+messages_router = enveloped_router(
+    prefix="/orders/messages",
+    tags=["orders"],
+    dependencies=[Depends(current_staff)],
+)
+
+
+@messages_router.get("/", summary="Every stage's sentence, in every language")
+async def list_messages(session: SessionDep) -> list[OrderMessageOut]:
+    return await service.list_messages(session)
+
+
+@messages_router.get("/{stage}/", summary="One stage's sentence")
+async def get_message(stage: Stage, session: SessionDep) -> OrderMessageOut:
+    return await service.get_message(session, stage)
+
+
+@messages_router.patch(
+    "/{stage}/",
+    summary="Rewrite a stage's sentence — per language; empty restores the default",
+)
+async def update_message(
+    stage: Stage, data: OrderMessageIn, session: SessionDep
+) -> OrderMessageOut:
+    return await service.update_message(session, stage, data)
+
+
+# --- the orders themselves ------------------------------------------------------------
 
 StatusParam = Annotated[Literal["booked", "cancelled"] | None, Query(alias="status")]
 PaymentParam = Annotated[
@@ -95,4 +139,4 @@ async def retry_ticketing(
     return await service.retry_ticketing(session, id, staff=staff)
 
 
-__all__ = ["router"]
+__all__ = ["messages_router", "router"]
