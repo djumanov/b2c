@@ -842,8 +842,9 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"card\": {\n    \"number\": \"4111111111111111\",\n    \"expire\": \"1230\"\n  }\n}"
-            }
+              "raw": "{\n  \"card\": {\n    \"number\": \"4111111111111111\",\n    \"expire\": \"1230\"\n  },\n  \"save\": false\n}"
+            },
+            "description": "Either {card_id} (a saved card) or {card: {number, expire}} — exactly one. save: true with a typed card keeps it once the provider accepted it. Answers awaiting_otp with payment_id and phone_hint; a declined card is 200 with payment.status=failed."
           },
           "event": [
             {

@@ -1234,3 +1234,94 @@ async def test_an_attempt_is_settled_only_by_the_provider_that_started_it(
     assert payme.count("receipts.check") == 0
     await db_session.refresh(confirming)
     assert confirming.status == "confirming"
+
+
+# --- save: true — keep the card the provider accepted ---------------------------------
+
+
+@respx.mock
+async def test_save_keeps_a_typed_card_once_the_provider_took_it(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_ticketing()
+    order = await make_order(db_session, customer)
+
+    started = await _start(client, order, customer_headers, {**RAW_CARD, "save": True})
+
+    assert started.status_code == 200, started.text
+    (card,) = (await db_session.scalars(select(CustomerCard))).all()
+    assert card.customer_id == customer.id
+    assert card.last4 == "1111"
+    assert card.expiry_month == 12 and card.expiry_year == 2030
+    assert card.pan not in (None, PAN)  # sealed, never the digits
+    assert card.last_used_at is None
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.card_id == card.id
+    assert PAN not in started.text
+
+    # Paying with it stamps it, like a card saved beforehand.
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    paid = await _confirm(client, order, customer_headers, payment_id)
+    assert paid.json()["data"]["payment"]["status"] == "paid"
+    await db_session.refresh(card)
+    assert card.last_used_at is not None
+
+    # The same card again: saved once, no error, the new attempt points at it.
+    other = await make_order(db_session, customer, gts_order_number=778)
+    mock_gts_order(gts_order_body(order_number=778), order_number=778)
+    again = await _start(
+        client,
+        other,
+        {**customer_headers, "Idempotency-Key": "save-2"},
+        {**RAW_CARD, "save": True},
+    )
+    assert again.status_code == 200, again.text
+    assert len((await db_session.scalars(select(CustomerCard))).all()) == 1
+    (attempt,) = await _attempts(db_session, other)
+    assert attempt.card_id == card.id
+
+
+@respx.mock
+async def test_save_keeps_nothing_the_provider_refused(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    from app.providers.payments.base import PaymentDeclined
+
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    fake_provider.start_error = PaymentDeclined("card expired")
+
+    declined = await _start(client, order, customer_headers, {**RAW_CARD, "save": True})
+
+    assert declined.status_code == 200
+    assert declined.json()["data"]["payment"]["status"] == "failed"
+    assert (await db_session.scalars(select(CustomerCard))).all() == []
+
+
+async def test_save_means_nothing_with_a_saved_card(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    order = await make_order(db_session, customer)
+    card_id = await _save_card(db_session, customer)
+
+    response = await _start(
+        client, order, customer_headers, {"card_id": str(card_id), "save": True}
+    )
+
+    assert response.status_code == 422
+    assert "card_id" in response.json()["errors"][0]["message"]
+    assert await _attempts(db_session, order) == []

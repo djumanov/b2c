@@ -558,17 +558,38 @@ async def start_payment(
         await _fail_attempt(session, attempt.id, error=str(exc))
         raise
 
+    attempt_id = attempt.id
+    saved_card_id: uuid.UUID | None = None
+    if data.save and data.card is not None:
+        # The provider has taken the card, so it is worth keeping. Best
+        # effort, between the locks: a card that could not be saved is a log
+        # line, never a payment that was started and then lost. The rollback
+        # expires every row this session holds, hence ``attempt_id`` above.
+        try:
+            saved_card_id = await payments_service.remember_card(
+                session, customer_id, card
+            )
+        except Exception as exc:  # noqa: BLE001 - the payment stands either way
+            await session.rollback()
+            logger.warning(
+                "card_not_remembered",
+                order_id=str(order_id),
+                error=f"{type(exc).__name__}: {exc}"[:300],
+            )
+
     order = await _owned_locked(session, customer_id, order_id)
-    row = await session.get(PaymentAttempt, attempt.id, with_for_update=True)
+    row = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
     if row is not None and row.status == AttemptStatus.STARTED:
         row.provider_reference, row.key_version = encrypt(started.reference)
         row.phone_hint = started.phone_hint
         row.provider_data = {"start": started.raw}
+        if saved_card_id is not None:
+            row.card_id = saved_card_id
     await session.commit()
     logger.info(
         "payment_started",
         order_id=str(order.id),
-        attempt=str(attempt.id),
+        attempt=str(attempt_id),
         provider=provider.code,
     )
     return await _present(session, order, language=language)
