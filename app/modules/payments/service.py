@@ -26,6 +26,7 @@ import uuid
 from typing import Final
 
 import structlog
+from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -155,6 +156,47 @@ async def add_card(
     # ``card_id`` only — not even ``last4`` belongs in a log line here.
     logger.info("card_saved", card_id=str(card.id))
     return CardOut.model_validate(card)
+
+
+def _identity(digits: str, expire: str) -> tuple[str, int, int]:
+    """What the identity index is built on — ``add_card`` spells it the same."""
+    return (
+        f"{digits[:6]}{'*' * 6}{digits[-4:]}",
+        int(expire[:2]),
+        2000 + int(expire[2:]),
+    )
+
+
+async def remember_card(
+    session: AsyncSession, customer_id: uuid.UUID, card: CardDetails
+) -> uuid.UUID:
+    """Save the card a payment was just started with — ``save: true`` on
+    ``payment/``.
+
+    Called after the provider accepted the card, so a number Payme refused is
+    never kept. A card the customer already has is not an error here, the
+    way it is on ``POST /cards/``: the payment asked for it to be saved and
+    it is — the existing row's id comes back, so the attempt can point at it
+    and ``last_used_at`` gets stamped when the charge lands. Looked up
+    first rather than caught as a duplicate: ``add_card``'s rollback would
+    expire every row the caller still holds mid-request.
+    """
+    masked_pan, month, year = _identity(card.number, card.expire)
+    existing = await repository.card_by_identity(
+        session,
+        customer_id,
+        masked_pan=masked_pan,
+        expiry_month=month,
+        expiry_year=year,
+    )
+    if existing is not None:
+        return existing.id
+    saved = await add_card(
+        session,
+        customer_id,
+        CardCreateIn(number=SecretStr(card.number), expire=SecretStr(card.expire)),
+    )
+    return saved.id
 
 
 # --- revealing --------------------------------------------------------------------
@@ -287,5 +329,6 @@ __all__ = [
     "list_cards",
     "mark_card_used",
     "payment_provider",
+    "remember_card",
     "reveal_card",
 ]

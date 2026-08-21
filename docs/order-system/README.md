@@ -148,7 +148,11 @@ kod ustida nima bo'lishidan qat'i nazar.
 Qadamlar (`orders/service.py`):
 
 1. **`POST /public/orders/{id}/payment/`** — body `{card_id}` yoki
-   `{card: {number, expire}}` (aynan bittasi). Tartib: provider va GTS client
+   `{card: {number, expire}}` (aynan bittasi); `card` bilan `save: true` —
+   provider kartani qabul qilgach (`start` muvaffaqiyatli) u `customer_cards`
+   ga yoziladi, urinish unga bog'lanadi (`card_id`), to'lov `paid` bo'lganda
+   `last_used_at` bosiladi; rad etilgan karta saqlanmaydi; allaqachon bor
+   karta — xato emas, o'sha qator ishlatiladi; `card_id` bilan `save` → 422. Tartib: provider va GTS client
    **qulfdan oldin** olinadi (ular sessiyani commit qiladi); `GET
    /v1/orders/{n}/` — bron tirikmi, narx qancha (GTS narxi bizning narxdan
    ustun); GTS `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409

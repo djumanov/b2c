@@ -193,17 +193,22 @@ class PaymentStartIn(BaseModel):
 
     Exactly one of the two. ``hide_input_in_errors`` for the same reason as
     on ``CardCreateIn``: a validation error must not echo a card number.
+    ``save`` keeps a typed card for next time — once the provider has
+    accepted it, never before; it means nothing with ``card_id``.
     """
 
     model_config = {"extra": "forbid", "hide_input_in_errors": True}
 
     card_id: uuid.UUID | None = None
     card: CardIn | None = None
+    save: bool = False
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "PaymentStartIn":
         if (self.card_id is None) == (self.card is None):
             raise ValueError("Send either card_id or card")
+        if self.save and self.card is None:
+            raise ValueError("save applies to a card typed now, not to card_id")
         return self
 
 

@@ -31,6 +31,25 @@ async def card_by_id(
     return row
 
 
+async def card_by_identity(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    *,
+    masked_pan: str,
+    expiry_month: int,
+    expiry_year: int,
+) -> CustomerCard | None:
+    """The live card the identity index would refuse a duplicate of."""
+    row: CustomerCard | None = await session.scalar(
+        owned_cards(customer_id).where(
+            CustomerCard.masked_pan == masked_pan,
+            CustomerCard.expiry_month == expiry_month,
+            CustomerCard.expiry_year == expiry_year,
+        )
+    )
+    return row
+
+
 async def live_cards_for(
     session: AsyncSession, customer_id: uuid.UUID
 ) -> Sequence[CustomerCard]:
@@ -41,6 +60,7 @@ async def live_cards_for(
 
 __all__ = [
     "card_by_id",
+    "card_by_identity",
     "live_cards_for",
     "owned_cards",
 ]
