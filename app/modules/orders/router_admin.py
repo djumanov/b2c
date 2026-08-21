@@ -16,7 +16,9 @@ from fastapi import Depends, Query
 
 from app.api.deps import CurrentStaff, PaginationDep, current_staff
 from app.api.envelope import Page, enveloped_router
-from app.api.listing import ListQueryDep
+from app.api.errors import ErrorCode
+from app.api.listing import ListQuery, list_query_dep
+from app.api.openapi import error_responses
 from app.db.session import SessionDep
 from app.modules.orders import service
 from app.modules.orders.lifecycle import Stage
@@ -31,7 +33,7 @@ from app.modules.orders.schemas import (
 
 router = enveloped_router(
     prefix="/orders",
-    tags=["orders"],
+    tags=["admin-orders"],
     dependencies=[Depends(current_staff)],
 )
 
@@ -45,17 +47,31 @@ router = enveloped_router(
 
 messages_router = enveloped_router(
     prefix="/orders/messages",
-    tags=["orders"],
+    tags=["admin-orders"],
     dependencies=[Depends(current_staff)],
 )
 
 
-@messages_router.get("/", summary="Every status's sentence, in every language")
+@messages_router.get(
+    "/",
+    summary="Every status's sentence, in every language",
+    description=(
+        "One row per customer-facing `status` (six of them): the sentence this "
+        "release ships (`default`), what the panel wrote (`custom`), and what "
+        "customers actually see (`text` — `custom` over `default`, per "
+        "language). This is the `order.message` every customer answer carries."
+    ),
+    response_description="Six rows, in the order screens list them.",
+)
 async def list_messages(session: SessionDep) -> list[OrderMessageOut]:
     return await service.list_messages(session)
 
 
-@messages_router.get("/{status}/", summary="One status's sentence")
+@messages_router.get(
+    "/{status}/",
+    summary="One status's sentence",
+    description="The same row as in the list, for one `status`.",
+)
 async def get_message(status: Stage, session: SessionDep) -> OrderMessageOut:
     return await service.get_message(session, status)
 
@@ -63,6 +79,15 @@ async def get_message(status: Stage, session: SessionDep) -> OrderMessageOut:
 @messages_router.patch(
     "/{status}/",
     summary="Rewrite a status's sentence — per language; empty restores the default",
+    description=(
+        'Languages **merge**: send `{"text": {"uz": "…"}}` to change Uzbek '
+        'and leave the others as they are. An empty string (`""`) clears that '
+        "language back to the shipped default. Up to 1000 characters per "
+        "language; unknown languages are dropped. The text is shown to "
+        "customers **exactly as written** — no placeholders — so a support "
+        "phone number belongs in the sentence itself."
+    ),
+    response_description="The row after the change.",
 )
 async def update_message(
     status: Stage, data: OrderMessageIn, session: SessionDep
@@ -87,16 +112,48 @@ StatusParam = Annotated[
         )
     ),
 ]
-BookingParam = Annotated[OrderStatus | None, Query(alias="booking_status")]
-PaymentParam = Annotated[PaymentStatus | None, Query(alias="payment_status")]
-TicketingParam = Annotated[TicketingStatus | None, Query(alias="ticketing_status")]
+BookingParam = Annotated[
+    OrderStatus | None,
+    Query(alias="booking_status", description="Is the booking alive?"),
+]
+PaymentParam = Annotated[
+    PaymentStatus | None,
+    Query(alias="payment_status", description="Where the money is."),
+]
+TicketingParam = Annotated[
+    TicketingStatus | None,
+    Query(alias="ticketing_status", description="Where the ticket is."),
+]
+
+AdminOrdersListQuery = Depends(
+    list_query_dep(
+        ordering=("created_at", "updated_at"),
+        default="-created_at",
+        search="the PNR and the GTS order number",
+    )
+)
 
 
-@router.get("/", summary="All orders, filterable by the customer's status")
+@router.get(
+    "/",
+    summary="All orders, filterable by the customer's status",
+    description=(
+        "Every order, newest first. Each row carries the customer's `status` "
+        "**and** the three columns it is read from (`booking_status`, "
+        "`payment_status`, `ticketing_status`), plus the reason when something "
+        "went wrong (`cancel_reason`, `ticketing_error`) so the inbox reads "
+        "without opening rows.\n\n"
+        "The four filters combine (AND). **The support inbox is "
+        "`?status=ticketing_failed&ordering=-updated_at`** — money taken, no "
+        "ticket coming on its own, freshest first. `search` matches the PNR "
+        "or the GTS order number."
+    ),
+    response_description="A page of support rows.",
+)
 async def list_orders(
     session: SessionDep,
     pagination: PaginationDep,
-    query: ListQueryDep,
+    query: ListQuery = AdminOrdersListQuery,
     status: StatusParam = None,
     booking_status: BookingParam = None,
     payment_status: PaymentParam = None,
@@ -113,26 +170,102 @@ async def list_orders(
     )
 
 
-@router.get("/{id}/", summary="One order, with its history and payments")
+@router.get(
+    "/{id}/",
+    summary="One order, with its history and payments",
+    description=(
+        "The customer's view of the order (`order`, `payment`, `ticketing`, "
+        "`order_data`) plus the books behind it: `order.booking_status` / "
+        "`payment_status` / `ticketing_status`, the customer id, how many "
+        "times GTS was asked for the ticket, `events[]` (every change, who "
+        "made it, oldest first) and `payments[]` (every attempt, without the "
+        "provider's references). `order.message` is rendered in the site's "
+        "default language."
+    ),
+    response_description="The order and its books.",
+)
 async def get_order(id: uuid.UUID, session: SessionDep) -> OrderAdminOut:
     return await service.get_order_admin(session, id)
 
 
-@router.post("/{id}/refund/", summary="Mark where the refund stands")
+@router.post(
+    "/{id}/refund/",
+    summary="Mark where the refund stands",
+    description=(
+        "**This moves no money.** Support refunds in the payment provider's "
+        "own cabinet; this records what happened so the order — and the "
+        "customer's screen — say so: `refunding` (started), `refunded` (the "
+        "money went back; final; the customer sees `status = refunded`), "
+        "`refund_failed`. Allowed moves: `paid → refunding | refunded`, "
+        "`refunding → refunded | refund_failed`, `refund_failed → refunding | "
+        "refunded`. Writes a history line with the staff id and `note`."
+    ),
+    response_description="The order after the mark.",
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        conflict=(
+            "The move is not allowed from the order's current payment state, "
+            "or the order is `ticketed` — a ticketed order is not refunded here."
+        ),
+    ),
+)
 async def mark_refund(
     id: uuid.UUID, data: RefundIn, staff: CurrentStaff, session: SessionDep
 ) -> OrderAdminOut:
     return await service.mark_refund(session, id, data, staff=staff)
 
 
-@router.post("/{id}/sync/", summary="Compare with GTS and the provider now")
+@router.post(
+    "/{id}/sync/",
+    summary="Compare with GTS and the provider now",
+    description=(
+        "Asks, right now, the questions the background sweep asks every "
+        "30 seconds — for this one order: a charge whose answer was lost "
+        "(`receipts.check` at the provider), a ticket GTS finished or never "
+        "started, a hold GTS released. What it finds is applied through the "
+        "same steps the sweep uses, so `sync` can never do something the "
+        "sweep could not. Use it when a customer is on the phone and the "
+        "screen says `processing` or `ticket_waiting`."
+    ),
+    response_description="The order after the comparison.",
+    responses=error_responses(
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        upstream_error=(
+            "GTS or the provider refused the read; their words are in "
+            "`meta.upstream`. Nothing was changed."
+        ),
+        upstream_timeout="GTS or the provider did not answer. Nothing was changed.",
+    ),
+)
 async def sync_order(
     id: uuid.UUID, staff: CurrentStaff, session: SessionDep
 ) -> OrderAdminOut:
     return await service.sync_order(session, id, staff=staff)
 
 
-@router.post("/{id}/ticketing/retry/", summary="Ask GTS for the ticket again")
+@router.post(
+    "/{id}/ticketing/retry/",
+    summary="Ask GTS for the ticket again",
+    description=(
+        "For an order that is paid and `ticketing_failed` — typically after "
+        "the GTS deposit was topped up. Syncs first: if GTS already shows the "
+        "ticket issued, it is recorded and no request is sent. Otherwise the "
+        "ticketing request goes to GTS again (staff are not bound by the "
+        "sweep's automatic retry limit) and the answer lands as `ticketed`, "
+        "`processing` (the sweep finishes it) or `failed` with GTS's reason."
+    ),
+    response_description="The order after the attempt.",
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict=(
+            "The order is not paid and booked, or GTS has released the hold — "
+            "there is nothing to ticket."
+        ),
+    ),
+)
 async def retry_ticketing(
     id: uuid.UUID, staff: CurrentStaff, session: SessionDep
 ) -> OrderAdminOut:

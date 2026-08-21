@@ -23,13 +23,16 @@ The list (``GET /public/orders/``) is a fifth shape, and it takes GTS's
 ``routes`` with it: an order card shows the airline, the flight number, the
 times and the airports, and every one of those lives in a segment. Passengers
 come along as **names only** — a card says who is flying, and a passport number
-has no business riding on a request that returns twenty rows (PROJECT.md §13).
+has no business riding on a request that returns twenty rows.
 The rest of GTS's answer stays on ``{id}/``.
+
+Every field carries a ``description``: the generated OpenAPI is the contract
+a client developer reads, and a ``#:`` comment never reaches it.
 """
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
@@ -37,7 +40,13 @@ from app.core import i18n
 from app.core.money import Money
 from app.modules.orders.lifecycle import CONFIRMING, Stage, stage_of
 from app.modules.orders.messages import MessageCatalogue
-from app.modules.orders.models import Order, OrderStatus, PaymentStatus
+from app.modules.orders.models import (
+    AttemptStatus,
+    Order,
+    OrderStatus,
+    PaymentStatus,
+    TicketingStatus,
+)
 from app.modules.payments.schemas import CardIn
 from app.providers.products import gts_order
 
@@ -63,31 +72,72 @@ def _strip_commission(value: Any) -> Any:
     return value
 
 
-class OrderOut(BaseModel):
-    """Our slim record of one booking."""
+# --- the order block ------------------------------------------------------------------
 
-    id: uuid.UUID
-    product: str
-    #: The one status a screen shows, read off the three lifecycle columns.
-    status: Stage
-    #: The sentence that goes with ``status``, in the request's language.
-    message: str
-    #: Why a ``cancelled`` order was cancelled — ``expired`` is the deadline.
-    cancel_reason: str | None
-    gts_status: str
-    gts_order_number: int
-    pnr: str | None
-    trip_type: str | None
-    route_summary: str | None
-    passenger_count: int | None
-    amount: Money | None
-    ticket_time_limit_at: datetime | None
-    paid_at: datetime | None
-    ticketed_at: datetime | None
-    cancelled_at: datetime | None
-    request_id: str
-    offer_id: str
-    created_at: datetime
+_MONEY_OR_NULL = (
+    "Null only when GTS never reported a price for the booking — rare, and "
+    "the order is still recorded."
+)
+
+
+class OrderOut(BaseModel):
+    """Our record of one booking — the stable part of every order answer."""
+
+    id: uuid.UUID = Field(description="Our order id; every later call takes it.")
+    product: str = Field(description="Vertical code — `flight` in this release.")
+    status: Stage = Field(
+        description=(
+            "The one status a screen shows, read off the order's lifecycle on "
+            "every request. Same word on the list and here. See `Stage` for "
+            "what each value means."
+        )
+    )
+    message: str = Field(
+        description=(
+            "The sentence that goes with `status`, in the request's language "
+            "(`?lang=` / `Accept-Language`), written by the operator. Show it "
+            "as is."
+        )
+    )
+    cancel_reason: str | None = Field(
+        description=(
+            "Set when `status` is `cancelled`: `customer`, `staff`, or "
+            "`expired` — the payment deadline passed."
+        )
+    )
+    gts_status: str = Field(
+        description=(
+            "GTS's own status code, verbatim (`BO` held, `PW` issuing, `TI` "
+            "ticketed, `CB`/`VO` released). Informational — key the UI on "
+            "`status`."
+        )
+    )
+    gts_order_number: int = Field(
+        description="GTS's order number — what support quotes to GTS."
+    )
+    pnr: str | None = Field(
+        description="The airline booking reference, once GTS has one."
+    )
+    trip_type: str | None = Field(description="`OW` one-way, `RT` round trip.")
+    route_summary: str | None = Field(
+        description="The journey in one string, e.g. `TAS-IST, IST-TAS`."
+    )
+    passenger_count: int | None = Field(description="How many travellers.")
+    amount: Money | None = Field(description=f"The total to pay. {_MONEY_OR_NULL}")
+    ticket_time_limit_at: datetime | None = Field(
+        description=(
+            "When GTS releases the unpaid seat. Also `payment.pay_before`. "
+            "Null when GTS gave no deadline."
+        )
+    )
+    paid_at: datetime | None = Field(description="When the charge landed.")
+    ticketed_at: datetime | None = Field(description="When GTS issued the ticket.")
+    cancelled_at: datetime | None = Field(description="When the order was cancelled.")
+    request_id: str = Field(
+        description="The search this booking came from (provenance only)."
+    )
+    offer_id: str = Field(description="The offer that was booked (provenance only).")
+    created_at: datetime = Field(description="When the booking was recorded.")
 
     @classmethod
     def from_order(
@@ -126,43 +176,43 @@ class OrderOut(BaseModel):
 class PassengerNameOut(BaseModel):
     """Who is flying, as a list card names them — nothing more.
 
-    Three fields, all of them nullable: GTS omits a middle name more often
-    than it sends one, and a card that cannot name the traveller is still a
-    card. Everything else about a passenger — document, birth date,
-    citizenship, gender, contacts — is on ``{id}/`` and only there.
+    All three nullable: GTS omits a middle name more often than it sends one,
+    and a card that cannot name the traveller is still a card. Documents,
+    birth dates and contacts are on `GET /public/orders/{id}/` only.
     """
 
-    first_name: str | None
-    last_name: str | None
-    middle_name: str | None
+    first_name: str | None = Field(description="Given name as GTS holds it.")
+    last_name: str | None = Field(description="Family name as GTS holds it.")
+    middle_name: str | None = Field(description="Usually absent.")
 
 
 class OrderListItemOut(BaseModel):
-    """One row of "my orders" — enough to draw the card, and no more.
+    """One row of "my orders" — enough to draw the card, and no more."""
 
-    "No more" used to mean the columns alone, with ``route_summary`` standing
-    in for the journey. One string cannot carry an airline, a flight number
-    and two clock times, so GTS's ``routes`` ride along whole. What stays
-    behind is the rest of the answer: fares, baggage, and every passenger
-    field but the name.
-    """
-
-    id: uuid.UUID
-    product: str
-    #: The same ``status`` the detail shows — the card and the screen agree.
-    status: Stage
-    pnr: str | None
-    trip_type: str | None
-    route_summary: str | None
-    passenger_count: int | None
-    amount: Money | None
-    ticket_time_limit_at: datetime | None
-    created_at: datetime
-    #: GTS's route objects, verbatim — segments, flight numbers, times.
-    #: Empty when the stored answer carried none.
-    routes: list[dict[str, Any]]
-    #: Names only; documents and contacts live on ``{id}/``.
-    passengers: list[PassengerNameOut]
+    id: uuid.UUID = Field(description="Our order id.")
+    product: str = Field(description="Vertical code — `flight`.")
+    status: Stage = Field(
+        description="The same `status` the detail shows — see `Stage`."
+    )
+    pnr: str | None = Field(description="Airline booking reference, once known.")
+    trip_type: str | None = Field(description="`OW` or `RT`.")
+    route_summary: str | None = Field(description="`TAS-IST, IST-TAS`.")
+    passenger_count: int | None = Field(description="How many travellers.")
+    amount: Money | None = Field(description=f"The total. {_MONEY_OR_NULL}")
+    ticket_time_limit_at: datetime | None = Field(
+        description="Pay before this or GTS releases the seat."
+    )
+    created_at: datetime = Field(description="When the booking was recorded.")
+    routes: list[dict[str, Any]] = Field(
+        description=(
+            "GTS's route objects verbatim — segments with airline, flight "
+            "number, airports and times, the same shapes the search flow "
+            "returns. Empty when the stored answer carried none."
+        )
+    )
+    passengers: list[PassengerNameOut] = Field(
+        description="Names only; documents and contacts live on `{id}/`."
+    )
 
     @classmethod
     def from_order(cls, order: Order) -> "OrderListItemOut":
@@ -188,20 +238,52 @@ class OrderListItemOut(BaseModel):
         )
 
 
-class PaymentStartIn(BaseModel):
-    """Step 1 of paying: which card. A saved one by id, or one typed now.
+# --- paying, the two request bodies ---------------------------------------------------
 
-    Exactly one of the two. ``hide_input_in_errors`` for the same reason as
-    on ``CardCreateIn``: a validation error must not echo a card number.
-    ``save`` keeps a typed card for next time — once the provider has
-    accepted it, never before; it means nothing with ``card_id``.
+
+class PaymentStartIn(BaseModel):
+    """Step 1 of paying: which card — a saved one by id, **or** one typed now.
+
+    Exactly one of `card_id` and `card`. A validation error never echoes a
+    card number. `save` keeps a typed card for next time, once the provider
+    has accepted it (never before); it means nothing with `card_id`.
     """
 
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+    model_config = {
+        "extra": "forbid",
+        "hide_input_in_errors": True,
+        "json_schema_extra": {
+            "examples": [
+                {"card_id": "3f7c9b2e-1d44-4a3b-9a1e-2b7c8d9e0f11"},
+                {"card": {"number": "8600 0691 9540 6311", "expire": "03/99"}},
+                {
+                    "card": {"number": "8600069195406311", "expire": "0399"},
+                    "save": True,
+                },
+            ]
+        },
+    }
 
-    card_id: uuid.UUID | None = None
-    card: CardIn | None = None
-    save: bool = False
+    card_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "A card from `GET /public/profile/cards/`. Omit when sending `card`."
+        ),
+    )
+    card: CardIn | None = Field(
+        default=None,
+        description=(
+            "A card typed now: number and `MMYY` expiry. Omit when sending `card_id`."
+        ),
+    )
+    save: bool = Field(
+        default=False,
+        description=(
+            "With `card` only: keep this card in the customer's saved cards "
+            "once the provider has accepted it. A card the customer already "
+            "has is reused, not duplicated."
+        ),
+    )
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "PaymentStartIn":
@@ -215,15 +297,59 @@ class PaymentStartIn(BaseModel):
 class PaymentConfirmIn(BaseModel):
     """Step 2: the code the cardholder received, for the attempt it belongs to.
 
-    ``payment_id`` is required on purpose: after a second ``payment/`` the
+    `payment_id` is required on purpose: after a second `payment/` the
     customer may still be typing the first SMS's code, and "confirm the open
     attempt" would silently pair it with the wrong one.
     """
 
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+    model_config = {
+        "extra": "forbid",
+        "hide_input_in_errors": True,
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+                    "otp": "123456",
+                }
+            ]
+        },
+    }
 
-    payment_id: uuid.UUID
-    otp: SecretStr
+    payment_id: uuid.UUID = Field(
+        description="`payment.payment_id` from the step-1 answer."
+    )
+    otp: SecretStr = Field(
+        description="The one-time code the provider texted the cardholder."
+    )
+
+
+# --- the payment block ---------------------------------------------------------------
+
+#: ``PaymentOut.status`` — the order's ``payment_status`` plus three readings
+#: off the open attempt. Declared once so the schema, the code and the test
+#: that pins them agree.
+PAYMENT_VIEW_STATUSES: Final = (
+    "pending",
+    "awaiting_otp",
+    "processing",
+    "paid",
+    "failed",
+    "cancelled",
+    "refunding",
+    "refunded",
+    "refund_failed",
+)
+PaymentViewStatus = Literal[
+    "pending",
+    "awaiting_otp",
+    "processing",
+    "paid",
+    "failed",
+    "cancelled",
+    "refunding",
+    "refunded",
+    "refund_failed",
+]
 
 
 class PaymentAttemptView(BaseModel):
@@ -243,31 +369,52 @@ class PaymentAttemptView(BaseModel):
 
 
 class PaymentOut(BaseModel):
-    """The payment as the client should see it.
+    """Where the money stands — the block the payment screen keys on."""
 
-    ``status`` is the order's ``payment_status`` with two refinements read off
-    the attempt — ``awaiting_otp`` while the code is being typed,
-    ``processing`` while the provider's answer is unknown — and ``cancelled``
-    for an order cancelled before it was paid, which is what the screen
-    should say rather than "pending".
-    """
-
-    status: str
-    amount: Money | None
-    #: Pay before this moment or GTS releases the seat.
-    pay_before: datetime | None
-    payment_id: uuid.UUID | None = None
-    provider: str | None = None
-    card_last4: str | None = None
-    phone_hint: str | None = None
-    paid_at: datetime | None = None
-    error: str | None = None
+    status: PaymentViewStatus = Field(
+        description=(
+            "`pending` — nothing started; `awaiting_otp` — a code was sent, "
+            "call `payment/confirm/` with it; `processing` — the charge was "
+            "sent and the answer is not back, keep polling; `paid`; `failed` — "
+            "the last attempt was declined or the code was wrong, see `error`, "
+            "start again; `cancelled` — the order was released before any "
+            "money moved; `refunding` / `refunded` / `refund_failed` — a refund "
+            "marked by support. Payment attempts never change `order.status`."
+        )
+    )
+    amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
+    pay_before: datetime | None = Field(
+        description="Pay before this moment or GTS releases the seat."
+    )
+    payment_id: uuid.UUID | None = Field(
+        default=None,
+        description="The attempt to confirm — send it back in `payment/confirm/`.",
+    )
+    provider: str | None = Field(
+        default=None, description="`payme`, `click`, or `sandbox` in debug."
+    )
+    card_last4: str | None = Field(
+        default=None, description="Last four digits of the card being charged."
+    )
+    phone_hint: str | None = Field(
+        default=None,
+        description="The masked phone the code went to, e.g. `99890*****31`.",
+    )
+    paid_at: datetime | None = Field(
+        default=None, description="When the charge landed."
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "The provider's reason when `status` is `failed`, written for a person."
+        ),
+    )
 
     @classmethod
     def from_order(
         cls, order: Order, attempt: PaymentAttemptView | None
     ) -> "PaymentOut":
-        status = order.payment_status
+        status: str = order.payment_status
         if order.status == OrderStatus.CANCELLED and status in (
             PaymentStatus.PENDING,
             PaymentStatus.FAILED,
@@ -279,7 +426,7 @@ class PaymentOut(BaseModel):
             elif attempt.status == "started":
                 status = "awaiting_otp"
         return cls(
-            status=status,
+            status=cast(PaymentViewStatus, status),
             amount=_money(order),
             pay_before=order.ticket_time_limit_at,
             payment_id=attempt.id if attempt else None,
@@ -291,24 +438,39 @@ class PaymentOut(BaseModel):
         )
 
 
+# --- the ticketing block -------------------------------------------------------------
+
+
 class TicketOut(BaseModel):
-    passenger: str
-    ticket_number: str
+    """One issued ticket, named by its passenger."""
+
+    passenger: str = Field(description="`First Last`, as GTS spells it.")
+    ticket_number: str = Field(description="The airline ticket number.")
 
 
 class TicketingOut(BaseModel):
     """Where the ticket stands — the block the "please wait" screen polls."""
 
-    status: str
-    requested_at: datetime | None
-    ticketed_at: datetime | None
-    tickets: list[TicketOut]
-    error: str | None
+    status: TicketingStatus = Field(
+        description=(
+            "`pending` — not asked for yet (unpaid); `processing` — asked, GTS "
+            "is working; `ticketed` — issued, see `tickets`; `failed` — GTS "
+            "refused, see `error` and `order.message`."
+        )
+    )
+    requested_at: datetime | None = Field(
+        description="When the ticket was last asked for."
+    )
+    ticketed_at: datetime | None = Field(description="When GTS issued it.")
+    tickets: list[TicketOut] = Field(
+        description="Issued ticket numbers by passenger; empty until `ticketed`."
+    )
+    error: str | None = Field(description="GTS's reason when `status` is `failed`.")
 
     @classmethod
     def from_order(cls, order: Order) -> "TicketingOut":
         return cls(
-            status=order.ticketing_status,
+            status=TicketingStatus(order.ticketing_status),
             requested_at=order.ticketing_requested_at,
             ticketed_at=order.ticketed_at,
             tickets=[
@@ -319,55 +481,85 @@ class TicketingOut(BaseModel):
         )
 
 
-class OrderEventOut(BaseModel):
-    """One line of the order's history, for the support screen."""
+# --- the whole answer ----------------------------------------------------------------
 
-    model_config = {"from_attributes": True}
-
-    id: uuid.UUID
-    created_at: datetime
-    event: str
-    from_value: str | None
-    to_value: str | None
-    actor: str
-    note: str | None
-    data: dict[str, Any] | None
-    request_id: str | None
-
-
-class PaymentAttemptAdminOut(BaseModel):
-    """A payment attempt as support sees it — never the provider reference."""
-
-    id: uuid.UUID
-    created_at: datetime
-    updated_at: datetime
-    provider: str
-    status: str
-    amount: Money
-    card_last4: str | None
-    phone_hint: str | None
-    error: str | None
-    paid_at: datetime | None
-
-
-class RefundIn(BaseModel):
-    """Support marking where the refund stands — the money moves elsewhere."""
-
-    model_config = {"extra": "forbid"}
-
-    status: Literal["refunding", "refunded", "refund_failed"]
-    note: str | None = Field(default=None, max_length=500)
+_BOOKING_EXAMPLE: Final[dict[str, Any]] = {
+    "product": "flight",
+    "order": {
+        "id": "5f0d87c1-9c58-4bff-8f95-6a1f61f4d1f7",
+        "product": "flight",
+        "status": "booked",
+        "message": (
+            "Bron qilindi. Chiptani olish uchun to'lovni belgilangan "
+            "muddatgacha amalga oshiring."
+        ),
+        "cancel_reason": None,
+        "gts_status": "BO",
+        "gts_order_number": 61453,
+        "pnr": "UBPLKW",
+        "trip_type": "OW",
+        "route_summary": "TAS-VKO",
+        "passenger_count": 1,
+        "amount": {"amount": "287500.00", "currency": "UZS"},
+        "ticket_time_limit_at": "2026-08-20T06:53:12Z",
+        "paid_at": None,
+        "ticketed_at": None,
+        "cancelled_at": None,
+        "request_id": "6b4f3a1e-2c7d-4e8f-9a0b-1c2d3e4f5a6b",
+        "offer_id": "1f2e3d4c-5b6a-4978-8d9c-0e1f2a3b4c5d",
+        "created_at": "2026-08-20T05:54:12Z",
+    },
+    "payment": {
+        "status": "awaiting_otp",
+        "amount": {"amount": "287500.00", "currency": "UZS"},
+        "pay_before": "2026-08-20T06:53:12Z",
+        "payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+        "provider": "payme",
+        "card_last4": "6311",
+        "phone_hint": "99890*****31",
+        "paid_at": None,
+        "error": None,
+    },
+    "ticketing": {
+        "status": "pending",
+        "requested_at": None,
+        "ticketed_at": None,
+        "tickets": [],
+        "error": None,
+    },
+    "order_data": {
+        "order_number": 61453,
+        "order_uid": "cd3f1e7bfde940f8bea03cde13f07dfd",
+        "status": "BO",
+        "gds_pnr": "UBPLKW",
+        "routes": ["…"],
+        "passengers": ["…"],
+    },
+}
 
 
 class BookingResultOut(BaseModel):
-    """The booking response, the order-detail response and the payment
-    responses — one shape for all of them."""
+    """The booking answer, the order detail and both payment answers — one shape.
 
-    product: str
-    order: OrderOut
-    payment: PaymentOut
-    ticketing: TicketingOut
-    order_data: dict[str, Any]
+    `order.status` is the word a screen shows; `payment.status` is what the
+    payment screen does next; `ticketing` is what the "please wait" screen
+    polls; `order_data` is GTS's own record for display detail.
+    """
+
+    model_config = {"json_schema_extra": {"examples": [_BOOKING_EXAMPLE]}}
+
+    product: str = Field(description="Vertical code — `flight`.")
+    order: OrderOut = Field(description="Our record: ids, money, deadline, `status`.")
+    payment: PaymentOut = Field(description="Where the money stands.")
+    ticketing: TicketingOut = Field(description="Where the ticket stands.")
+    order_data: dict[str, Any] = Field(
+        description=(
+            "GTS's order nearly verbatim — routes with segments, passengers "
+            "with documents, fares, baggage — the same shapes as the search "
+            "flow, with agent commission fields removed. Read display detail "
+            "here; never key logic on it."
+        )
+    )
 
     @classmethod
     def from_order(
@@ -389,10 +581,99 @@ class BookingResultOut(BaseModel):
         )
 
 
+# --- the support desk ----------------------------------------------------------------
+
+
+class OrderEventOut(BaseModel):
+    """One line of the order's history, oldest first."""
+
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    created_at: datetime = Field(
+        description=(
+            "When it happened. Lines one commit wrote share a stamp; the list "
+            "is in write order."
+        )
+    )
+    event: str = Field(
+        description=(
+            "`<lifecycle>.<new value>` — `order.created`, `payment.started`, "
+            "`payment.confirming`, `payment.paid`, `payment.failed`, "
+            "`payment.refunding`, `ticketing.requested`, "
+            "`ticketing.processing`, `ticketing.ticketed`, `ticketing.failed`, "
+            "`order.cancelled`…"
+        )
+    )
+    from_value: str | None = Field(description="The column's value before.")
+    to_value: str | None = Field(description="The column's value after.")
+    actor: str = Field(
+        description="`customer`, `system` (the sweep), or `staff:<staff id>`."
+    )
+    note: str | None = Field(
+        description=("Free text: a GTS reason, a refund note, why it was cancelled.")
+    )
+    data: dict[str, Any] | None = Field(
+        description=(
+            "Codes and ids only — a GTS status, an attempt id. Never card data."
+        )
+    )
+    request_id: str | None = Field(
+        description=("The request it happened in — the same id in our logs and at GTS.")
+    )
+
+
+class PaymentAttemptAdminOut(BaseModel):
+    """One conversation with the payment provider — never its reference."""
+
+    id: uuid.UUID = Field(description="The `payment_id` the customer confirmed with.")
+    created_at: datetime
+    updated_at: datetime
+    provider: str = Field(description="`payme`, `click`, `sandbox`.")
+    status: AttemptStatus = Field(
+        description=(
+            "`started` — code sent; `confirming` — charge sent, answer not "
+            "back; `paid`; `failed`; `abandoned` — superseded or given up "
+            "before any charge."
+        )
+    )
+    amount: Money = Field(description="What this attempt would charge.")
+    card_last4: str | None = Field(description="Last four digits of the card.")
+    phone_hint: str | None = Field(description="The masked phone the code went to.")
+    error: str | None = Field(description="The provider's reason on `failed`.")
+    paid_at: datetime | None = Field(description="When the charge landed.")
+
+
+class RefundIn(BaseModel):
+    """Where the refund stands, as support says — the money moves in the
+    provider's own cabinet; this is the record that it did."""
+
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [{"status": "refunded", "note": "Payme cabinet, request #42"}]
+        },
+    }
+
+    status: Literal["refunding", "refunded", "refund_failed"] = Field(
+        description=(
+            "`refunding` — started in the provider's cabinet; `refunded` — "
+            "the money went back (final; the customer's `status` becomes "
+            "`refunded`); `refund_failed` — the provider refused. A `ticketed` "
+            "order cannot be refunded here."
+        )
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=500,
+        description="For the history line — a cabinet request number, a reason.",
+    )
+
+
 def _check_translated(value: i18n.Translated) -> i18n.Translated:
     """The settings module's rule, repeated: schemas are not a module's
-    ``service`` door, so importing it from there would cross the one line
-    ARCHITECTURE.md draws. Unknown languages are dropped, not refused."""
+    ``service`` door, so importing it from there would cross the one line the
+    architecture draws. Unknown languages are dropped, not refused."""
     return {
         lang: text for lang, text in value.items() if lang in i18n.SUPPORTED_LANGUAGES
     }
@@ -403,21 +684,50 @@ MESSAGE_MAX_LENGTH = 1000
 
 
 class OrderMessageOut(BaseModel):
-    """One status's sentence: what we ship, what the panel wrote, what is shown."""
+    """The sentence customers see for one `status`, per language."""
 
-    status: Stage
-    default: i18n.Translated
-    custom: i18n.Translated
-    text: i18n.Translated
+    status: Stage = Field(description="Which status the sentence belongs to.")
+    default: i18n.Translated = Field(
+        description="What this release ships, per language (`uz`, `ru`, `en`)."
+    )
+    custom: i18n.Translated = Field(
+        description="What the panel wrote — only the languages staff touched."
+    )
+    text: i18n.Translated = Field(
+        description=(
+            "What customers actually see: `custom` over `default`, per language."
+        )
+    )
 
 
 class OrderMessageIn(BaseModel):
     """Languages merge: send one to change one. An empty string clears that
     language back to the default."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "text": {
+                        "uz": (
+                            "To'lov qabul qilindi, chipta chiqarilmadi. "
+                            "+998 90 123 45 67 ga qo'ng'iroq qiling."
+                        ),
+                        "ru": "",
+                    }
+                }
+            ]
+        },
+    }
 
-    text: i18n.Translated
+    text: i18n.Translated = Field(
+        description=(
+            "Language code → sentence, up to 1000 characters each. Only the "
+            'languages sent change; `""` restores that language\'s default; '
+            "unknown languages are dropped."
+        )
+    )
 
     @field_validator("text")
     @classmethod
@@ -434,33 +744,50 @@ class OrderMessageIn(BaseModel):
         return cleaned
 
 
+_BOOKING_STATUS_TEXT: Final = "Is the booking alive? `booked` or `cancelled`."
+_PAYMENT_STATUS_TEXT: Final = (
+    "Where the money is: `pending`, `paid`, `failed` (last attempt), "
+    "`refunding`, `refunded`, `refund_failed`."
+)
+_TICKETING_STATUS_TEXT: Final = (
+    "Where the ticket is: `pending`, `processing`, `ticketed`, `failed`."
+)
+
+
 class OrderAdminListItemOut(OrderListItemOut):
     """A list row for support: the customer's row, the three columns behind
-    its ``status``, who and which GTS order — and the reason, so the inbox
+    its `status`, who and which GTS order — and the reason, so the inbox
     reads without opening every row."""
 
-    booking_status: str
-    payment_status: str
-    ticketing_status: str
-    #: Why a ``cancelled`` order was cancelled.
-    cancel_reason: str | None
-    #: GTS's words when the ticket did not come out — the inbox's "why".
-    ticketing_error: str | None
-    customer_id: uuid.UUID
-    gts_order_number: int
-    gts_status: str
-    #: The last time anything about the order moved; ``ordering=-updated_at``
-    #: puts the freshest trouble first.
-    updated_at: datetime
+    booking_status: OrderStatus = Field(description=_BOOKING_STATUS_TEXT)
+    payment_status: PaymentStatus = Field(description=_PAYMENT_STATUS_TEXT)
+    ticketing_status: TicketingStatus = Field(description=_TICKETING_STATUS_TEXT)
+    cancel_reason: str | None = Field(
+        description=(
+            "`customer`, `staff` or `expired` when `booking_status` is `cancelled`."
+        )
+    )
+    ticketing_error: str | None = Field(
+        description=("GTS's words when the ticket did not come out — the inbox's why.")
+    )
+    customer_id: uuid.UUID = Field(description="Who booked — `/admin/customers/{id}/`.")
+    gts_order_number: int = Field(description="GTS's order number.")
+    gts_status: str = Field(description="GTS's own status code, verbatim.")
+    updated_at: datetime = Field(
+        description=(
+            "The last time anything about the order moved; "
+            "`ordering=-updated_at` puts the freshest trouble first."
+        )
+    )
 
     @classmethod
     def from_order(cls, order: Order) -> "OrderAdminListItemOut":
         base = OrderListItemOut.from_order(order)
         return cls(
             **base.model_dump(),
-            booking_status=order.status,
-            payment_status=order.payment_status,
-            ticketing_status=order.ticketing_status,
+            booking_status=OrderStatus(order.status),
+            payment_status=PaymentStatus(order.payment_status),
+            ticketing_status=TicketingStatus(order.ticketing_status),
             cancel_reason=order.cancel_reason,
             ticketing_error=order.ticketing_error,
             customer_id=order.customer_id,
@@ -471,36 +798,52 @@ class OrderAdminListItemOut(OrderListItemOut):
 
 
 class OrderAdminOrderOut(OrderOut):
-    """The customer's ``order`` block plus the three columns its ``status``
-    was read from — support sees both the word and the reason for it."""
+    """The customer's `order` block plus the three columns its `status` was
+    read from — support sees both the word and the reason for it."""
 
-    booking_status: str
-    payment_status: str
-    ticketing_status: str
+    booking_status: OrderStatus = Field(description=_BOOKING_STATUS_TEXT)
+    payment_status: PaymentStatus = Field(description=_PAYMENT_STATUS_TEXT)
+    ticketing_status: TicketingStatus = Field(description=_TICKETING_STATUS_TEXT)
 
     @classmethod
     def from_public(cls, public: OrderOut, order: Order) -> "OrderAdminOrderOut":
         return cls(
             **public.model_dump(),
-            booking_status=order.status,
-            payment_status=order.payment_status,
-            ticketing_status=order.ticketing_status,
+            booking_status=OrderStatus(order.status),
+            payment_status=PaymentStatus(order.payment_status),
+            ticketing_status=TicketingStatus(order.ticketing_status),
         )
 
 
 class OrderAdminOut(BookingResultOut):
     """The detail for support: the customer's view plus the books behind it."""
 
-    order: OrderAdminOrderOut
-    customer_id: uuid.UUID
-    ticketing_attempts: int
-    ticketing_requested_at: datetime | None
-    gts_checked_at: datetime | None
-    events: list[OrderEventOut]
-    payments: list[PaymentAttemptAdminOut]
+    # The customer example does not fit a row with extra fields.
+    model_config = {"json_schema_extra": {}}
+
+    order: OrderAdminOrderOut = Field(
+        description="The customer's block plus the three raw columns."
+    )
+    customer_id: uuid.UUID = Field(description="Who booked.")
+    ticketing_attempts: int = Field(
+        description="How many times the ticketing request was sent to GTS."
+    )
+    ticketing_requested_at: datetime | None = Field(
+        description="When the ticket was last asked for."
+    )
+    gts_checked_at: datetime | None = Field(
+        description="When the sweep last read the order back from GTS."
+    )
+    events: list[OrderEventOut] = Field(description="The history, oldest first.")
+    payments: list[PaymentAttemptAdminOut] = Field(
+        description=(
+            "Every payment attempt, oldest first, without provider references."
+        )
+    )
 
 
 __all__ = [
+    "PAYMENT_VIEW_STATUSES",
     "BookingResultOut",
     "OrderAdminListItemOut",
     "OrderAdminOrderOut",
@@ -516,6 +859,7 @@ __all__ = [
     "PaymentConfirmIn",
     "PaymentOut",
     "PaymentStartIn",
+    "PaymentViewStatus",
     "RefundIn",
     "TicketOut",
     "TicketingOut",

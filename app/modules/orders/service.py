@@ -1225,7 +1225,7 @@ async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
                 created_at=attempt.created_at,
                 updated_at=attempt.updated_at,
                 provider=attempt.provider,
-                status=attempt.status,
+                status=AttemptStatus(attempt.status),
                 amount=Money(amount=attempt.amount, currency=attempt.currency),
                 card_last4=attempt.card_last4,
                 phone_hint=attempt.phone_hint,

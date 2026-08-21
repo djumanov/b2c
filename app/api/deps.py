@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Final
 
-from fastapi import Depends, Query, Request
+from fastapi import Depends, Header, Query, Request
 
 from app.api.errors import Forbidden, NotFound, RateLimited, Unauthorized
 from app.core import i18n
@@ -200,8 +200,15 @@ class Pagination:
 
 
 def pagination(
-    page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    page: Annotated[int, Query(ge=1, description="1-based page number.")] = 1,
+    page_size: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_PAGE_SIZE,
+            description=f"Rows per page, 1–{MAX_PAGE_SIZE}.",
+        ),
+    ] = DEFAULT_PAGE_SIZE,
 ) -> Pagination:
     return Pagination(page=page, page_size=page_size)
 
@@ -224,19 +231,40 @@ class LanguageContext:
 
 
 def language(
-    request: Request,
-    lang: Annotated[str | None, Query()] = None,
+    lang: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Language for translated fields — one of `uz`, `ru`, `en` "
+                "(case-insensitive, a region suffix is ignored). Beats "
+                "`Accept-Language`. An unknown value is ignored, never refused."
+            )
+        ),
+    ] = None,
+    accept_language: Annotated[
+        str | None,
+        Header(
+            alias="Accept-Language",
+            description=(
+                "The usual browser header, read when `lang` is absent; the "
+                "first supported language by `q` wins. Without either, the "
+                "site's default language applies."
+            ),
+        ),
+    ] = None,
 ) -> LanguageContext:
-    """Resolve the requested language (API.md §7).
+    """Resolve the requested language.
 
     Only the *request* is read here. Which language actually comes back depends
     on what the row has and on the site's default, and is decided per field by
-    ``core.i18n.resolve`` — the response reports it as ``lang``.
+    ``core.i18n.resolve`` — the response reports it as ``lang``. Declared as
+    parameters rather than read off ``request.headers`` so both appear in the
+    schema; the values arrive exactly as the header carried them.
     """
     explicit = i18n.normalize_language(lang)
     if explicit:
         return LanguageContext(requested=explicit)
-    accepted = i18n.parse_accept_language(request.headers.get("accept-language"))
+    accepted = i18n.parse_accept_language(accept_language)
     return LanguageContext(requested=accepted[0] if accepted else None)
 
 

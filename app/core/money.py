@@ -13,7 +13,7 @@ Stored as ``NUMERIC(18,2)`` with the currency in a separate ``CHAR(3)`` column
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, Any, Final
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 from sqlalchemy import CHAR, Numeric
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,12 +46,28 @@ def to_decimal(value: Decimal | int | str) -> Decimal:
 
 
 class Money(BaseModel):
-    """An amount in one currency. Immutable; arithmetic returns new values."""
+    """An amount in one currency, e.g. `{"amount": "287500.00", "currency": "UZS"}`.
 
-    model_config = {"frozen": True}
+    `amount` is always a **string with two decimals**, never a JSON number.
+    Immutable; arithmetic returns new values.
+    """
 
-    amount: Decimal
-    currency: str
+    model_config = {
+        "frozen": True,
+        "json_schema_extra": {"examples": [{"amount": "287500.00", "currency": "UZS"}]},
+    }
+
+    amount: Decimal = Field(
+        description=(
+            "The value as a decimal string with exactly two places "
+            '(`"287500.00"`). Sent as a string so no client rounds it.'
+        )
+    )
+    currency: str = Field(
+        description="Upper-case ISO 4217 code (`UZS`, `USD`).",
+        pattern=r"^[A-Z]{3}$",
+        json_schema_extra={"example": "UZS"},
+    )
 
     @field_validator("amount", mode="before")
     @classmethod

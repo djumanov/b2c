@@ -17,11 +17,9 @@ Read in this order:
 
 | Document | Contents |
 |---|---|
-| [docs/PROJECT.md](docs/PROJECT.md) | Product and project: scope, decisions, phases, operations |
-| [docs/GTS.md](docs/GTS.md) | The upstream B2B platform we consume |
-| [docs/API.md](docs/API.md) | The REST contract — conventions and every endpoint |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal structure: modules, layers, DB, saga, adapters |
-| [docs/STATUS.md](docs/STATUS.md) | Where the build has got to, what is next, and the decisions taken on the way |
+| [docs/order-system/README.md](docs/order-system/README.md) | The order system — orders, payments, ticketing, support desk (Uzbek; the authority for that scope) |
+| `/api/v1/docs` (Swagger, run the API) | The REST contract: every endpoint with its description, the envelope, the error catalogue, the two token schemes. Generated from the code — the descriptions live next to the routes and schemas |
+| [postman/](postman/) | A collection that walks the flows end to end |
 
 Working rules for this repository: [CLAUDE.md](CLAUDE.md).
 
@@ -56,25 +54,14 @@ uv run mypy app
 uv run pytest
 ```
 
-`tests/unit` and `tests/contract` need nothing running — Redis is faked.
-`tests/integration` needs PostgreSQL: it creates a `b2c_test` database beside
-the working one, rebuilds its schema by running the migration chain, and rolls
-back every test. Point it somewhere else with `TEST_DATABASE_URL`.
+The suite needs PostgreSQL and nothing else — Redis is faked. It creates a
+`b2c_test` database beside the working one, brings it to the migration head,
+and cleans the tables after every test.
 
 ## Current state
 
-Phase 1 (*Yadro*) in progress. Done: application skeleton, response envelope,
-error catalogue, cross-cutting dependencies, database layer, delivery setup,
-the **staff** module — admin authentication with rotating refresh tokens, the
-owner-only team resource, and the first-owner bootstrap — the **audit** module,
-which records every admin mutation and every authentication event, **uploads**
-on a local-disk storage adapter, and **settings** with
-`GET /public/site-config/`.
-
-Two of the three phase-1 acceptance criteria now hold end to end: an `owner`
-can sign in, an `admin` gets `403` where `owner` is required, and a colour
-changed in the panel appears in `site-config` **without a redeploy**.
-
-Next, in order: `integrations` (encrypted GTS and payment credentials), then
-`customers`. See [docs/PROJECT.md §15](docs/PROJECT.md) for the phase plan and
-its acceptance criteria.
+Live end to end: staff and customer authentication, settings and branding,
+content, leads, catalog, the flight search → verify → booking flow against
+GTS, the two-step card payment (Payme Subscribe API behind the port; a
+sandbox in `DEBUG`), ticketing through GTS, and the support desk
+(`/admin/orders/`). `docs/order-system/README.md` §7 lists what comes next.

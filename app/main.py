@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from app.api.errors import register_exception_handlers
 from app.api.middleware import DynamicCORSMiddleware, RequestIdMiddleware
 from app.api.openapi import build_openapi
+from app.api.openapi_docs import API_DESCRIPTION, TAGS
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
@@ -35,14 +36,19 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="B2C Platform API",
         version=settings.app_version,
-        description=(
-            "White-label travel platform. The contract is docs/API.md; this "
-            "schema is its artefact."
-        ),
+        description=API_DESCRIPTION,
+        openapi_tags=TAGS,
         lifespan=lifespan,
         openapi_url="/api/v1/openapi.json",
         docs_url="/api/v1/docs",
         redoc_url=None,
+        swagger_ui_parameters={
+            # A token survives a reload; groups open collapsed; the long
+            # "Schemas" list stays folded until asked for.
+            "persistAuthorization": True,
+            "docExpansion": "list",
+            "defaultModelsExpandDepth": 0,
+        },
         # Every path in the contract ends with a slash (API.md §1). Redirecting
         # instead of 404-ing would hide the mistake and, worse, drop the body of
         # a POST on the way through the 307.

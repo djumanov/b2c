@@ -344,7 +344,12 @@ async def test_identical_concurrent_starts_call_provider_once(
         _start(client, order, customer_headers), _start(client, order, customer_headers)
     )
 
-    assert sorted(response.status_code for response in responses) == [200, 409]
+    # The twin either meets the in-flight claim (409) or, when the first had
+    # already finished, its stored answer (200 replay). Either way one code.
+    assert sorted(response.status_code for response in responses) in (
+        [200, 409],
+        [200, 200],
+    )
     assert fake_provider.count("start") == 1
     assert len(await _attempts(db_session, order)) == 1
 
