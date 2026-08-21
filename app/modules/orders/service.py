@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from typing import Final, Literal
 
 from sqlalchemy import String, and_, cast, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,11 +60,14 @@ from app.db.repository import live
 from app.modules.audit import context as audit_context
 from app.modules.integrations import service as integrations_service
 from app.modules.orders import lifecycle
+from app.modules.orders.lifecycle import Stage
+from app.modules.orders.messages import DEFAULTS, MessageCatalogue
 from app.modules.orders.models import (
     AttemptStatus,
     CancelReason,
     Order,
     OrderEvent,
+    OrderMessage,
     OrderStatus,
     PaymentAttempt,
     PaymentStatus,
@@ -75,6 +79,8 @@ from app.modules.orders.schemas import (
     OrderAdminOut,
     OrderEventOut,
     OrderListItemOut,
+    OrderMessageIn,
+    OrderMessageOut,
     PaymentAttemptAdminOut,
     PaymentAttemptView,
     PaymentConfirmIn,
@@ -172,11 +178,82 @@ async def _present(
     session: AsyncSession, order: Order, *, language: str | None
 ) -> BookingResultOut:
     """The detail shape, with the message rendered for this request."""
-    support = await settings_service.support_contact()
+    messages = await message_catalogue(session)
     attempt = await _latest_attempt(session, order.id)
     return BookingResultOut.from_order(
-        order, language=language, support=support, attempt=_view(attempt)
+        order, language=language, messages=messages, attempt=_view(attempt)
     )
+
+
+# --- the messages (``/admin/orders/messages/``) ------------------------------------
+
+
+async def _message_rows(session: AsyncSession) -> list[OrderMessage]:
+    """One row per stage, creating any that are missing — no data migration."""
+    rows = (await session.scalars(select(OrderMessage))).all()
+    missing = {stage.value for stage in Stage} - {row.key for row in rows}
+    if missing:
+        await session.execute(
+            pg_insert(OrderMessage)
+            .values([{"id": uuid.uuid4(), "key": key, "text": {}} for key in missing])
+            .on_conflict_do_nothing()
+        )
+        await session.commit()
+        rows = (await session.scalars(select(OrderMessage))).all()
+    return list(rows)
+
+
+async def message_catalogue(session: AsyncSession) -> MessageCatalogue:
+    """The panel's sentences over our defaults, with the installation's
+    language chain — what every order response renders ``message`` from."""
+    rows = (await session.scalars(select(OrderMessage))).all()
+    languages = await settings_service.get_languages(session)
+    return MessageCatalogue(
+        overrides={row.key: row.text for row in rows},
+        default_language=languages.default,
+        available=tuple(languages.available),
+    )
+
+
+def _message_out(row: OrderMessage, catalogue: MessageCatalogue) -> OrderMessageOut:
+    stage = Stage(row.key)
+    return OrderMessageOut(
+        stage=stage,
+        default=DEFAULTS[stage],
+        custom=row.text,
+        text=catalogue.text(stage),
+    )
+
+
+async def list_messages(session: AsyncSession) -> list[OrderMessageOut]:
+    rows = {row.key: row for row in await _message_rows(session)}
+    catalogue = await message_catalogue(session)
+    return [_message_out(rows[stage.value], catalogue) for stage in Stage]
+
+
+async def get_message(session: AsyncSession, stage: Stage) -> OrderMessageOut:
+    rows = {row.key: row for row in await _message_rows(session)}
+    return _message_out(rows[stage.value], await message_catalogue(session))
+
+
+async def update_message(
+    session: AsyncSession, stage: Stage, data: OrderMessageIn
+) -> OrderMessageOut:
+    """Languages merge per language (the settings/CMS PATCH rule); an empty
+    string clears that language so the default shows again."""
+    rows = {row.key: row for row in await _message_rows(session)}
+    row = rows[stage.value]
+    before = dict(row.text)
+    merged = {**row.text, **data.text}
+    row.text = {lang: text for lang, text in merged.items() if text.strip()}
+    await session.commit()
+    await session.refresh(row)
+    audit_context.describe(
+        resource_id=row.id,
+        changes=audit_context.diff(before, row.text),
+    )
+    logger.info("order_message_updated", stage=stage.value, languages=sorted(row.text))
+    return _message_out(row, await message_catalogue(session))
 
 
 async def _owned(
@@ -1028,7 +1105,7 @@ async def expire_unpaid(session: AsyncSession) -> int:
 
 
 async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
-    support = await settings_service.support_contact()
+    messages = await message_catalogue(session)
     attempts = (
         await session.scalars(
             select(PaymentAttempt)
@@ -1045,7 +1122,7 @@ async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
     ).all()
     latest = attempts[-1] if attempts else None
     customer_view = BookingResultOut.from_order(
-        order, language=None, support=support, attempt=_view(latest)
+        order, language=None, messages=messages, attempt=_view(latest)
     )
     return OrderAdminOut(
         **customer_view.model_dump(),
@@ -1293,11 +1370,14 @@ __all__ = [
     "confirm_payment",
     "create_order",
     "expire_unpaid",
+    "get_message",
     "get_order",
     "get_order_admin",
+    "list_messages",
     "list_orders",
     "list_orders_admin",
     "mark_refund",
+    "message_catalogue",
     "recheck_processing",
     "retry_ticketing",
     "settle_attempt",
@@ -1306,4 +1386,5 @@ __all__ = [
     "sync_order",
     "ticket",
     "ticket_paid_pending",
+    "update_message",
 ]

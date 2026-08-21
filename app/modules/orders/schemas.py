@@ -29,14 +29,14 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
+from app.core import i18n
 from app.core.money import Money
 from app.modules.orders.lifecycle import CONFIRMING, Stage, stage_of
-from app.modules.orders.messages import message_for
+from app.modules.orders.messages import MessageCatalogue
 from app.modules.orders.models import Order, OrderStatus, PaymentStatus
 from app.modules.payments.schemas import CardIn
-from app.modules.settings.service import SupportContact
 from app.providers.products import gts_order
 
 
@@ -96,7 +96,7 @@ class OrderOut(BaseModel):
         *,
         stage: Stage,
         language: str | None,
-        support: SupportContact,
+        messages: MessageCatalogue,
     ) -> "OrderOut":
         # Assembled by hand rather than ``from_attributes`` because ``amount``
         # is two columns composed into one ``Money``.
@@ -107,7 +107,7 @@ class OrderOut(BaseModel):
             payment_status=order.payment_status,
             ticketing_status=order.ticketing_status,
             stage=stage,
-            message=message_for(stage, language=language, support=support),
+            message=messages.render(stage, language=language),
             cancel_reason=order.cancel_reason,
             gts_status=order.gts_status,
             gts_order_number=order.gts_order_number,
@@ -380,7 +380,7 @@ class BookingResultOut(BaseModel):
         order: Order,
         *,
         language: str | None,
-        support: SupportContact,
+        messages: MessageCatalogue,
         attempt: PaymentAttemptView | None = None,
     ) -> "BookingResultOut":
         open_attempt = (
@@ -392,12 +392,57 @@ class BookingResultOut(BaseModel):
         return cls(
             product=order.product,
             order=OrderOut.from_order(
-                order, stage=stage, language=language, support=support
+                order, stage=stage, language=language, messages=messages
             ),
             payment=PaymentOut.from_order(order, attempt),
             ticketing=TicketingOut.from_order(order),
             order_data=_strip_commission(order.gts_response),
         )
+
+
+def _check_translated(value: i18n.Translated) -> i18n.Translated:
+    """The settings module's rule, repeated: schemas are not a module's
+    ``service`` door, so importing it from there would cross the one line
+    ARCHITECTURE.md draws. Unknown languages are dropped, not refused."""
+    return {
+        lang: text for lang, text in value.items() if lang in i18n.SUPPORTED_LANGUAGES
+    }
+
+
+#: Long enough for a paragraph with a phone number and an email in it.
+MESSAGE_MAX_LENGTH = 1000
+
+
+class OrderMessageOut(BaseModel):
+    """One stage's sentence: what we ship, what the panel wrote, what is shown."""
+
+    stage: Stage
+    default: i18n.Translated
+    custom: i18n.Translated
+    text: i18n.Translated
+
+
+class OrderMessageIn(BaseModel):
+    """Languages merge: send one to change one. An empty string clears that
+    language back to the default."""
+
+    model_config = {"extra": "forbid"}
+
+    text: i18n.Translated
+
+    @field_validator("text")
+    @classmethod
+    def _known_languages(cls, value: i18n.Translated) -> i18n.Translated:
+        cleaned = _check_translated(value)
+        if not cleaned:
+            raise ValueError(
+                "send at least one language; "
+                f"this release serves {', '.join(i18n.SUPPORTED_LANGUAGES)}"
+            )
+        for lang, text in cleaned.items():
+            if len(text) > MESSAGE_MAX_LENGTH:
+                raise ValueError(f"{lang}: at most {MESSAGE_MAX_LENGTH} characters")
+        return cleaned
 
 
 class OrderAdminListItemOut(OrderListItemOut):
@@ -435,6 +480,8 @@ __all__ = [
     "OrderAdminOut",
     "OrderEventOut",
     "OrderListItemOut",
+    "OrderMessageIn",
+    "OrderMessageOut",
     "OrderOut",
     "PassengerNameOut",
     "PaymentAttemptAdminOut",

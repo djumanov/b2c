@@ -1,24 +1,28 @@
 """What the customer's screen says about an order, per stage, in three languages.
 
-One sentence per ``Stage``, written once here and served by the API as
-``order.message`` — so a web client and two mobile clients cannot drift into
-three different wordings of "we took your money and the ticket did not come
-out". The language is the request's (``LanguageDep``), exactly like every
-other translated field (API.md §7); there is no per-customer language yet.
+One sentence per ``Stage``, served by the API as ``order.message`` — so a web
+client and two mobile clients cannot drift into three different wordings of
+"we took your money and the ticket did not come out".
 
-The support contact is interpolated, not hardcoded: it is a panel setting
-(``Site.support_phone`` / ``support_email``), and an installation without one
-simply gets the sentence without the trailing contact.
+**The text is the panel's, the defaults are ours.** The sentences below are
+what an installation starts with; ``/admin/orders/messages/`` lets staff
+rewrite any of them in any language, and what they write is shown **as
+written** — no placeholders, no interpolation. A support phone number
+belongs in the sentence itself, typed by the people who answer it.
+
+The language is the request's (``LanguageDep``) and the fallback chain is the
+installation's (``Languages.default`` / ``available``), exactly like every
+other translated field (API.md §7).
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Final
 
 from app.core import i18n
 from app.modules.orders.lifecycle import Stage
-from app.modules.settings.service import SupportContact
 
-#: ``{support}`` is the contact suffix — ``": +998 …, help@…"`` or nothing.
-_MESSAGES: Final[dict[Stage, i18n.Translated]] = {
+DEFAULTS: Final[dict[Stage, i18n.Translated]] = {
     Stage.AWAITING_PAYMENT: {
         "uz": "Bron qilindi. Chiptani olish uchun to'lovni belgilangan muddatgacha "
         "amalga oshiring.",
@@ -52,12 +56,12 @@ _MESSAGES: Final[dict[Stage, i18n.Translated]] = {
     Stage.TICKETING_FAILED: {
         "uz": "To'lovingiz muvaffaqiyatli amalga oshirildi, ammo ticket chiqarish "
         "jarayonida texnik xatolik yuz berdi. Mablag'ingizni qaytarish uchun "
-        "support xizmatiga murojaat qiling{support}.",
+        "support xizmatiga murojaat qiling.",
         "ru": "Оплата прошла успешно, но при оформлении билета произошла "
         "техническая ошибка. Для возврата средств обратитесь в службу "
-        "поддержки{support}.",
+        "поддержки.",
         "en": "Your payment was successful, but a technical error occurred while "
-        "issuing the ticket. Please contact support for a refund{support}.",
+        "issuing the ticket. Please contact support for a refund.",
     },
     Stage.CANCELLED: {
         "uz": "Buyurtma bekor qilindi.",
@@ -72,10 +76,9 @@ _MESSAGES: Final[dict[Stage, i18n.Translated]] = {
         "search again.",
     },
     Stage.REFUND_DUE: {
-        "uz": "Mablag'ingiz qaytarilishi kerak. Support xizmatiga murojaat "
-        "qiling{support}.",
-        "ru": "Вам полагается возврат средств. Обратитесь в службу поддержки{support}.",
-        "en": "A refund is due to you. Please contact support{support}.",
+        "uz": "Mablag'ingiz qaytarilishi kerak. Support xizmatiga murojaat qiling.",
+        "ru": "Вам полагается возврат средств. Обратитесь в службу поддержки.",
+        "en": "A refund is due to you. Please contact support.",
     },
     Stage.REFUNDING: {
         "uz": "Mablag'ingiz qaytarilmoqda.",
@@ -90,11 +93,39 @@ _MESSAGES: Final[dict[Stage, i18n.Translated]] = {
 }
 
 
-def message_for(stage: Stage, *, language: str | None, support: SupportContact) -> str:
-    """The sentence for ``stage`` in the requested language (default chain)."""
-    template = i18n.resolve_value(_MESSAGES[stage], requested=language) or ""
-    contact = support.text()
-    return template.format(support=f": {contact}" if contact else "")
+@dataclass(frozen=True, slots=True)
+class MessageCatalogue:
+    """The sentences of one installation: the panel's words over our defaults.
+
+    ``overrides`` holds only what staff wrote (``{stage: {lang: text}}``);
+    everything else reads from ``DEFAULTS``, so a stage or a language added
+    in a new release has a sentence the moment the release lands. Built by
+    ``service.message_catalogue`` and handed to the schemas, which stay pure.
+    """
+
+    overrides: Mapping[str, i18n.Translated] = field(default_factory=dict)
+    default_language: str = i18n.DEFAULT_LANGUAGE
+    available: tuple[str, ...] = i18n.SUPPORTED_LANGUAGES
+
+    def text(self, stage: Stage) -> i18n.Translated:
+        """Every language of one stage, the panel's word winning per language."""
+        custom = self.overrides.get(stage.value, {})
+        merged = {**DEFAULTS[stage], **custom}
+        return {
+            lang: value for lang, value in merged.items() if value and value.strip()
+        }
+
+    def render(self, stage: Stage, *, language: str | None) -> str:
+        """The sentence for ``stage`` in the requested language — verbatim."""
+        return (
+            i18n.resolve_value(
+                self.text(stage),
+                requested=language,
+                default=self.default_language,
+                available=self.available,
+            )
+            or ""
+        )
 
 
-__all__ = ["message_for"]
+__all__ = ["DEFAULTS", "MessageCatalogue"]

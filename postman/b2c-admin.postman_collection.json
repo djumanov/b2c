@@ -766,6 +766,61 @@
       "name": "admin — orders",
       "item": [
         {
+          "name": "Messages — every stage, three languages",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/messages/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messages — rewrite one stage (empty string = default)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/orders/messages/ticketing_failed/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "messages",
+                "ticketing_failed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": {\n    \"uz\": \"To'lovingiz qabul qilindi, ammo chipta chiqmadi. Qo'ng'iroq qiling: +998 71 200 00 00\",\n    \"ru\": \"\",\n    \"en\": \"\"\n  }\n}"
+            }
+          }
+        },
+        {
           "name": "Orders — support inbox",
           "request": {
             "method": "GET",
