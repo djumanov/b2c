@@ -14,7 +14,8 @@ sweep, staff actions) free to decide when to commit.
 state, even on a cancelled order: the charge happened, and a row that says
 otherwise is a lie. What prevents the awkward combinations is the guards on
 the *actions* — cancel and expiry refuse while a payment is being confirmed —
-and ``stage_of`` surfaces any that slip through as ``refund_due``.
+and ``stage_of`` reads any that slip through as ``ticketing_failed``: money
+was taken and no ticket is coming, so a human must get involved.
 """
 
 import enum
@@ -242,60 +243,56 @@ def transition(
     return events
 
 
-# --- the one label the UI shows ------------------------------------------------------
+# --- the public ``status`` -----------------------------------------------------------
 
 
 class Stage(enum.StrEnum):
-    """The three columns collapsed to what the customer's screen should say.
+    """The three columns collapsed to the one ``status`` a client reads.
 
     Derived on every read, never stored: the columns are the truth and this
     is one reading of them, kept on the server so every client reads alike.
+    Six words, because a screen needs no more — what the payment attempt is
+    doing lives in the ``payment`` block, and the raw columns are for staff.
+
+    Declaration order is the order the panel lists the sentences in.
     """
 
-    AWAITING_PAYMENT = "awaiting_payment"
-    PAYMENT_PROCESSING = "payment_processing"
-    PAYMENT_FAILED = "payment_failed"
-    TICKETING = "ticketing"
+    #: Held and not paid — whatever the last attempt did, the next may pay.
+    BOOKED = "booked"
+    #: Paid; GTS has not said yes or no yet.
+    TICKET_WAITING = "ticket_waiting"
     TICKETED = "ticketed"
+    #: Money was taken and no ticket is coming on its own: GTS refused, staff
+    #: cancelled a paid order, or a refund is under way — a human is involved.
     TICKETING_FAILED = "ticketing_failed"
-    CANCELLED = "cancelled"
-    EXPIRED = "expired"
-    #: Money was taken and the order is not going to be ticketed — somebody
-    #: owes the customer a refund and has not started one.
-    REFUND_DUE = "refund_due"
-    REFUNDING = "refunding"
+    #: The money went back. The only terminal money state, named so the
+    #: customer is never told to "contact us" about a refund already made.
     REFUNDED = "refunded"
+    #: Released before any money moved — by the customer, by staff, or by the
+    #: deadline (``cancel_reason`` says which).
+    CANCELLED = "cancelled"
 
 
-def stage_of(order: Order, *, open_attempt: str | None = None) -> Stage:
+def stage_of(order: Order) -> Stage:
+    """Total over the three columns: every combination has an answer, the
+    unreachable ones land on the side that asks a human to look."""
     payment = order.payment_status
-    if order.status == OrderStatus.CANCELLED:
-        if payment in (PaymentStatus.PAID, PaymentStatus.REFUND_FAILED):
-            return Stage.REFUND_DUE
-        if payment == PaymentStatus.REFUNDING:
-            return Stage.REFUNDING
-        if payment == PaymentStatus.REFUNDED:
-            return Stage.REFUNDED
-        if order.cancel_reason == CancelReason.EXPIRED:
-            return Stage.EXPIRED
-        return Stage.CANCELLED
-    if payment in (PaymentStatus.PENDING, PaymentStatus.FAILED):
-        if open_attempt == CONFIRMING:
-            return Stage.PAYMENT_PROCESSING
-        if payment == PaymentStatus.FAILED and open_attempt is None:
-            return Stage.PAYMENT_FAILED
-        return Stage.AWAITING_PAYMENT
-    if payment == PaymentStatus.PAID:
-        if order.ticketing_status == TicketingStatus.TICKETED:
-            return Stage.TICKETED
-        if order.ticketing_status == TicketingStatus.FAILED:
-            return Stage.TICKETING_FAILED
-        return Stage.TICKETING
-    if payment == PaymentStatus.REFUNDING:
-        return Stage.REFUNDING
     if payment == PaymentStatus.REFUNDED:
         return Stage.REFUNDED
-    return Stage.REFUND_DUE
+    if payment in (PaymentStatus.PENDING, PaymentStatus.FAILED):
+        if order.status == OrderStatus.CANCELLED:
+            return Stage.CANCELLED
+        return Stage.BOOKED
+    # Money was taken: paid, refunding or refund_failed.
+    if order.ticketing_status == TicketingStatus.TICKETED:
+        return Stage.TICKETED
+    if (
+        order.status == OrderStatus.CANCELLED
+        or payment != PaymentStatus.PAID
+        or order.ticketing_status == TicketingStatus.FAILED
+    ):
+        return Stage.TICKETING_FAILED
+    return Stage.TICKET_WAITING
 
 
 __all__ = [

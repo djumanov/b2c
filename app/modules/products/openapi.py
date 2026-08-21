@@ -537,55 +537,41 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                     "product": {"type": "string"},
                     "status": {
                         "type": "string",
-                        "enum": ["booked", "cancelled"],
-                        "description": "Is the booking alive?",
-                    },
-                    "payment_status": {
-                        "type": "string",
                         "enum": [
-                            "pending",
-                            "paid",
-                            "failed",
-                            "refunding",
-                            "refunded",
-                            "refund_failed",
-                        ],
-                    },
-                    "ticketing_status": {
-                        "type": "string",
-                        "enum": ["pending", "processing", "ticketed", "failed"],
-                    },
-                    "stage": {
-                        "type": "string",
-                        "enum": [
-                            "awaiting_payment",
-                            "payment_processing",
-                            "payment_failed",
-                            "ticketing",
+                            "booked",
+                            "ticket_waiting",
                             "ticketed",
                             "ticketing_failed",
-                            "cancelled",
-                            "expired",
-                            "refund_due",
-                            "refunding",
                             "refunded",
+                            "cancelled",
                         ],
                         "description": (
-                            "The one label a screen shows, derived from the "
-                            "three statuses above."
+                            "The one status a screen shows, read off the "
+                            "booking, payment and ticketing columns on the "
+                            "server. `booked` is held and unpaid (see "
+                            "`payment.status` for what the last attempt did); "
+                            "`ticket_waiting` is paid and GTS has not answered; "
+                            "`ticketing_failed` is money taken and no ticket "
+                            "coming on its own — contact support; `refunded` "
+                            "is the money back; `cancelled` is released before "
+                            "any money moved (`cancel_reason` says why). Show "
+                            "`message` with it; handle unknown values as a "
+                            "generic state, new ones may be added."
                         ),
                     },
                     "message": {
                         "type": "string",
                         "description": (
-                            "The sentence that goes with `stage`, in the "
-                            "request's language (`?lang=` / `Accept-Language`)."
+                            "The sentence that goes with `status`, in the "
+                            "request's language (`?lang=` / `Accept-Language`). "
+                            "Written by the panel; show it as is."
                         ),
                     },
                     "cancel_reason": {
                         "type": "string",
                         "enum": ["customer", "expired", "staff"],
                         "nullable": True,
+                        "description": "Set when `status` is `cancelled`.",
                     },
                     "gts_status": {
                         "type": "string",
@@ -717,9 +703,6 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
             "id": "5f0d87c1-9c58-4bff-8f95-6a1f61f4d1f7",
             "product": "flight",
             "status": "booked",
-            "payment_status": "pending",
-            "ticketing_status": "pending",
-            "stage": "awaiting_payment",
             "message": (
                 "Bron qilindi. Chiptani olish uchun to'lovni belgilangan "
                 "muddatgacha amalga oshiring."

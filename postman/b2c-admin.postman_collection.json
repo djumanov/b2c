@@ -754,7 +754,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const body = pm.response.json();",
-                  "if (body.data) console.log('stage', body.data.order.stage, '| payment', body.data.payment.status, '| ticketing', body.data.ticketing.status);"
+                  "if (body.data) console.log('status', body.data.order.status, '| payment', body.data.payment.status, '| ticketing', body.data.ticketing.status);"
                 ]
               }
             }
@@ -766,7 +766,7 @@
       "name": "admin — orders",
       "item": [
         {
-          "name": "Messages — every stage, three languages",
+          "name": "Messages — every status, three languages",
           "request": {
             "method": "GET",
             "header": [
@@ -789,7 +789,7 @@
           }
         },
         {
-          "name": "Messages — rewrite one stage (empty string = default)",
+          "name": "Messages — rewrite one status (empty string = default)",
           "request": {
             "method": "PATCH",
             "header": [
@@ -844,7 +844,7 @@
           }
         },
         {
-          "name": "Orders — all (filters: status, payment_status, ticketing_status, search)",
+          "name": "Orders — all (filters: booking_status, payment_status, ticketing_status, attention, search)",
           "request": {
             "method": "GET",
             "header": [

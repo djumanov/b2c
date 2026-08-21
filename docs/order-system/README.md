@@ -18,6 +18,11 @@ hikoyani alohida ustunda saqlaydi:
 | `payment_status` | `pending` · `paid` · `failed` · `refunding` · `refunded` · `refund_failed` | Mijozning puli qayerda? |
 | `ticketing_status` | `pending` · `processing` · `ticketed` · `failed` | GTS chiptani chiqardimi? |
 
+Bu uchta ustun **ichki** — mijoz API'sida ko'rinmaydi. Mijoz order ustida
+bitta `status` ko'radi (§2), u shu uchtadan hisoblanadi. Admin API'da
+uchtasi `booking_status` · `payment_status` · `ticketing_status` nomi bilan
+chiqadi (DB ustuni `status` bilan adashmasin deb).
+
 Misollar:
 
 ```
@@ -37,32 +42,51 @@ GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi.
 ochilishi mumkin. Refund holatlarini **support qo'lda** belgilaydi; pul
 provider kabineti orqali qaytariladi (4-bosqich).
 
-## 2. `stage` — ekran uchun bitta yorliq
+## 2. `status` — mijoz ko'radigan bitta holat
 
-Uchta ustundan **serverda** hisoblanadi, saqlanmaydi (`lifecycle.stage_of`).
-Har bir klient bir xil o'qisin deb. Har `stage` ga mos `message` — **admin
-panel matni** (`/admin/orders/messages/`, uz/ru/en, har qanday staff
-tahrirlaydi); admin yozmagan til/stage uchun `orders/messages.py::DEFAULTS`
-ko'rsatiladi. Matn **aynan yozilganidek** chiqadi — placeholder yo'q; support
-kontakti kerak bo'lsa matnning o'ziga yoziladi. Til — so'rovniki (`?lang=`
-yoki `Accept-Language`), fallback zanjiri — sayt sozlamasidagi
-`languages.default/available`.
+Mijoz API'sida (`/public/orders/`, `/{id}/`, booking va to'lov javoblari)
+order ustida **bitta** `status` bor. U uchta ustundan **serverda**
+hisoblanadi, saqlanmaydi (`lifecycle.stage_of`) — har bir klient bir xil
+o'qisin deb. Oltita qiymat, chunki ekranga shundan ortig'i kerak emas:
 
-| `stage` | Qachon |
-|---|---|
-| `awaiting_payment` | booked, to'lov `pending` (yoki `failed` + ochiq urinish bor) |
-| `payment_processing` | ochiq urinish `confirming` — provider javobi kutilmoqda |
-| `payment_failed` | to'lov `failed`, ochiq urinish yo'q |
-| `ticketing` | `paid`, ticketing `pending` yoki `processing` |
-| `ticketed` | `paid`, ticketing `ticketed` |
-| `ticketing_failed` | `paid`, ticketing `failed` — "pul yechildi, supportga murojaat qiling" |
-| `cancelled` / `expired` | `cancelled`, to'lanmagan (`expired` — GTS muddati o'tgan) |
-| `refund_due` | pul olingan, lekin order bekor yoki `refund_failed` — kimdir qaytarishi kerak |
-| `refunding` / `refunded` | refund jarayonda / yakunlangan |
+| `status` | DB holati | Ekranda |
+|---|---|---|
+| `booked` | `booked`, to'lov `pending` yoki `failed` | to'lash kerak; urinish holati `payment.status` da |
+| `ticket_waiting` | `booked` + `paid`, ticketing `pending` yoki `processing` | to'landi, GTS javobi kutilmoqda |
+| `ticketed` | `booked` + `paid` + `ticketed` | chiptalar tayyor |
+| `ticketing_failed` | pul olingan, chipta o'z-o'zidan chiqmaydi: `paid` + ticketing `failed`; yoki `cancelled` + `paid` (staff bekor qilgan); yoki `refunding` / `refund_failed` | supportga murojaat — nima bo'lishini `message` aytadi |
+| `refunded` | `payment_status = refunded` | pul qaytarildi — yakuniy |
+| `cancelled` | `cancelled`, pul olinmagan (`cancel_reason`: `customer` · `expired` · `staff`) | bekor; qayta qidirish |
 
-Saqlash: `order_messages` (`key` = stage, `text` JSONB — faqat admin yozgan
-tillar; `{}` = hammasi default). PATCH tillar bo'yicha merge qiladi; bo'sh
-satr o'sha tilni default'ga qaytaradi.
+Qoidalar:
+
+- **To'lov urinishi order statusini o'zgartirmaydi.** Kod yuborilgani
+  (`awaiting_otp`), provider javobi kutilayotgani (`processing`), karta rad
+  etilgani (`failed`, `payment.error`) — hammasi `payment` blokida. Order
+  `booked` bo'lib qolaveradi; to'lov ekrani `payment.status` ga qaraydi.
+- **`refunded` alohida**, chunki `message` status bo'yicha beriladi: pul
+  qaytgandan keyin mijoz "supportga murojaat qiling" deb o'qimasligi kerak.
+  `refunding` esa hali jarayon — `ticketing_failed` bilan birga, "bog'laning".
+- **`expired` alohida status emas** — `cancelled` + `cancel_reason = expired`.
+- Ro'yxat va detail **bir xil** `status` ko'rsatadi.
+- Frontend noma'lum qiymatni umumiy holat sifatida ko'rsatsin (`default:`
+  tarmog'i) — keyingi relizlar qiymat qo'shishi mumkin.
+
+Har `status` ga mos `message` — **admin panel matni**
+(`/admin/orders/messages/`, uz/ru/en, har qanday staff tahrirlaydi); admin
+yozmagan til/status uchun `orders/messages.py::DEFAULTS` ko'rsatiladi. Matn
+**aynan yozilganidek** chiqadi — placeholder yo'q; support kontakti kerak
+bo'lsa matnning o'ziga yoziladi. `ticketing_failed` default matni hech narsa
+va'da qilmaydi ("to'lov qabul qilindi, chipta chiqarilmadi, supportga
+murojaat qiling") — refund yoki qayta chiqarish haqida admin yozadi. Til —
+so'rovniki (`?lang=` yoki `Accept-Language`), fallback zanjiri — sayt
+sozlamasidagi `languages.default/available`.
+
+Saqlash: `order_messages` (`key` = status, `text` JSONB — faqat admin yozgan
+tillar; `{}` = hammasi default). Qatorlar **o'qishda** enum bilan
+tenglashtiriladi: yangi status o'z qatorini oladi, olib tashlangan status
+qatori (matni bilan) o'chiriladi — migratsiya kerak emas. PATCH tillar
+bo'yicha merge qiladi; bo'sh satr o'sha tilni default'ga qaytaradi.
 
 ## 3. O'tishlar (`orders/lifecycle.py`)
 
@@ -86,7 +110,8 @@ Guard'lar (natijaviy order ustida tekshiriladi; bir chaqiruvda
   `confirming` emas; mijoz faqat to'lanmagan orderni bekor qila oladi,
   to'langanini — faqat staff.
 - `payment → paid | failed`: **har doim ruxsat** — pul fakti rad etilmaydi
-  (bekor qilingan orderda ham yoziladi; keyin `stage = refund_due`).
+  (bekor qilingan orderda ham yoziladi; mijoz `status = ticketing_failed`
+  ko'radi, admin `attention` inbox'ida chiqadi).
 - `payment → refunding | refunded | refund_failed`: faqat staff; ticketing
   `ticketed` bo'lmasa.
 - `ticketing → processing | ticketed`: `payment = paid` va `status = booked`.
@@ -135,7 +160,8 @@ Qadamlar (`orders/service.py`):
    qayta o'qish** ostida qo'llanadi (sweep bilan poyga): `paid` → urinish
    `paid`, `payment=paid`, karta `last_used_at`; `failed` → `payment=failed`,
    javob 200; exception (javob noma'lum) → `confirming` qoladi, javob 200
-   `stage=payment_processing`.
+   `payment.status=processing` (order `status` esa `booked` bo'lib
+   qolaveradi — §2).
 
 Provider tanlovi (`payments.service.payment_provider`): test override →
 panelda yoqilgan provider adapteri (Payme/Click kelgunicha "bu relizda
@@ -193,8 +219,8 @@ xususiyati, klient sozlamasi emas. Staff retry (4-bosqich) chegaraga
 bo'ysunmaydi.
 
 `ticketing_failed` **hech qachon avtomatik `cancelled` bo'lmaydi**: bron va pul
-joyida, refund — support ishi (`stage=ticketing_failed`, xabar support
-kontakt bilan).
+joyida, refund — support ishi (mijoz `status=ticketing_failed` va admin
+yozgan `message` ni ko'radi).
 
 Sweep qismlari (30 s): `ticket_paid_pending` (to'langan, lekin chipta
 so'ralmagan — crash xavfsizlik to'ri) → `recheck_processing` (har `processing`
@@ -209,8 +235,7 @@ Javob shakli hamma joyda bir xil — `BookingResultOut`:
 {
   "product": "flight",
   "order": {
-    "id": "…", "status": "booked", "payment_status": "pending", "ticketing_status": "pending",
-    "stage": "awaiting_payment", "message": "Bron qilindi. …", "cancel_reason": null,
+    "id": "…", "status": "booked", "message": "Bron qilindi. …", "cancel_reason": null,
     "gts_status": "BO", "gts_order_number": 61453, "pnr": "UBPLKW", "amount": {"amount": "287500.00", "currency": "UZS"},
     "ticket_time_limit_at": "…", "paid_at": null, "ticketed_at": null, "cancelled_at": null, "...": "…"
   },
@@ -221,22 +246,26 @@ Javob shakli hamma joyda bir xil — `BookingResultOut`:
 }
 ```
 
-`payment.status` — `payment_status` + urinishdan o'qiladigan ikki aniqlik:
-`awaiting_otp` (kod kiritilmoqda), `processing` (provider javobi noma'lum);
-to'lanmasdan bekor bo'lgan order uchun `cancelled`.
+`order.status` — §2 dagi oltita qiymat; `payment_status`, `ticketing_status`
+va DB `status` ustuni mijoz javobida **yo'q**. To'lov ekrani
+`payment.status` ga qaraydi — bu `payment_status` + urinishdan o'qiladigan
+ikki aniqlik: `awaiting_otp` (kod kiritilmoqda), `processing` (provider
+javobi noma'lum); `failed` bo'lsa sabab `payment.error` da; to'lanmasdan
+bekor bo'lgan order uchun `cancelled`. Admin javobida `order` bloki
+qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 
 | Method | Path | Kim | Bosqich |
 |---|---|---|---|
 | POST | `/public/{product}/booking/` | customer | 1 — **idempotent**: bir xil so'rov ikkinchi marta o'sha orderni **hozirgi holatida** qaytaradi; GTS xatosi claim'ni bo'shatadi, GTS timeout — **bo'shatmaydi** (60 s) |
-| GET | `/public/orders/` | customer | 1 — ro'yxat: `status`, `payment_status`, `ticketing_status`, `stage`, `routes`, yo'lovchi ismlari |
+| GET | `/public/orders/` | customer | 1 — ro'yxat: `status` (§2, detail bilan bir xil), `routes`, yo'lovchi ismlari |
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
-| GET | `/admin/orders/` | staff | filtrlar `status`, `payment_status`, `ticketing_status`; `attention=true` — support inbox (ticketing failed · refund_failed · bekor qilingan, lekin to'langan); `search` — PNR yoki GTS raqami |
-| GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
+| GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`; filtrlar shu uchta xom ustun bo'yicha; `attention=true` — support inbox (ticketing failed · refund_failed · bekor qilingan, lekin to'langan); `search` — PNR yoki GTS raqami |
+| GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
 | POST | `/admin/orders/{id}/refund/` | staff | `{status: refunding \| refunded \| refund_failed, note}` — pul provider kabinetida qaytariladi, bu yozuv; `ticketed` orderga — 409 |
 | POST | `/admin/orders/{id}/sync/` | staff | GTS (va `confirming` urinish bo'lsa provider) bilan hozir solishtirish: yo'qolgan to'lov javobi, kech chiqqan chipta (`failed → ticketed`, faqat `paid`+`booked`), GTS qo'yib yuborgan bron |
-| GET / PATCH | `/admin/orders/messages/` · `/{stage}/` | staff | mijoz xabarlari: `{stage, default, custom, text}`; PATCH `{text: {uz, ru, en}}` — merge, `""` → default; noma'lum til tashlanadi; 1000 belgi |
+| GET / PATCH | `/admin/orders/messages/` · `/{status}/` | staff | mijoz xabarlari, §2 dagi oltita status uchun: `{status, default, custom, text}`; PATCH `{text: {uz, ru, en}}` — merge, `""` → default; noma'lum til tashlanadi; noma'lum status — 422; 1000 belgi |
 | POST | `/admin/orders/{id}/ticketing/retry/` | staff | avval sync; GTS allaqachon `TI` desa — POST yo'q; `paid`+`booked` bo'lmasa yoki GTS bronni qo'yib yuborgan bo'lsa — 409; aks holda `ticket()` (staff sweep chegarasiga bo'ysunmaydi) |
 
 Xatolar faqat katalogdan: `conflict` (noto'g'ri o'tish), `offer_expired`
@@ -263,7 +292,7 @@ status o'zgarishi va izoh).
 
 - `POST /public/orders/{id}/cancel/` — mijoz to'lanmagan bronni bekor qiladi
   (`POST /v1/content/cancel/`, `cancelled/customer`); guard'lar tayyor.
-- Email xabarnomalar (`ticketing`, `ticketed`, `ticketing_failed`) —
+- Email xabarnomalar (`ticket_waiting`, `ticketed`, `ticketing_failed`) —
   `customers.service._send` namunasi; commit'dan keyin, faqat event qaytgan
   yo'l yuboradi. Hozir mijoz xabarni ilovada (`order.message`) ko'radi.
 - `providers/payments/payme.py`, `click.py` — `start/confirm/status`;

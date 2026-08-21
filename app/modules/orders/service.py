@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Final, Literal
 
-from sqlalchemy import String, and_, cast, or_, select
+from sqlalchemy import String, and_, cast, delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +76,7 @@ from app.modules.orders.models import (
 from app.modules.orders.schemas import (
     BookingResultOut,
     OrderAdminListItemOut,
+    OrderAdminOrderOut,
     OrderAdminOut,
     OrderEventOut,
     OrderListItemOut,
@@ -189,15 +190,26 @@ async def _present(
 
 
 async def _message_rows(session: AsyncSession) -> list[OrderMessage]:
-    """One row per stage, creating any that are missing — no data migration."""
+    """One row per status and none besides — kept so on read, not by migration.
+
+    A status a release adds gets its row; a status a release retires loses
+    it, text and all: nothing renders that key any more, and a row the panel
+    cannot reach is not a setting.
+    """
     rows = (await session.scalars(select(OrderMessage))).all()
-    missing = {stage.value for stage in Stage} - {row.key for row in rows}
+    known = {status.value for status in Stage}
+    present = {row.key for row in rows}
+    missing = known - present
+    stale = present - known
     if missing:
         await session.execute(
             pg_insert(OrderMessage)
             .values([{"id": uuid.uuid4(), "key": key, "text": {}} for key in missing])
             .on_conflict_do_nothing()
         )
+    if stale:
+        await session.execute(delete(OrderMessage).where(OrderMessage.key.in_(stale)))
+    if missing or stale:
         await session.commit()
         rows = (await session.scalars(select(OrderMessage))).all()
     return list(rows)
@@ -216,33 +228,33 @@ async def message_catalogue(session: AsyncSession) -> MessageCatalogue:
 
 
 def _message_out(row: OrderMessage, catalogue: MessageCatalogue) -> OrderMessageOut:
-    stage = Stage(row.key)
+    status = Stage(row.key)
     return OrderMessageOut(
-        stage=stage,
-        default=DEFAULTS[stage],
+        status=status,
+        default=DEFAULTS[status],
         custom=row.text,
-        text=catalogue.text(stage),
+        text=catalogue.text(status),
     )
 
 
 async def list_messages(session: AsyncSession) -> list[OrderMessageOut]:
     rows = {row.key: row for row in await _message_rows(session)}
     catalogue = await message_catalogue(session)
-    return [_message_out(rows[stage.value], catalogue) for stage in Stage]
+    return [_message_out(rows[status.value], catalogue) for status in Stage]
 
 
-async def get_message(session: AsyncSession, stage: Stage) -> OrderMessageOut:
+async def get_message(session: AsyncSession, status: Stage) -> OrderMessageOut:
     rows = {row.key: row for row in await _message_rows(session)}
-    return _message_out(rows[stage.value], await message_catalogue(session))
+    return _message_out(rows[status.value], await message_catalogue(session))
 
 
 async def update_message(
-    session: AsyncSession, stage: Stage, data: OrderMessageIn
+    session: AsyncSession, status: Stage, data: OrderMessageIn
 ) -> OrderMessageOut:
     """Languages merge per language (the settings/CMS PATCH rule); an empty
     string clears that language so the default shows again."""
     rows = {row.key: row for row in await _message_rows(session)}
-    row = rows[stage.value]
+    row = rows[status.value]
     before = dict(row.text)
     merged = {**row.text, **data.text}
     row.text = {lang: text for lang, text in merged.items() if text.strip()}
@@ -252,7 +264,9 @@ async def update_message(
         resource_id=row.id,
         changes=audit_context.diff(before, row.text),
     )
-    logger.info("order_message_updated", stage=stage.value, languages=sorted(row.text))
+    logger.info(
+        "order_message_updated", status=status.value, languages=sorted(row.text)
+    )
     return _message_out(row, await message_catalogue(session))
 
 
@@ -1125,7 +1139,8 @@ async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
         order, language=None, messages=messages, attempt=_view(latest)
     )
     return OrderAdminOut(
-        **customer_view.model_dump(),
+        **customer_view.model_dump(exclude={"order"}),
+        order=OrderAdminOrderOut.from_public(customer_view.order, order),
         customer_id=order.customer_id,
         ticketing_attempts=order.ticketing_attempts,
         ticketing_requested_at=order.ticketing_requested_at,
@@ -1168,20 +1183,23 @@ async def list_orders_admin(
     pagination: Pagination,
     query: ListQuery,
     *,
-    status: str | None = None,
+    booking_status: str | None = None,
     payment_status: str | None = None,
     ticketing_status: str | None = None,
     attention: bool = False,
 ) -> Page[OrderAdminListItemOut]:
     """Every order, newest first; ``attention`` is the support inbox.
 
+    The three filters are the raw columns, named as the admin row names
+    them — ``status`` is the customer's word and is not a column.
+
     "Needs attention" is what a human must do something about: the ticket
     did not come out, a refund failed, or money was taken on an order that
     is not going to be ticketed.
     """
     stmt = live(Order)
-    if status is not None:
-        stmt = stmt.where(Order.status == status)
+    if booking_status is not None:
+        stmt = stmt.where(Order.status == booking_status)
     if payment_status is not None:
         stmt = stmt.where(Order.payment_status == payment_status)
     if ticketing_status is not None:

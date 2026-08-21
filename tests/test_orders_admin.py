@@ -78,7 +78,19 @@ async def test_list_filters_and_attention_inbox(
     row = next(item for item in everything.json()["data"] if item["id"] == str(fine.id))
     assert row["customer_id"] == str(customer.id)
     assert row["gts_order_number"] == 61453
-    assert row["stage"] == "awaiting_payment"
+    # The customer's word and the three columns it was read from, side by side.
+    assert row["status"] == "booked"
+    assert row["booking_status"] == "booked"
+    assert row["payment_status"] == "pending"
+    assert row["ticketing_status"] == "pending"
+    paid_row = next(
+        item
+        for item in everything.json()["data"]
+        if item["id"] == str(cancelled_paid.id)
+    )
+    assert paid_row["status"] == "ticketing_failed"
+    assert paid_row["booking_status"] == "cancelled"
+    assert paid_row["payment_status"] == "paid"
 
     inbox = await client.get(
         ADMIN_URL, params={"attention": "true"}, headers=staff_headers
@@ -97,6 +109,17 @@ async def test_list_filters_and_attention_inbox(
         ADMIN_URL, params={"search": "1003"}, headers=staff_headers
     )
     assert [item["id"] for item in by_number.json()["data"]] == [str(cancelled_paid.id)]
+    # The booking column is filtered under its own name, never as ``status``.
+    by_booking = await client.get(
+        ADMIN_URL, params={"booking_status": "cancelled"}, headers=staff_headers
+    )
+    assert [item["id"] for item in by_booking.json()["data"]] == [
+        str(cancelled_paid.id)
+    ]
+    ignored = await client.get(
+        ADMIN_URL, params={"status": "cancelled"}, headers=staff_headers
+    )
+    assert ignored.json()["meta"]["total"] == 4
 
 
 async def test_detail_carries_events_and_attempts_without_reference(
@@ -135,7 +158,10 @@ async def test_detail_carries_events_and_attempts_without_reference(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["customer_id"] == str(customer.id)
-    assert data["order"]["stage"] == "ticketing_failed"
+    assert data["order"]["status"] == "ticketing_failed"
+    assert data["order"]["booking_status"] == "booked"
+    assert data["order"]["payment_status"] == "paid"
+    assert data["order"]["ticketing_status"] == "failed"
     assert data["ticketing"]["error"].startswith("user don't have enough credits")
     assert data["ticketing_attempts"] == 1
     assert [event["event"] for event in data["events"]] == ["ticketing.failed"]
@@ -163,7 +189,9 @@ async def test_refund_marking_rules_and_audit(
         headers=staff_headers,
     )
     assert refunding.status_code == 200
-    assert refunding.json()["data"]["order"]["stage"] == "refunding"
+    # A refund under way is still "money taken, talk to us" to the customer.
+    assert refunding.json()["data"]["order"]["status"] == "ticketing_failed"
+    assert refunding.json()["data"]["order"]["payment_status"] == "refunding"
 
     # ``refunding → refunded`` is allowed; from ``refunded`` on, nothing is.
     refunded = await client.post(
@@ -172,7 +200,7 @@ async def test_refund_marking_rules_and_audit(
     assert refunded.status_code == 200
     data = refunded.json()["data"]
     assert data["order"]["payment_status"] == "refunded"
-    assert data["order"]["stage"] == "refunded"
+    assert data["order"]["status"] == "refunded"
     assert data["payment"]["status"] == "refunded"
     again = await client.post(url, json={"status": "refunding"}, headers=staff_headers)
     assert again.status_code == 409
@@ -374,8 +402,8 @@ async def test_sync_releases_a_hold_gts_let_go(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["order"]["status"] == "cancelled"
+    assert data["order"]["booking_status"] == "cancelled"
     assert data["order"]["cancel_reason"] == "expired"
-    assert data["order"]["stage"] == "expired"
 
 
 @respx.mock

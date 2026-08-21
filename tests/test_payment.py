@@ -127,8 +127,8 @@ async def test_start_with_saved_card_creates_started_attempt_and_phone_hint(
     assert data["payment"]["phone_hint"] == "+99890***1234"
     assert data["payment"]["card_last4"] == "1111"
     assert data["payment"]["provider"] == "fake"
-    assert data["order"]["stage"] == "awaiting_payment"
-    assert data["order"]["payment_status"] == "pending"
+    # A code in flight does not move the order: it stays ``booked``.
+    assert data["order"]["status"] == "booked"
 
     (attempt,) = await _attempts(db_session, order)
     assert str(attempt.id) == data["payment"]["payment_id"]
@@ -260,7 +260,8 @@ async def test_start_when_provider_declines_is_200_failed_and_retryable(
     data = response.json()["data"]
     assert data["payment"]["status"] == "failed"
     assert data["payment"]["error"] == "card expired"
-    assert data["order"]["stage"] == "payment_failed"
+    # A declined card is the payment block's news; the order is still held.
+    assert data["order"]["status"] == "booked"
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "failed"
 
@@ -426,9 +427,8 @@ async def test_confirm_pays_and_stamps_card_last_used(
     data = response.json()["data"]
     assert data["payment"]["status"] == "paid"
     assert data["payment"]["paid_at"] is not None
-    assert data["order"]["payment_status"] == "paid"
     # Paid and ticketed in the same request — GTS issued at once.
-    assert data["order"]["stage"] == "ticketed"
+    assert data["order"]["status"] == "ticketed"
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "paid"
     assert attempt.paid_at is not None
@@ -471,8 +471,7 @@ async def test_confirm_declined_is_200_with_failed_block_and_retryable(
     data = response.json()["data"]
     assert data["payment"]["status"] == "failed"
     assert data["payment"]["error"] == "insufficient funds"
-    assert data["order"]["payment_status"] == "failed"
-    assert data["order"]["stage"] == "payment_failed"
+    assert data["order"]["status"] == "booked"
 
     again = await _start(client, order, {**customer_headers, "Idempotency-Key": "k2"})
     assert again.status_code == 200
@@ -503,8 +502,8 @@ async def test_confirm_timeout_leaves_confirming_and_reports_processing(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["payment"]["status"] == "processing"
-    assert data["order"]["stage"] == "payment_processing"
-    assert data["order"]["payment_status"] == "pending"
+    # The unknown answer is the payment block's to report; the order waits.
+    assert data["order"]["status"] == "booked"
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "confirming"
 
