@@ -7,7 +7,7 @@ that is the point of it being a separate class.
 
 import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 
@@ -147,17 +147,20 @@ Credentials = Annotated[dict[str, str | None], Field(max_length=20)]
 
 
 class ProviderFieldOut(BaseModel):
-    """One setting the provider's adapter reads — what the panel's form shows.
+    """One setting the provider's adapter reads — what the panel's form shows."""
 
-    ``secret`` values come back masked in ``credentials``; the others are
-    shown as written. ``choices`` is non-empty for a ``choice`` field.
-    """
-
-    key: str
-    kind: str
-    required: bool
-    choices: list[str]
-    default: str | None
+    key: str = Field(description="The key to send inside `credentials`.")
+    kind: Literal["text", "secret", "int", "choice"] = Field(
+        description=(
+            "`secret` comes back masked; `int` must be a whole number; "
+            "`choice` must be one of `choices`; `text` is free."
+        )
+    )
+    required: bool = Field(
+        description="Must be set before the provider can be switched on."
+    )
+    choices: list[str] = Field(description="The allowed values of a `choice` field.")
+    default: str | None = Field(description="What the adapter assumes when unset.")
 
 
 class PaymentProviderOut(BaseModel):
@@ -168,17 +171,33 @@ class PaymentProviderOut(BaseModel):
     masked because nothing says which ones are secret.
     """
 
-    code: PaymentProviderCode
-    enabled: bool
-    title: str
-    logo_id: uuid.UUID | None
-    logo_url: str | None
-    sort_order: int
-    credentials: dict[str, str]
-    fields: list[ProviderFieldOut]
-    last_tested_at: datetime | None
-    last_test_ok: bool | None
-    last_test_error: str | None
+    code: PaymentProviderCode = Field(description="`payme` or `click`.")
+    enabled: bool = Field(
+        description="Whether this is the provider that charges. One at a time."
+    )
+    title: str = Field(description="How the site names the method on its buttons.")
+    logo_id: uuid.UUID | None = Field(description="The uploaded logo, if any.")
+    logo_url: str | None = Field(description="Where the logo is served from.")
+    sort_order: int = Field(description="Button order on the site, ascending.")
+    credentials: dict[str, str] = Field(
+        description=(
+            "The stored settings by key. `secret` fields (see `fields`) come "
+            "back masked — `••••••9f` — so the panel can show which are set; "
+            "the others as written. Empty when nothing is stored."
+        )
+    )
+    fields: list[ProviderFieldOut] = Field(
+        description=(
+            "The settings this provider's adapter reads — render a form from "
+            "it. Empty for a provider this release has no adapter for, which "
+            "then accepts any key and masks every value."
+        )
+    )
+    last_tested_at: datetime | None = Field(
+        description="When `POST …/{code}/test/` last ran."
+    )
+    last_test_ok: bool | None = Field(description="What it found.")
+    last_test_error: str | None = Field(description="The provider's words when not ok.")
     created_at: datetime
     updated_at: datetime
 
@@ -191,20 +210,59 @@ class PaymentProviderIn(BaseModel):
     masked.
     """
 
-    enabled: bool | None = None
-    title: ProviderTitle | None = None
-    logo_id: uuid.UUID | None = None
-    sort_order: Annotated[int, Field(ge=0, le=9999)] | None = None
-    credentials: Credentials | None = None
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "credentials": {
+                        "merchant_id": "5e730e8e0b852a417aa49ceb",
+                        "key": "<cashbox key>",
+                        "environment": "test",
+                        "account_field": "order_id",
+                    }
+                },
+                {"enabled": True},
+                {"credentials": {"fiscal_title": None}},
+            ]
+        }
+    }
+
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "`true` switches this provider on and every other off; needs the "
+            "required keys stored first. `false` switches it off."
+        ),
+    )
+    title: ProviderTitle | None = Field(
+        default=None, description="The button label on the site."
+    )
+    logo_id: uuid.UUID | None = Field(
+        default=None, description="An upload id from `POST /admin/uploads/`."
+    )
+    sort_order: Annotated[int, Field(ge=0, le=9999)] | None = Field(
+        default=None, description="Button order on the site."
+    )
+    credentials: Credentials | None = Field(
+        default=None,
+        description=(
+            "Keys **merge** into what is stored: send one to change one; "
+            "`null` deletes a key; a masked value echoed back is ignored. For "
+            "a provider with `fields`, an unknown key, a `choice` outside its "
+            "choices or a non-numeric `int` is a `422`."
+        ),
+    )
 
 
 class PaymentTestOut(BaseModel):
     """What the provider said to the stored settings (the ``SmtpTestOut``
     shape): ``ok: false`` with the reason is an answer, not an error."""
 
-    ok: bool
-    detail: str | None
-    tested_at: datetime
+    ok: bool = Field(description="Whether the provider accepted the stored settings.")
+    detail: str | None = Field(
+        description="The provider's words when not ok — shown to the operator."
+    )
+    tested_at: datetime = Field(description="When this test ran.")
 
 
 # --- social sign-in (API.md §29) ----------------------------------------------------

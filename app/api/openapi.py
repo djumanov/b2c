@@ -1,31 +1,45 @@
 """Make the generated OpenAPI describe what is actually sent.
 
-``API.md`` is the contract; OpenAPI is its artefact (API.md preamble). But
-FastAPI generates the schema from the handler signatures, and handlers
-deliberately return bare models — the envelope is added by ``EnvelopeRoute``
-after the fact. Left alone, the published schema would promise ``{"id": …}``
-where the wire carries ``{"status": …, "data": {"id": …}, …}``, and every
-client generated from it would be wrong.
+The published schema (``/api/v1/openapi.json``, rendered at ``/api/v1/docs``)
+is the REST contract as clients see it; ``docs/order-system/README.md`` is
+the order system's authority behind it. FastAPI generates the schema from
+the handler signatures, and handlers deliberately return bare models — the
+envelope is added by ``EnvelopeRoute`` after the fact. Left alone, the
+schema would promise ``{"id": …}`` where the wire carries
+``{"status": …, "data": {"id": …}, …}``, and every client generated from it
+would be wrong.
 
-So the schema is post-processed once, here: each success response is wrapped
-in the envelope, ``Page`` responses are unfolded into ``data`` + ``meta``, and
-the shared error responses from API.md §3 are attached.
+So the schema is post-processed once, here:
+
+* each success response is wrapped in the envelope, ``Page`` responses are
+  unfolded into ``data`` + ``meta``;
+* the shared error responses are attached with the sentence that says
+  *when* each happens, and FastAPI's own ``422`` — a ``{"detail": […]}``
+  shape this app never sends — is replaced by the enveloped one;
+* every operation is stamped with the token it needs (``customerToken`` or
+  ``staffToken``), read off its dependencies, so Swagger shows the lock and
+  the "Authorize" dialog knows the two audiences apart. There is no
+  ``HTTPBearer`` dependency on purpose: it would change the 401 body and
+  the rule that the other surface's token is a 403.
+
+Routes add the errors only they raise through ``error_responses``.
 
 Webhook operations are skipped — they answer in the payment provider's own
-protocol (API.md §40).
+protocol.
 
-One more repair happens first. ``get_openapi`` finishes by encoding the schema
-with ``exclude_none=True``, which walks into hand-written ``example`` blocks
-and **deletes every ``null``**. That is not cosmetic: the envelope's ``meta``
-is null on success and ``next_token`` is null on a first page, so the surviving
-example teaches the client to omit fields the contract requires. Each route's
-``openapi_extra`` is therefore re-applied afterwards, from the untouched
-original.
+One more repair happens first. ``get_openapi`` finishes by encoding the
+schema with ``exclude_none=True``, which walks into hand-written ``example``
+blocks and **deletes every ``null``**. That is not cosmetic: the envelope's
+``meta`` is null on success, so the surviving example teaches the client to
+omit fields the contract requires. Each route's ``openapi_extra`` is
+therefore re-applied afterwards, from the untouched original.
 """
 
+from collections.abc import Callable, Iterable
 from typing import Any, Final
 
 from fastapi import FastAPI
+from fastapi.dependencies.models import Dependant
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute, iter_route_contexts
 
@@ -34,34 +48,65 @@ from app.api.errors import ERROR_STATUS, ErrorCode
 WEBHOOK_PATH_MARKER: Final = "/webhooks/"
 
 _API_ERROR_REF: Final = "#/components/schemas/ApiError"
+_ERROR_ENVELOPE_REF: Final = "#/components/schemas/ErrorEnvelope"
 _PAGE_META_REF: Final = "#/components/schemas/PageMeta"
 
-_ENVELOPE_COMPONENTS: Final[dict[str, Any]] = {
-    "ApiError": {
-        "type": "object",
-        "title": "ApiError",
-        "description": "One problem. `field` is filled for `validation` only.",
-        "properties": {
-            "code": {
-                "type": "string",
-                "enum": [code.value for code in ErrorCode],
-            },
-            "field": {"type": "string", "nullable": True},
-            "message": {"type": "string"},
-        },
-        "required": ["code", "message"],
-    },
-    "PageMeta": {
-        "type": "object",
-        "title": "PageMeta",
-        "properties": {
-            "page": {"type": "integer"},
-            "page_size": {"type": "integer"},
-            "total": {"type": "integer"},
-            "total_pages": {"type": "integer"},
-        },
-        "required": ["page", "page_size", "total", "total_pages"],
-    },
+CUSTOMER_SCHEME: Final = "customerToken"
+STAFF_SCHEME: Final = "staffToken"
+
+_NULL: Final[dict[str, Any]] = {"type": "null"}
+
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` or ``null`` — the 3.1 spelling of ``nullable: true``."""
+    return {"anyOf": [schema, _NULL]}
+
+
+#: What each error means, in one sentence — the shared responses and
+#: ``error_responses`` both read from here, so the wording cannot drift.
+_ERROR_TEXT: Final[dict[ErrorCode, str]] = {
+    ErrorCode.VALIDATION: (
+        "The body, a query parameter or a header was refused. Each item in "
+        "`errors` names the culprit in `field` — a dotted path into the body "
+        "(`card.number`), a query name, or a header name (`Idempotency-Key`)."
+    ),
+    ErrorCode.UNAUTHORIZED: (
+        "No `Authorization: Bearer …` header, or the token is expired or "
+        "malformed. Refresh the token or sign in again."
+    ),
+    ErrorCode.FORBIDDEN: (
+        "The token is valid but not for this: a customer token on an `/admin/` "
+        "route (or a staff token on `/public/`), or a staff role below what the "
+        "route asks for."
+    ),
+    ErrorCode.NOT_FOUND: (
+        "No such resource — or not yours. An id that belongs to another "
+        "customer answers the same 404, so existence is never revealed."
+    ),
+    ErrorCode.CONFLICT: (
+        "The request is valid but the resource is not in a state that allows it."
+    ),
+    ErrorCode.RATE_LIMITED: (
+        "Too many requests from this caller for this group of endpoints. "
+        "`Retry-After` says how many seconds to wait."
+    ),
+    ErrorCode.UPSTREAM_ERROR: (
+        "GTS or the payment provider refused the request. Their own code and "
+        "message, when they gave one, are in `meta.upstream`."
+    ),
+    ErrorCode.UPSTREAM_TIMEOUT: (
+        "GTS or the payment provider did not answer in time. The outcome is "
+        "unknown to the client; read the resource back before retrying anything "
+        "that moves money or seats."
+    ),
+    ErrorCode.OFFER_EXPIRED: (
+        "GTS released the hold: the deadline passed or the seat is gone. The "
+        "order is now `cancelled`; search again."
+    ),
+    ErrorCode.INTERNAL: (
+        "Something broke on our side. The response carries an `X-Request-Id` "
+        "to quote to support."
+    ),
 }
 
 #: Errors any endpoint may return, documented once per operation.
@@ -74,25 +119,155 @@ _SHARED_ERROR_CODES: Final[tuple[ErrorCode, ...]] = (
     ErrorCode.INTERNAL,
 )
 
+_RETRY_AFTER_HEADER: Final[dict[str, Any]] = {
+    "Retry-After": {
+        "description": "Seconds to wait before trying again.",
+        "schema": {"type": "integer", "minimum": 1},
+    }
+}
 
-def _error_response(code: ErrorCode) -> dict[str, Any]:
-    return {
-        "description": code.value,
+_ENVELOPE_COMPONENTS: Final[dict[str, Any]] = {
+    "ApiError": {
+        "type": "object",
+        "title": "ApiError",
+        "description": (
+            "One problem. `code` is from the closed catalogue; `message` is "
+            "written for a person; `field` is set for `validation` only."
+        ),
+        "properties": {
+            "code": {
+                "type": "string",
+                "enum": [code.value for code in ErrorCode],
+            },
+            "field": _nullable({"type": "string"}),
+            "message": {"type": "string"},
+        },
+        "required": ["code", "message"],
+    },
+    "ErrorEnvelope": {
+        "type": "object",
+        "title": "ErrorEnvelope",
+        "description": (
+            "Every non-2xx answer: `status` is `error`, `data` is null, "
+            "`errors` holds at least one item, `meta` carries context such as "
+            "`upstream` for provider errors."
+        ),
+        "properties": {
+            "status": {"type": "string", "enum": ["error"]},
+            "data": _NULL,
+            "errors": {"type": "array", "items": {"$ref": _API_ERROR_REF}},
+            "meta": _nullable({"type": "object"}),
+        },
+        "required": ["status", "data", "errors", "meta"],
+    },
+    "PageMeta": {
+        "type": "object",
+        "title": "PageMeta",
+        "description": "Where this page sits in the whole list.",
+        "properties": {
+            "page": {"type": "integer", "description": "1-based."},
+            "page_size": {"type": "integer"},
+            "total": {"type": "integer", "description": "Rows in the whole list."},
+            "total_pages": {"type": "integer"},
+        },
+        "required": ["page", "page_size", "total", "total_pages"],
+    },
+}
+
+_SECURITY_SCHEMES: Final[dict[str, Any]] = {
+    CUSTOMER_SCHEME: {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "A customer's access token (`aud: public`), issued by "
+            "`POST /api/v1/public/auth/login/` and refreshed by `refresh/`. "
+            "Send it as `Authorization: Bearer <token>`. On an `/admin/` route "
+            "it is a **403**, not a 401."
+        ),
+    },
+    STAFF_SCHEME: {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "A staff member's access token (`aud: admin`), issued by "
+            "`POST /api/v1/admin/auth/login/`. Roles are `owner` and `admin`; "
+            "routes marked **Owner role only** refuse `admin` with a 403."
+        ),
+    },
+}
+
+
+# --- errors --------------------------------------------------------------------------
+
+
+def _error_response(
+    codes: Iterable[ErrorCode],
+    description: str,
+    *,
+    headers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One documented error answer, its `code` enum narrowed to ``codes``."""
+    values = [code.value for code in codes]
+    response: dict[str, Any] = {
+        "description": description,
         "content": {
             "application/json": {
                 "schema": {
-                    "type": "object",
+                    "allOf": [{"$ref": _ERROR_ENVELOPE_REF}],
                     "properties": {
-                        "status": {"type": "string", "enum": ["error"]},
-                        "data": {"nullable": True},
-                        "errors": {"type": "array", "items": {"$ref": _API_ERROR_REF}},
-                        "meta": {"type": "object", "nullable": True},
+                        "errors": {
+                            "type": "array",
+                            "items": {
+                                "allOf": [{"$ref": _API_ERROR_REF}],
+                                "properties": {
+                                    "code": {"type": "string", "enum": values}
+                                },
+                            },
+                        }
                     },
-                    "required": ["status", "data", "errors", "meta"],
                 }
             }
         },
     }
+    if headers:
+        response["headers"] = headers
+    return response
+
+
+def _shared_error_response(code: ErrorCode) -> dict[str, Any]:
+    headers = _RETRY_AFTER_HEADER if code is ErrorCode.RATE_LIMITED else None
+    return _error_response((code,), _ERROR_TEXT[code], headers=headers)
+
+
+def error_responses(
+    *codes: ErrorCode, **wording: str
+) -> dict[int | str, dict[str, Any]]:
+    """``responses=`` entries for the errors only this route raises.
+
+    The six shared codes are on every operation already; a route adds the
+    rest — ``conflict``, ``offer_expired``, ``upstream_error``,
+    ``upstream_timeout`` — with its own sentence when the catalogue's is too
+    general: ``error_responses(ErrorCode.CONFLICT, conflict="A payment for
+    this order is being confirmed.")``. Codes that share an HTTP status
+    (``conflict`` and ``offer_expired`` are both 409) are merged into one
+    answer whose description names both.
+    """
+    by_status: dict[int, list[ErrorCode]] = {}
+    for code in codes:
+        by_status.setdefault(ERROR_STATUS[code], []).append(code)
+    responses: dict[int | str, dict[str, Any]] = {}
+    for status, grouped in by_status.items():
+        sentences = []
+        for code in grouped:
+            text = wording.get(code.value, _ERROR_TEXT[code])
+            sentences.append(f"`{code.value}` — {text}" if len(grouped) > 1 else text)
+        responses[status] = _error_response(grouped, " ".join(sentences))
+    return responses
+
+
+# --- the envelope --------------------------------------------------------------------
 
 
 def _resolve(schema: dict[str, Any], components: dict[str, Any]) -> dict[str, Any]:
@@ -114,7 +289,7 @@ def _envelope_schema(
     data_schema: dict[str, Any] | None, components: dict[str, Any]
 ) -> dict[str, Any]:
     """Wrap a success payload, lifting ``Page`` into ``data`` + ``meta``."""
-    meta_schema: dict[str, Any] = {"type": "object", "nullable": True}
+    meta_schema: dict[str, Any] = _nullable({"type": "object"})
     if data_schema and _is_page_schema(data_schema, components):
         page = _resolve(data_schema, components)
         data_schema = page["properties"]["items"]
@@ -124,8 +299,12 @@ def _envelope_schema(
         "type": "object",
         "properties": {
             "status": {"type": "string", "enum": ["success"]},
-            "data": data_schema if data_schema is not None else {"nullable": True},
-            "errors": {"type": "array", "items": {"$ref": _API_ERROR_REF}},
+            "data": data_schema if data_schema is not None else _NULL,
+            "errors": {
+                "type": "array",
+                "items": {"$ref": _API_ERROR_REF},
+                "description": "Always empty on success.",
+            },
             "meta": meta_schema,
         },
         "required": ["status", "data", "errors", "meta"],
@@ -140,7 +319,7 @@ def _wrap_operation(operation: dict[str, Any], components: dict[str, Any]) -> No
     for status_code, response in responses.items():
         if not status_code.isdigit() or not 200 <= int(status_code) < 300:
             continue
-        # 204 has no body to wrap (API.md §8: DELETE returns no content).
+        # 204 has no body to wrap: DELETE returns no content.
         content = response.get("content")
         if int(status_code) == 204 or not isinstance(content, dict):
             continue
@@ -152,7 +331,88 @@ def _wrap_operation(operation: dict[str, Any], components: dict[str, Any]) -> No
         )
 
     for code in _SHARED_ERROR_CODES:
-        responses.setdefault(str(ERROR_STATUS[code]), _error_response(code))
+        status = str(ERROR_STATUS[code])
+        if code is ErrorCode.VALIDATION:
+            # FastAPI already wrote a 422 of its own shape here; ours is the
+            # one the wire carries.
+            responses[status] = _shared_error_response(code)
+        else:
+            responses.setdefault(status, _shared_error_response(code))
+
+
+# --- who may call ---------------------------------------------------------------------
+
+
+def _auth_calls() -> dict[Callable[..., Any], str]:
+    # Imported here: ``deps`` pulls in the customer and staff services, and
+    # this module is imported by ``main`` before the routers are.
+    from app.api import deps
+
+    return {
+        deps.current_customer: CUSTOMER_SCHEME,
+        deps.current_customer_optional: CUSTOMER_SCHEME,
+        deps.current_staff: STAFF_SCHEME,
+        deps.require_owner: STAFF_SCHEME,
+    }
+
+
+def _walk(dependant: Dependant) -> Iterable[Dependant]:
+    for child in dependant.dependencies:
+        yield child
+        yield from _walk(child)
+
+
+def _security_for(route: APIRoute) -> tuple[list[dict[str, list[str]]], bool]:
+    """The ``security`` requirement of one route, and whether it is owner-only.
+
+    Read off the dependency tree: router-level and surface-level
+    ``dependencies=[Depends(...)]`` are flattened into it by ``include_router``,
+    so one walk sees everything. A route whose only requirement is the
+    optional customer may be called anonymously, which OpenAPI spells as
+    an empty alternative.
+    """
+    from app.api import deps
+
+    auth = _auth_calls()
+    seen = {auth[node.call] for node in _walk(route.dependant) if node.call in auth}
+    calls = {node.call for node in _walk(route.dependant)}
+    owner_only = deps.require_owner in calls
+    if STAFF_SCHEME in seen:
+        return [{STAFF_SCHEME: []}], owner_only
+    if CUSTOMER_SCHEME in seen:
+        optional_only = deps.current_customer not in calls
+        security: list[dict[str, list[str]]] = [{CUSTOMER_SCHEME: []}]
+        if optional_only:
+            security.append({})
+        return security, False
+    return [], False
+
+
+def _stamp_security(app: FastAPI, schema: dict[str, Any]) -> None:
+    paths = schema.get("paths", {})
+    for context in iter_route_contexts(app.routes):
+        route = context.route
+        if not isinstance(route, APIRoute):
+            continue
+        operations = paths.get(context.path)
+        if not isinstance(operations, dict):
+            continue
+        security, owner_only = _security_for(route)
+        if not security:
+            continue
+        for method in route.methods or ():
+            operation = operations.get(method.lower())
+            if not isinstance(operation, dict):
+                continue
+            operation["security"] = security
+            if owner_only:
+                description = operation.get("description") or ""
+                operation["description"] = "**Owner role only.**" + (
+                    f"\n\n{description}" if description else ""
+                )
+
+
+# --- assembling ----------------------------------------------------------------------
 
 
 def _deep_update(target: dict[str, Any], source: dict[str, Any]) -> None:
@@ -200,20 +460,34 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
         version=app.version,
         description=app.description,
         routes=app.routes,
+        tags=app.openapi_tags,
     )
     _restore_extras(app, schema)
-    components = schema.setdefault("components", {}).setdefault("schemas", {})
-    components.update(_ENVELOPE_COMPONENTS)
+    components = schema.setdefault("components", {})
+    schemas = components.setdefault("schemas", {})
+    schemas.update(_ENVELOPE_COMPONENTS)
+    components.setdefault("securitySchemes", {}).update(_SECURITY_SCHEMES)
 
     for path, operations in schema.get("paths", {}).items():
         if WEBHOOK_PATH_MARKER in path:
             continue
         for method, operation in operations.items():
             if method.lower() in {"get", "post", "put", "patch", "delete"}:
-                _wrap_operation(operation, components)
+                _wrap_operation(operation, schemas)
+    _stamp_security(app, schema)
+
+    # FastAPI's validation shapes are referenced by nothing any more.
+    schemas.pop("HTTPValidationError", None)
+    schemas.pop("ValidationError", None)
 
     app.openapi_schema = schema
     return schema
 
 
-__all__ = ["WEBHOOK_PATH_MARKER", "build_openapi"]
+__all__ = [
+    "CUSTOMER_SCHEME",
+    "STAFF_SCHEME",
+    "WEBHOOK_PATH_MARKER",
+    "build_openapi",
+    "error_responses",
+]

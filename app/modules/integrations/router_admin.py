@@ -18,6 +18,8 @@ from fastapi import Depends, Response
 
 from app.api.deps import CurrentStaff, current_staff, require_owner
 from app.api.envelope import enveloped_router
+from app.api.errors import ErrorCode
+from app.api.openapi import error_responses
 from app.db.session import SessionDep
 from app.modules.audit.deps import Audited
 from app.modules.integrations import service
@@ -163,12 +165,26 @@ payments_router = enveloped_router(
 )
 
 
-@payments_router.get("/", summary="Payment providers — credentials masked")
+@payments_router.get(
+    "/",
+    summary="Payment providers — credentials masked",
+    description=(
+        "Every provider this release knows, whether the installation uses it "
+        "or not. `fields` is the form the adapter asks for; `credentials` is "
+        "what is stored, secret values masked. At most one provider is "
+        "`enabled` — that is the one that charges."
+    ),
+    response_description="One row per provider code.",
+)
 async def list_payment_providers(session: SessionDep) -> list[PaymentProviderOut]:
     return await service.list_payment_providers(session)
 
 
-@payments_router.get("/{code}/", summary="One provider")
+@payments_router.get(
+    "/{code}/",
+    summary="One provider",
+    description="The same row as in the list, for one `code`.",
+)
 async def get_payment_provider(
     code: PaymentProviderCode, session: SessionDep
 ) -> PaymentProviderOut:
@@ -179,6 +195,16 @@ async def get_payment_provider(
     "/{code}/",
     dependencies=[Depends(require_owner)],
     summary="Switch on or off, set credentials, title, logo and order",
+    description=(
+        "Partial update. `credentials` **merge** into what is stored — send "
+        "one key to change one, `null` to delete one; a masked value echoed "
+        "back from `GET` is ignored, so a form can resend what it received. "
+        "For a provider with `fields`, an unknown key, a `choice` outside its "
+        "choices or a non-numeric `int` is a `422` naming the key.\n\n"
+        "`enabled: true` needs every `required` field stored and switches "
+        "every other provider off in the same call. Press `test/` first."
+    ),
+    response_description="The row after the change, secrets masked.",
 )
 async def update_payment_provider(
     code: PaymentProviderCode, data: PaymentProviderIn, session: SessionDep
@@ -192,6 +218,22 @@ async def update_payment_provider(
     # ``integrations.payments`` / ``test`` from the path by itself.
     dependencies=[Depends(require_owner)],
     summary="Check the stored settings against the provider — moves no money",
+    description=(
+        "Asks the provider, with the stored settings, whether they work — a "
+        "read-only call, no charge, no code sent. Works before the provider "
+        "is switched on; that is what it is for. A refusal is **not an "
+        "error**: `200` with `ok: false` and the provider's words in `detail`. "
+        "The result is kept on the row as `last_tested_at` / `last_test_ok` / "
+        "`last_test_error`."
+    ),
+    response_description="What the provider said.",
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        conflict=(
+            "No settings are stored yet, or this release has no adapter for "
+            "the provider."
+        ),
+    ),
 )
 async def test_payment_provider(
     code: PaymentProviderCode, session: SessionDep

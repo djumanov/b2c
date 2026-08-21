@@ -357,5 +357,6 @@ status o'zgarishi va izoh).
 - Provider refund API (`refund()` porti) — hozir support provider kabinetida
   qaytaradi va `refund/` bilan belgilaydi.
 - `reprice_check` — ticketing o'zi reprice qiladimi, GTS bilan aniqlash kerak.
-- Contract test sweep (trailing slash, envelope) ni qayta tiklash; CLAUDE.md
-  hujjat jadvalini tozalash (`docs/API.md` va boshqalar yo'q).
+- ~~Contract test sweep~~ — `tests/test_openapi.py` (trailing slash, envelope,
+  xato shakllari, ikki token sxemasi, har endpoint tavsifi); CLAUDE.md jadvali
+  tozalandi.

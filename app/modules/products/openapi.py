@@ -76,9 +76,9 @@ def _operation(
     *,
     request_schema: dict[str, Any],
     request_example: dict[str, Any],
-    response_schema: dict[str, Any],
     response_example: dict[str, Any],
     response_description: str,
+    response_schema: dict[str, Any] | None = None,
     status: str = "200",
 ) -> dict[str, Any]:
     """One step's ``openapi_extra``, assembled the same way every time.
@@ -88,7 +88,19 @@ def _operation(
     survive untouched. ``status`` must match the route's ``status_code`` —
     keyed under anything else, this blob would merge in as a *second* success
     response that never actually happens.
+
+    ``response_schema`` is for the passthrough steps, whose handlers return a
+    bare ``dict``; a step that returns a documented Pydantic model (booking)
+    leaves it out, so FastAPI's own ``$ref`` to that model stays and only the
+    example is supplied here.
     """
+    content: dict[str, Any] = {
+        # Untouched by the envelope wrapper, so it shows the real body.
+        "example": _envelope_example(response_example),
+    }
+    if response_schema is not None:
+        # Becomes ``data`` — api/openapi.py adds the envelope.
+        content["schema"] = response_schema
     return {
         "requestBody": {
             "required": True,
@@ -102,14 +114,7 @@ def _operation(
         "responses": {
             status: {
                 "description": response_description,
-                "content": {
-                    "application/json": {
-                        # Becomes ``data`` — api/openapi.py adds the envelope.
-                        "schema": response_schema,
-                        # Untouched by that wrapper, so it shows the real body.
-                        "example": _envelope_example(response_example),
-                    }
-                },
+                "content": {"application/json": content},
             }
         },
     }
@@ -475,17 +480,6 @@ _PASSENGER: Final[dict[str, Any]] = {
     },
 }
 
-_MONEY: Final[dict[str, Any]] = {
-    "type": "object",
-    "nullable": True,
-    "properties": {
-        "amount": {
-            "type": "string",
-            "description": "A string, never a JSON number (API.md §1).",
-        },
-        "currency": {"type": "string"},
-    },
-}
 
 FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
     status="201",
@@ -524,178 +518,6 @@ FLIGHT_BOOKING: Final[dict[str, Any]] = _operation(
                 "phone": {"phone_code": "998", "phone_number": "901234567"},
             }
         ],
-    },
-    response_schema={
-        "type": "object",
-        "properties": {
-            "product": {"type": "string"},
-            "order": {
-                "type": "object",
-                "description": "Our record of the booking — the stable contract.",
-                "properties": {
-                    "id": {"type": "string", "format": "uuid"},
-                    "product": {"type": "string"},
-                    "status": {
-                        "type": "string",
-                        "enum": [
-                            "booked",
-                            "ticket_waiting",
-                            "ticketed",
-                            "ticketing_failed",
-                            "refunded",
-                            "cancelled",
-                        ],
-                        "description": (
-                            "The one status a screen shows, read off the "
-                            "booking, payment and ticketing columns on the "
-                            "server. `booked` is held and unpaid (see "
-                            "`payment.status` for what the last attempt did); "
-                            "`ticket_waiting` is paid and GTS has not answered; "
-                            "`ticketing_failed` is money taken and no ticket "
-                            "coming on its own — contact support; `refunded` "
-                            "is the money back; `cancelled` is released before "
-                            "any money moved (`cancel_reason` says why). Show "
-                            "`message` with it; handle unknown values as a "
-                            "generic state, new ones may be added."
-                        ),
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": (
-                            "The sentence that goes with `status`, in the "
-                            "request's language (`?lang=` / `Accept-Language`). "
-                            "Written by the panel; show it as is."
-                        ),
-                    },
-                    "cancel_reason": {
-                        "type": "string",
-                        "enum": ["customer", "expired", "staff"],
-                        "nullable": True,
-                        "description": "Set when `status` is `cancelled`.",
-                    },
-                    "gts_status": {
-                        "type": "string",
-                        "description": "GTS's own code, verbatim — `BO` when held.",
-                    },
-                    "gts_order_number": {"type": "integer"},
-                    "pnr": {"type": "string", "nullable": True},
-                    "trip_type": {"type": "string", "nullable": True},
-                    "route_summary": {"type": "string", "nullable": True},
-                    "passenger_count": {"type": "integer", "nullable": True},
-                    "amount": _MONEY,
-                    "ticket_time_limit_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "paid_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "ticketed_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "cancelled_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "request_id": {"type": "string"},
-                    "offer_id": {"type": "string"},
-                    "created_at": {"type": "string", "format": "date-time"},
-                },
-            },
-            "payment": {
-                "type": "object",
-                "description": (
-                    "Where the money stands: pay this much before `pay_before`. "
-                    "`payment_id`, `card_last4` and `phone_hint` are filled once "
-                    "a payment attempt exists."
-                ),
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": [
-                            "pending",
-                            "awaiting_otp",
-                            "processing",
-                            "paid",
-                            "failed",
-                            "cancelled",
-                            "refunding",
-                            "refunded",
-                            "refund_failed",
-                        ],
-                    },
-                    "amount": _MONEY,
-                    "pay_before": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "payment_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "nullable": True,
-                    },
-                    "provider": {"type": "string", "nullable": True},
-                    "card_last4": {"type": "string", "nullable": True},
-                    "phone_hint": {"type": "string", "nullable": True},
-                    "paid_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "error": {"type": "string", "nullable": True},
-                },
-            },
-            "ticketing": {
-                "type": "object",
-                "description": (
-                    "Where the ticket stands. While `processing`, poll "
-                    "`GET /public/orders/{id}/`; the issued numbers arrive in "
-                    "`tickets`."
-                ),
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "processing", "ticketed", "failed"],
-                    },
-                    "requested_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "ticketed_at": {
-                        "type": "string",
-                        "format": "date-time",
-                        "nullable": True,
-                    },
-                    "tickets": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "passenger": {"type": "string"},
-                                "ticket_number": {"type": "string"},
-                            },
-                        },
-                    },
-                    "error": {"type": "string", "nullable": True},
-                },
-            },
-            "order_data": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": (
-                    "GTS's booking answer — routes, passengers, fares, baggage "
-                    "— minus commission fields. Read display detail here."
-                ),
-            },
-        },
     },
     response_example={
         "product": "flight",

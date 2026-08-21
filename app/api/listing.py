@@ -17,10 +17,10 @@ Two decisions worth stating, because both are easy to get wrong quietly:
   page 1 already showed and skip another entirely.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 from fastapi import Depends, Query
 from sqlalchemy import ColumnElement, Select, func, or_, select
@@ -58,11 +58,29 @@ def _as_utc(moment: datetime | None) -> datetime | None:
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
-def list_query(
-    search: Annotated[str | None, Query()] = None,
-    ordering: Annotated[str | None, Query()] = None,
-    created_from: Annotated[datetime | None, Query()] = None,
-    created_to: Annotated[datetime | None, Query()] = None,
+_SEARCH_TEXT: Final = (
+    "Case-insensitive substring match over {columns}. Leading and trailing "
+    "spaces are ignored; empty means no filter."
+)
+_ORDERING_TEXT: Final = (
+    "Sort field, `-` prefix for descending: {fields}. Default `{default}`. "
+    "Anything else is a `422` naming the choices."
+)
+_CREATED_FROM_TEXT: Final = (
+    "Only rows created at or after this moment (ISO 8601; without an offset "
+    "it is read as UTC)."
+)
+_CREATED_TO_TEXT: Final = (
+    "Only rows created at or before this moment (inclusive; ISO 8601; without "
+    "an offset it is read as UTC)."
+)
+
+
+def _build(
+    search: str | None,
+    ordering: str | None,
+    created_from: datetime | None,
+    created_to: datetime | None,
 ) -> ListQuery:
     term = search.strip() if search else None
     return ListQuery(
@@ -73,7 +91,66 @@ def list_query(
     )
 
 
+def list_query(
+    search: Annotated[
+        str | None,
+        Query(description=_SEARCH_TEXT.format(columns="the fields this list searches")),
+    ] = None,
+    ordering: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Sort field, `-` prefix for descending, from this endpoint's "
+                "whitelist. Anything else is a `422` naming the choices."
+            )
+        ),
+    ] = None,
+    created_from: Annotated[
+        datetime | None, Query(description=_CREATED_FROM_TEXT)
+    ] = None,
+    created_to: Annotated[datetime | None, Query(description=_CREATED_TO_TEXT)] = None,
+) -> ListQuery:
+    return _build(search, ordering, created_from, created_to)
+
+
 ListQueryDep = Annotated[ListQuery, Depends(list_query)]
+
+
+def list_query_dep(
+    *, ordering: Sequence[str], default: str, search: str
+) -> Callable[..., ListQuery]:
+    """``list_query`` whose parameter descriptions name *this* endpoint's
+    sort fields and searched columns — the whitelist a client otherwise
+    discovers only by tripping the 422. Behaviour is ``list_query``'s.
+
+    ``ordering`` is the whitelist the service hands to ``apply_ordering``;
+    ``default`` its default spelling (``"-created_at"``); ``search`` a phrase
+    such as ``"PNR and route"``.
+    """
+    fields = ", ".join(f"`{field}`" for field in ordering)
+
+    def dependency(
+        search_: Annotated[
+            str | None,
+            Query(alias="search", description=_SEARCH_TEXT.format(columns=search)),
+        ] = None,
+        ordering_: Annotated[
+            str | None,
+            Query(
+                alias="ordering",
+                description=_ORDERING_TEXT.format(fields=fields, default=default),
+            ),
+        ] = None,
+        created_from: Annotated[
+            datetime | None, Query(description=_CREATED_FROM_TEXT)
+        ] = None,
+        created_to: Annotated[
+            datetime | None, Query(description=_CREATED_TO_TEXT)
+        ] = None,
+    ) -> ListQuery:
+        return _build(search_, ordering_, created_from, created_to)
+
+    return dependency
 
 
 # --- turning the query into SQL -------------------------------------------------
@@ -171,6 +248,7 @@ __all__ = [
     "ColumnExpr",
     "ListQuery",
     "ListQueryDep",
+    "list_query_dep",
     "OrderingMap",
     "apply_created_range",
     "apply_ordering",

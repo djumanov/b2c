@@ -5,23 +5,18 @@ Guidance for Claude Code working in this repository.
 ## Documents come first
 
 `docs/` is the source of truth and is written in Uzbek. Code, comments,
-docstrings and commit messages are in English.
+docstrings, OpenAPI descriptions and commit messages are in English.
 
 | Document | Authority |
 |---|---|
-| `docs/order-system/` | The **order system** — orders, payments, tickets, cancellation, refunds. Wins any conflict inside that scope; outside it the rows below still rule |
-| `docs/API.md` | The REST **contract**. Wins any conflict about what the outside sees |
-| `docs/ARCHITECTURE.md` | Internal structure: modules, layers, DB, saga, adapters |
-| `docs/PROJECT.md` | Product and project: scope, decisions, phases, operations |
-| `docs/GTS.md` | Background on GTS, the upstream B2B platform |
-| `docs/PHASES.md` | **Not an authority.** The execution plan: which `API.md` section belongs to which phase, and how each phase breaks down. `PROJECT.md` §15 wins any conflict about phase boundaries |
-| `docs/STATUS.md` | **Not an authority.** Where the build has got to and what is next — read it first when picking the work back up |
+| `docs/order-system/README.md` | The **order system** — orders, payments, tickets, refunds, the support desk. Wins any conflict inside that scope; §7 lists what comes next |
+| `/api/v1/openapi.json` (Swagger at `/api/v1/docs`) | The REST **contract** as clients see it. Generated from the code: the text lives in `description=` on routes, `Field(description=…)` on schemas, `app/api/openapi_docs.py` (intro, tags) and `app/api/openapi.py` (envelope, errors, security). `tests/test_openapi.py` pins what it promises |
 
-OpenAPI (`/api/v1/openapi.json`) is an **artefact** of `API.md`, never the
-other way round. When the contract changes, `API.md` is edited first.
-
-Picking up work: `STATUS.md` says where the build stopped, `PHASES.md` says
-what comes next and why it belongs to that phase.
+The older documents (`API.md`, `ARCHITECTURE.md`, `PROJECT.md`, `GTS.md`,
+`PHASES.md`, `STATUS.md`) were retired with the order-system rebuild; a
+docstring that still cites an `API.md §` is pointing at history, not at a
+file. When the contract changes, change the route or schema text in the
+same commit — a `#:` comment never reaches Swagger.
 
 ## Workflow rules
 
@@ -94,6 +89,9 @@ providers, notifications and storage each sit behind a port.
 
 ## Layout
 
-Folder tree, module responsibilities and the reasoning behind them:
-ARCHITECTURE.md §4 and §5. The tree maps 1:1 onto the document's sections, so
-a change described in the docs points at exactly one package.
+`app/api/` — the cross-cutting layer (envelope, errors, deps, listing,
+idempotency, OpenAPI); `app/modules/<name>/` — one package per module with
+`router_*.py → service.py → repository.py/models.py` and `schemas.py`;
+`app/providers/` — the ports and adapters for everything outside the process
+(GTS, payments, notifications, social, storage); `app/tasks/` — Celery. Each
+package's module docstring says what it owns and why.

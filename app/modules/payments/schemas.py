@@ -12,7 +12,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 #: A card number is 13–19 digits (ISO/IEC 7812). Spaces and dashes are stripped
 #: before this is applied — people paste what is printed on the card.
@@ -67,28 +67,55 @@ class CardOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    id: uuid.UUID
-    masked_pan: str
-    last4: str
-    brand: str | None
-    expiry_month: int
-    expiry_year: int
-    last_used_at: datetime | None
+    id: uuid.UUID = Field(description="Send as `card_id` when paying.")
+    masked_pan: str = Field(
+        description="First six and last four digits, e.g. `860006******6311`."
+    )
+    last4: str = Field(description="Last four digits, for the card picker.")
+    brand: str | None = Field(
+        description="`uzcard`, `humo`, `visa`, `mastercard`, or null when unknown."
+    )
+    expiry_month: int = Field(description="1–12.")
+    expiry_year: int = Field(description="Four digits, e.g. `2030`.")
+    last_used_at: datetime | None = Field(
+        description="When a payment with this card last landed."
+    )
     created_at: datetime
     updated_at: datetime
 
 
 class CardCreateIn(BaseModel):
-    #: ``hide_input_in_errors`` is not a nicety here. Pydantic records the raw
-    #: input on every ``ValidationError`` — ``input_value='8600…'`` — and it does
-    #: so *before* the value becomes a ``SecretStr``, so the secret type does not
-    #: cover it. The HTTP response only carries ``msg`` and would not leak it,
-    #: but anything that logs the exception or renders its ``str()`` would. A
-    #: regression test pins this.
-    model_config = {"extra": "forbid", "hide_input_in_errors": True}
+    """A card to keep for next time. Saving is local: no charge, no code.
 
-    number: SecretStr
-    expire: SecretStr
+    The number is checked (length, Luhn) and sealed at rest; the answer never
+    carries it. The same card saved twice is a `422` on `number`.
+    """
+
+    # ``hide_input_in_errors`` is not a nicety here. Pydantic records the raw
+    # input on every ``ValidationError`` — ``input_value='8600…'`` — and it does
+    # so *before* the value becomes a ``SecretStr``, so the secret type does not
+    # cover it. The HTTP response only carries ``msg`` and would not leak it,
+    # but anything that logs the exception or renders its ``str()`` would. A
+    # regression test pins this.
+    model_config = {
+        "extra": "forbid",
+        "hide_input_in_errors": True,
+        "json_schema_extra": {
+            "examples": [{"number": "8600 0691 9540 6311", "expire": "03/99"}]
+        },
+    }
+
+    number: SecretStr = Field(
+        description=(
+            "13–19 digits; spaces and dashes are allowed and ignored. "
+            "Luhn-checked. Write-only: never echoed, never logged."
+        ),
+        json_schema_extra={"example": "8600 0691 9540 6311"},
+    )
+    expire: SecretStr = Field(
+        description="Expiry as `MMYY` (`/` allowed: `03/99`). Write-only.",
+        json_schema_extra={"example": "03/99"},
+    )
 
     @field_validator("number")
     @classmethod
@@ -102,12 +129,22 @@ class CardCreateIn(BaseModel):
 
 
 class CardIn(BaseModel):
-    """A card typed at checkout — the same rules as saving one, not stored."""
+    """A card typed at checkout — the same rules as saving one; not stored
+    unless the payment asks for it with `save: true`."""
 
     model_config = {"extra": "forbid", "hide_input_in_errors": True}
 
-    number: SecretStr
-    expire: SecretStr
+    number: SecretStr = Field(
+        description=(
+            "13–19 digits; spaces and dashes are allowed and ignored. "
+            "Luhn-checked. Write-only: never echoed, never logged."
+        ),
+        json_schema_extra={"example": "8600 0691 9540 6311"},
+    )
+    expire: SecretStr = Field(
+        description="Expiry as `MMYY` (`/` allowed: `03/99`). Write-only.",
+        json_schema_extra={"example": "03/99"},
+    )
 
     @field_validator("number")
     @classmethod

@@ -249,14 +249,23 @@ def transition(
 
 
 class Stage(enum.StrEnum):
-    """The three columns collapsed to the one ``status`` a client reads.
+    """The one `status` of an order, as a screen shows it.
 
-    Derived on every read, never stored: the columns are the truth and this
-    is one reading of them, kept on the server so every client reads alike.
-    Six words, because a screen needs no more — what the payment attempt is
-    doing lives in the ``payment`` block, and the raw columns are for staff.
+    * `booked` — the seat is held and not paid; pay before
+      `payment.pay_before`. What the last payment attempt did is in
+      `payment.status`, not here.
+    * `ticket_waiting` — paid; GTS has not issued the ticket yet. Keep polling.
+    * `ticketed` — the tickets are ready (`ticketing.tickets`).
+    * `ticketing_failed` — money was taken and no ticket is coming on its
+      own (GTS refused, staff cancelled a paid order, or a refund is under
+      way). Show `message`; support is involved.
+    * `refunded` — the money went back. Final.
+    * `cancelled` — released before any money moved; `cancel_reason` says
+      whether the customer, staff or the deadline (`expired`) did it.
 
-    Declaration order is the order the panel lists the sentences in.
+    Derived on every read from three internal columns, never stored, so
+    every client reads alike. New values may appear in later releases —
+    treat an unknown one as a generic state.
     """
 
     #: Held and not paid — whatever the last attempt did, the next may pay.

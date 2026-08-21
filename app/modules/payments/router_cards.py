@@ -1,4 +1,4 @@
-"""``/public/profile/cards/`` — API.md §19.
+"""``/public/profile/cards/`` — the customer's saved cards.
 
 The path is a profile path but the module is ``payments``: the row is an
 encrypted payment credential, and everything that writes or spends one lives
@@ -26,24 +26,42 @@ from app.api.deps import (
     current_customer,
 )
 from app.api.envelope import Page, enveloped_router
-from app.api.listing import ListQueryDep
+from app.api.listing import ListQuery, list_query_dep
 from app.db.session import SessionDep
 from app.modules.payments import service
 from app.modules.payments.schemas import CardCreateIn, CardOut
 
 router = enveloped_router(
     prefix="/profile/cards",
-    tags=["public-profile"],
+    tags=["saved-cards"],
     dependencies=[Depends(current_customer)],
 )
 
+CardsListQuery = Depends(
+    list_query_dep(
+        ordering=("created_at", "last_used_at"),
+        default="-created_at",
+        search="the masked number and the brand",
+    )
+)
 
-@router.get("/", summary="Saved payment cards")
+
+@router.get(
+    "/",
+    summary="Saved payment cards",
+    description=(
+        "The customer's saved cards, newest first — masked number, last four "
+        "digits, brand, expiry and when each was last used. Never the number. "
+        "Pay with one by sending its `id` as `card_id` to "
+        "`POST /public/orders/{id}/payment/`."
+    ),
+    response_description="A page of cards.",
+)
 async def list_cards(
     customer: CurrentCustomer,
     session: SessionDep,
     pagination: PaginationDep,
-    query: ListQueryDep,
+    query: ListQuery = CardsListQuery,
 ) -> Page[CardOut]:
     return await service.list_cards(session, customer.id, pagination, query)
 
@@ -52,6 +70,14 @@ async def list_cards(
     "/",
     status_code=201,
     summary="Save a card",
+    description=(
+        "Keeps a card for next time. Saving is local: no provider is called, "
+        "no charge, no code — the card is checked (13–19 digits, Luhn, `MMYY`) "
+        "and sealed at rest. The answer never carries the number. The same "
+        "card twice is a `422` on `number`. A card can also be saved while "
+        "paying, with `save: true`."
+    ),
+    response_description="The saved card, masked.",
     dependencies=[Depends(RateLimit("payment"))],
 )
 async def add_card(
@@ -60,14 +86,27 @@ async def add_card(
     return await service.add_card(session, customer.id, data)
 
 
-@router.get("/{id}/", summary="One saved card")
+@router.get(
+    "/{id}/",
+    summary="One saved card",
+    description="One card, masked. Another customer's card is a `404`.",
+)
 async def get_card(
     id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
 ) -> CardOut:
     return await service.get_card(session, customer.id, id)
 
 
-@router.delete("/{id}/", status_code=204, summary="Forget a card")
+@router.delete(
+    "/{id}/",
+    status_code=204,
+    summary="Forget a card",
+    description=(
+        "Removes the card from the customer's list and erases the sealed "
+        "number. `204` with no body. Payments already made with it are "
+        "unaffected."
+    ),
+)
 async def delete_card(
     id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
 ) -> Response:

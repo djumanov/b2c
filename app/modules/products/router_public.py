@@ -50,8 +50,9 @@ from fastapi import Depends, Path
 
 from app.api.deps import CurrentCustomer, LanguageDep, OptionalCustomer, RateLimit
 from app.api.envelope import enveloped_router
-from app.api.errors import AppError, NotFound, UpstreamTimeout
+from app.api.errors import AppError, ErrorCode, NotFound, UpstreamTimeout
 from app.api.idempotency import IdempotencyKey
+from app.api.openapi import error_responses
 from app.db.session import SessionDep
 from app.modules.orders import service as orders_service
 from app.modules.orders.schemas import BookingResultOut
@@ -175,6 +176,34 @@ async def verify(
     "/booking/",
     status_code=201,
     summary="Book a chosen offer",
+    description=(
+        "Books the verified offer at GTS and records the order. **Nothing is "
+        "charged**: GTS holds the seat until `payment.pay_before`; pay "
+        "through `POST /public/orders/{id}/payment/` and "
+        "`…/payment/confirm/`. The answer is the order in the same shape "
+        "`GET /public/orders/{id}/` returns — `order.status` is `booked`, "
+        "`payment.status` is `pending`.\n\n"
+        "Idempotent: the same body within 24 hours answers with the order it "
+        "already created rather than booking twice; send a fresh "
+        "`Idempotency-Key` for a deliberate second booking."
+    ),
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.OFFER_EXPIRED,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict="An identical booking request is still being processed.",
+        offer_expired="The offer is no longer available — search again.",
+        upstream_error=(
+            "GTS refused the booking; its reason is in `meta.upstream`. "
+            "**No order is created.**"
+        ),
+        upstream_timeout=(
+            "GTS did not answer in time. The outcome is unknown — GTS may be "
+            "holding a seat — so no order is created and the request is not "
+            "retried automatically; check with support before booking again."
+        ),
+    ),
     dependencies=[Depends(RateLimit("payment"))],
     openapi_extra=FLIGHT_BOOKING,
 )
