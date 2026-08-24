@@ -168,6 +168,15 @@ class Order(Entity):
     ticketed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # --- the price, checked and confirmed before payment ---------------------
+    #: When GTS last priced the held order again (``reprice_check``). NULL
+    #: until the customer's app asks; the confirm step refuses without it.
+    repriced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the customer accepted ``amount`` and GTS confirmed it
+    #: (``reprice_confirm``) — what ticketing will debit. Payment refuses
+    #: without it; a later reprice that finds another price clears it.
+    price_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # --- ticketing bookkeeping -----------------------------------------------
     #: When we last asked GTS to issue the ticket — the clock the sweep's
     #: waiting rules run on. NULL until the first request.

@@ -269,6 +269,57 @@ def mock_gts_order(
     )
 
 
+def gts_price(price: float = 287500.0, currency: str = "UZS") -> dict[str, Any]:
+    """``data`` of a reprice answer, as GTS's documentation draws it."""
+    return {
+        "price_info": {
+            "price": price,
+            "currency": currency,
+            "fee_amount": 0,
+            "commission_amount": 0,
+        },
+        "price_details": [],
+    }
+
+
+def _mock_gts_price_step(
+    path: str, data: dict[str, Any] | None, *, error: str | None
+) -> Any:
+    import respx
+
+    if error is not None:
+        body: dict[str, Any] = {
+            "status": "error",
+            "message": error,
+            "code": -104,
+            "data": None,
+            "errors": [],
+        }
+    else:
+        body = {
+            "status": "success",
+            "message": "",
+            "code": 200,
+            "data": data if data is not None else gts_price(),
+            "errors": [],
+        }
+    return respx.post(f"{GTS}{path}").mock(return_value=httpx.Response(200, json=body))
+
+
+def mock_gts_reprice_check(
+    data: dict[str, Any] | None = None, *, error: str | None = None
+) -> Any:
+    """``POST /v1/content/reprice_check/``: today's price, or GTS's refusal."""
+    return _mock_gts_price_step("/v1/content/reprice_check/", data, error=error)
+
+
+def mock_gts_reprice_confirm(
+    data: dict[str, Any] | None = None, *, error: str | None = None
+) -> Any:
+    """``POST /v1/content/reprice_confirm/``: the confirmed price, or a refusal."""
+    return _mock_gts_price_step("/v1/content/reprice_confirm/", data, error=error)
+
+
 # --- a fake Payme: one URL, answered per JSON-RPC method -----------------------------
 
 PAYME_URL = "https://checkout.test.paycom.uz/api"
@@ -394,7 +445,12 @@ def mock_payme(script: dict[str, Any] | None = None) -> PaymeCalls:
 async def make_order(
     session: AsyncSession, customer: Customer, **overrides: Any
 ) -> Any:
-    """A booked, unpaid order a day before its deadline — the payment tests' start."""
+    """A booked, unpaid order a day before its deadline — the payment tests' start.
+
+    Its price is already checked and confirmed with GTS (the two steps the
+    customer's app takes before the payment screen); pass
+    ``price_confirmed_at=None`` for an order that has not been through them.
+    """
     from datetime import timedelta
 
     from app.modules.orders.models import Order
@@ -414,6 +470,8 @@ async def make_order(
         "currency": "UZS",
         "route_summary": "TAS-VKO",
         "ticket_time_limit_at": utcnow() + timedelta(days=1),
+        "repriced_at": utcnow(),
+        "price_confirmed_at": utcnow(),
         "gts_response": {"order_number": ORDER_NUMBER},
     }
     fields.update(overrides)

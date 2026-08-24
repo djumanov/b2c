@@ -33,11 +33,18 @@ status=cancelled payment=pending                     → to'lanmasdan bekor bo'l
 ```
 
 Yordamchi ustunlar: `cancel_reason` (`customer` · `expired` · `staff`),
-`paid_at`, `ticketed_at`, `cancelled_at`, `ticketing_requested_at`
+`paid_at`, `ticketed_at`, `cancelled_at`, `repriced_at` (GTS narxni oxirgi
+marta qayta hisoblagan vaqt — `reprice_check`), `price_confirmed_at` (mijoz
+narxni qabul qilib GTS tasdiqlagan vaqt — `reprice_confirm`; to'lov shusiz
+rad etiladi), `ticketing_requested_at`
 (GTS'dan chipta so'ralgan vaqt), `gts_checked_at` (sweep oxirgi marta
 GTS'dan o'qigan vaqt), `ticketing_attempts` (so'rov necha marta yuborilgan),
 `ticketing_error` (GTS'ning xato matni). `gts_status` va `gts_response` —
-GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi.
+GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi. `amount` ham
+har o'qishda yangilanadi — **tasdiqlangan narx bundan mustasno**: `reprice_confirm`
+GTS'ning keyingi va yakuniy so'zi, order'ning o'z `price_info`si esa bron
+paytidagi narx; farq bo'lsa log'ga yoziladi (`gts_price_differs_from_confirmed`),
+mijoz qabul qilgan narx yechiladi.
 
 `failed` (payment) "oxirgi urinish muvaffaqiyatsiz" degani — yangi urinish
 ochilishi mumkin. Refund holatlarini **support qo'lda** belgilaydi; pul
@@ -147,6 +154,35 @@ kod ustida nima bo'lishidan qat'i nazar.
 
 Qadamlar (`orders/service.py`):
 
+0. **Narx — `POST /public/orders/{id}/reprice/` va `POST
+   /public/orders/{id}/reprice/confirm/`** (body yo'q). GTS'ning o'z
+   hayot sikli (`docs/gts-api-v1.4.pdf`, 4-bet): `booking → reprice_check →
+   reprice_confirm → ticketing`; jonli server ikki narx qadamisiz ticketing'ni
+   rad etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24).
+   Ikkalasini **mijoz ilovasi** to'lov ekranidan oldin chaqiradi:
+   - `reprice/` → `POST /v1/content/reprice_check/ {order_number}` →
+     `data.price_info` (`FlightAdapter.reprice`). GTS chaqiruvi qulfdan
+     **oldin**. Qulf ostida: order payable (`_require_payable`), `confirming`
+     urinish bo'lsa 409. Narx saqlangandan **farq qilsa** → `amount/currency`
+     yangilanadi, event `price.repriced {from, to}`, `price_confirmed_at`
+     tozalanadi, ochiq `started` urinish → `abandoned` (eski summa uchun
+     yuborilgan kod yangi summani tasdiqlay olmasligi kerak). Bir xil bo'lsa
+     faqat `repriced_at` bosiladi. Javob — order (`payment.amount` bugungi narx,
+     `payment.price_confirmed`). Takrorlash mumkin.
+   - `reprice/confirm/` → `POST /v1/content/reprice_confirm/ {order_number}`
+     (`FlightAdapter.confirm_price`). `repriced_at` bo'sh bo'lsa → 409 (GTS
+     tartibi: avval check). GTS javobidagi narx — **yakuniy** (ticketing shuni
+     yechadi): check'dan farq qilsa ham shu saqlanadi (`price.repriced` event +
+     WARNING `gts_confirmed_other_price`), keyin `price_confirmed_at = now`,
+     event `price.confirmed {amount, currency}`. Javob — order, mijoz to'lov
+     ekranida `payment.amount`ni ko'radi.
+   - GTS rad etsa (`status: error`) → 502, GTS matni `meta.upstream`da, hech
+     narsa yozilmaydi; narxsiz javob → 502 "carried no price". Ikkalasi
+     `RateLimit("payment")` ostida, idempotency kaliti yo'q (takrorlanadigan).
+   - **`payment/` `price_confirmed_at` bo'sh orderni 409 bilan rad etadi**
+     ("The price has not been confirmed") — qulfdan oldin ham, qulf ostida ham.
+   - Ticketing (`§4b`) o'zgarmagan: narx qadamlari to'lovdan oldin bo'lib
+     o'tgan, `ticket()` faqat `POST /v1/content/ticketing/` yuboradi.
 1. **`POST /public/orders/{id}/payment/`** — body `{method, card_id}` yoki
    `{method, card: {number, expire}}` (karta — aynan bittasi). `method` —
    **majburiy**, site-config `payment_methods` dagi `code` (masalan `payme`);
@@ -409,7 +445,8 @@ status o'zgarishi va izoh).
   va `FIELDS` jadvallariga bir qator (Payme namuna).
 - Provider refund API (`refund()` porti) — hozir support provider kabinetida
   qaytaradi va `refund/` bilan belgilaydi.
-- `reprice_check` — ticketing o'zi reprice qiladimi, GTS bilan aniqlash kerak.
+- ~~`reprice_check`~~ — §4a 0-qadam: `reprice/` + `reprice/confirm/`, mijoz
+  ilovasi to'lovdan oldin chaqiradi; `payment/` tasdiqlanmagan narxni rad etadi.
 - ~~Contract test sweep~~ — `tests/test_openapi.py` (trailing slash, envelope,
   xato shakllari, ikki token sxemasi, har endpoint tavsifi); CLAUDE.md jadvali
   tozalandi.

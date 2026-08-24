@@ -24,6 +24,8 @@ SCHEMAS: dict[str, Any] = SCHEMA["components"]["schemas"]
 DOCUMENTED: tuple[tuple[str, str], ...] = (
     ("/api/v1/public/orders/", "get"),
     ("/api/v1/public/orders/{id}/", "get"),
+    ("/api/v1/public/orders/{id}/reprice/", "post"),
+    ("/api/v1/public/orders/{id}/reprice/confirm/", "post"),
     ("/api/v1/public/orders/{id}/payment/", "post"),
     ("/api/v1/public/orders/{id}/payment/resend/", "post"),
     ("/api/v1/public/orders/{id}/payment/confirm/", "post"),
@@ -153,6 +155,17 @@ def test_every_error_is_the_envelope_and_never_fastapis_shape() -> None:
 
 
 def test_the_money_endpoints_list_the_errors_they_raise() -> None:
+    for path in (
+        "/api/v1/public/orders/{id}/reprice/",
+        "/api/v1/public/orders/{id}/reprice/confirm/",
+    ):
+        price = PATHS[path]["post"]["responses"]
+        assert {"409", "502", "504"} <= set(price), path
+        codes = price["409"]["content"]["application/json"]["schema"]["properties"][
+            "errors"
+        ]["items"]["properties"]["code"]["enum"]
+        assert set(codes) == {"conflict"}, path
+
     start = PATHS["/api/v1/public/orders/{id}/payment/"]["post"]["responses"]
     assert {"409", "502", "504"} <= set(start)
     codes = start["409"]["content"]["application/json"]["schema"]["properties"][

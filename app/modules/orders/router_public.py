@@ -10,10 +10,13 @@ saved-cards arrangement.
 endpoint, and the sweep — not the read — is what asks GTS; two polls racing a
 sweep must not be able to move an order twice.
 
-Paying is three ``POST``s on the order — ``payment/`` sends the code,
-``payment/resend/`` sends it again for the same attempt, ``payment/confirm/``
-charges with it — all three under the tight ``payment`` rate limit and all
-three idempotent: a repeat answers with the order as it stands now, and
+Paying begins with the price — ``reprice/`` asks GTS what the hold costs
+today, ``reprice/confirm/`` accepts it; ``payment/`` refuses until it has
+been — and is then three ``POST``s on the order — ``payment/`` sends the
+code, ``payment/resend/`` sends it again for the same attempt,
+``payment/confirm/`` charges with it — all under the tight ``payment`` rate
+limit, the three payment steps idempotent: a repeat answers with the order
+as it stands now, and
 never reaches the provider twice. The row lock and the attempt table are
 what make the charge single; the idempotency key only spares the provider a
 call. Every failure releases the key — nothing is charged at ``start`` or
@@ -112,10 +115,104 @@ async def get_order(
 
 
 @router.post(
+    "/{id}/reprice/",
+    summary="Pay — step 0: check today's price",
+    description=(
+        "Asks GTS what the held order costs right now (`reprice_check`) and "
+        "answers with the order — `payment.amount` is that price. GTS "
+        "requires this and `reprice/confirm/` before it will issue a "
+        "ticket, so `payment/` refuses an order whose price is not "
+        "confirmed (`payment.price_confirmed`).\n\n"
+        "Show `payment.amount` to the customer. If it differs from what was "
+        "shown at booking, `payment.price_confirmed` is `false` again and "
+        "any code already sent for the old amount is void — call "
+        "`reprice/confirm/` once the customer accepts, then start the "
+        "payment. Repeatable: checking changes nothing on GTS's side.\n\n"
+        "Nothing is charged here. Under the `payment` rate limit."
+    ),
+    response_description=(
+        "The order with today's price in `payment.amount` and "
+        "`payment.price_confirmed` saying whether it still needs confirming."
+    ),
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict=(
+            "The order is not payable (cancelled, already paid, being "
+            "refunded or ticketed), or a charge for it is being confirmed "
+            "right now."
+        ),
+        upstream_error=(
+            "GTS could not price the order — released, unknown, or an "
+            "answer without a price; GTS's words are in `meta.upstream`."
+        ),
+        upstream_timeout="GTS did not answer.",
+    ),
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def reprice_order(
+    id: uuid.UUID,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    language: LanguageDep,
+) -> BookingResultOut:
+    return await service.reprice_order(
+        session, customer.id, id, language=language.requested
+    )
+
+
+@router.post(
+    "/{id}/reprice/confirm/",
+    summary="Pay — step 0b: accept the price",
+    description=(
+        "The customer accepted the price `reprice/` showed: tells GTS so "
+        "(`reprice_confirm`) and unlocks `payment/`. Refused (`409`) before "
+        "`reprice/` has been called for this order.\n\n"
+        "GTS answers with the price it confirmed, and that is the one "
+        "stored and charged — read `payment.amount` from the answer and "
+        "show it on the payment screen; it is what the customer pays and "
+        "what GTS will debit at ticketing. `payment.price_confirmed` is now "
+        "`true`. Repeatable."
+    ),
+    response_description=(
+        "The order with the confirmed price in `payment.amount` and "
+        "`payment.price_confirmed = true`."
+    ),
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict=(
+            "`reprice/` has not been called yet, the order is not payable, "
+            "or a charge for it is being confirmed right now."
+        ),
+        upstream_error=(
+            "GTS refused to confirm the price; GTS's words are in "
+            "`meta.upstream`. Check it again with `reprice/`."
+        ),
+        upstream_timeout="GTS did not answer.",
+    ),
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def confirm_price(
+    id: uuid.UUID,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    language: LanguageDep,
+) -> BookingResultOut:
+    return await service.confirm_price(
+        session, customer.id, id, language=language.requested
+    )
+
+
+@router.post(
     "/{id}/payment/",
     summary="Pay — step 1: choose the card, receive the code",
     description=(
-        "Starts a payment for a `booked`, unpaid order. Send `method` — a "
+        "Starts a payment for a `booked`, unpaid order whose price is "
+        "confirmed (`reprice/` then `reprice/confirm/`; otherwise `409`). "
+        "Send `method` — a "
         "`code` from site-config `payment_methods` (the methods this "
         "installation has switched on; anything else is a `422` naming "
         "`method`) — and **either** `card_id` (a saved card) **or** `card` "
@@ -146,8 +243,9 @@ async def get_order(
         ErrorCode.UPSTREAM_TIMEOUT,
         conflict=(
             "The order is not payable (cancelled, already paid, being "
-            "refunded or ticketed), a charge for it is being confirmed right "
-            "now, or an identical request is still in flight."
+            "refunded or ticketed), its price is not confirmed yet, a charge "
+            "for it is being confirmed right now, or an identical request is "
+            "still in flight."
         ),
         upstream_error=(
             "GTS could not be read, GTS reported no price, the provider "

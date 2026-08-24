@@ -42,6 +42,7 @@ from app.providers.products.base import (
     SEARCH_IN_PROCESS,
     BookedOrder,
     FlowStep,
+    OrderPrice,
     OrderSnapshot,
     ProductCode,
 )
@@ -247,6 +248,16 @@ def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
     return amount, _text(source.get("currency"))
 
 
+def _order_price(data: dict[str, Any], *, step: str) -> OrderPrice:
+    """The price a reprice answer carries — ``data.price_info``, read like an
+    order's. No price is no answer: the price is what was asked for."""
+    amount, currency = _booking_amount(data)
+    if amount is None or currency is None:
+        logger.warning("gts_reprice_unreadable", step=step, keys=sorted(data))
+        raise UpstreamError(f"the GTS {step} answer carried no price")
+    return OrderPrice(amount=amount, currency=currency, raw=data)
+
+
 def _route_summary(order: dict[str, Any]) -> str | None:
     """``routes[].direction`` joined — ``"TAS-IST, IST-TAS"`` for a round trip.
 
@@ -449,6 +460,34 @@ class FlightAdapter:
             offer_id=str(payload["offer_id"]),
             **_snapshot(order_number, order).model_dump(),
         )
+
+    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice:
+        """``POST /v1/content/reprice_check/`` — the order's price today.
+
+        GTS refuses to ticket a booking that was not priced again first
+        ("Перед выпиской билета выполните reprice_check", live 2026-08-24),
+        so this and ``confirm_price`` sit between booking and payment. Bare
+        ``post``: the answer is a verdict, ``data.price_info`` or a refusal.
+        """
+        data = await client.post(
+            "/v1/content/reprice_check/",
+            json={"order_number": order_number},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        return _order_price(data, step="reprice_check")
+
+    async def confirm_price(self, client: GtsClient, order_number: int) -> OrderPrice:
+        """``POST /v1/content/reprice_confirm/`` — accept today's price.
+
+        Answers with a price too, and that one is GTS's final word: it is what
+        ticketing will debit, so the orders module stores it over the check's.
+        """
+        data = await client.post(
+            "/v1/content/reprice_confirm/",
+            json={"order_number": order_number},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+        return _order_price(data, step="reprice_confirm")
 
     async def ticket(self, client: GtsClient, order_number: int) -> OrderSnapshot:
         """``POST /v1/content/ticketing/`` — issue the ticket against our deposit.

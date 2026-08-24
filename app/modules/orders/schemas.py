@@ -417,6 +417,13 @@ class PaymentOut(BaseModel):
         )
     )
     amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
+    price_confirmed: bool = Field(
+        description=(
+            "`true` once `reprice/confirm/` accepted `amount` with GTS — "
+            "step 1 of payment refuses until then. A later `reprice/` that "
+            "finds a different price sets it back to `false`."
+        )
+    )
     pay_before: datetime | None = Field(
         description="Pay before this moment or GTS releases the seat."
     )
@@ -462,6 +469,7 @@ class PaymentOut(BaseModel):
         return cls(
             status=cast(PaymentViewStatus, status),
             amount=_money(order),
+            price_confirmed=order.price_confirmed_at is not None,
             pay_before=order.ticket_time_limit_at,
             payment_id=attempt.id if attempt else None,
             provider=attempt.provider if attempt else None,
@@ -546,6 +554,7 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
     "payment": {
         "status": "awaiting_otp",
         "amount": {"amount": "287500.00", "currency": "UZS"},
+        "price_confirmed": True,
         "pay_before": "2026-08-20T06:53:12Z",
         "payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
         "provider": "payme",

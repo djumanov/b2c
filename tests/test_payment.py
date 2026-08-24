@@ -165,8 +165,9 @@ async def test_start_with_saved_card_creates_started_attempt_and_phone_hint(
     # The reference is stored sealed, never as the provider spelled it.
     assert attempt.provider_reference not in (None, "ref-1")
     assert attempt.key_version == 1
+    # The confirmed price is charged — not the booking's own ``price_info``.
     assert fake_provider.calls == [
-        ("start", {"last4": "1111", "amount": "287500.00", "order_ref": str(order.id)})
+        ("start", {"last4": "1111", "amount": "20.00", "order_ref": str(order.id)})
     ]
     assert await _events(db_session, order) == ["payment.started"]
 
@@ -199,14 +200,15 @@ async def test_start_with_raw_card_never_stores_or_logs_the_number(
 
 
 @respx.mock
-async def test_start_refreshes_amount_and_deadline_from_gts(
+async def test_start_refreshes_the_order_from_gts_but_charges_the_confirmed_price(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
     fake_provider: FakeProvider,
 ) -> None:
-    """GTS's price is the one it will debit at ticketing, so it wins."""
+    """The read-back refreshes the hold; the price is the one GTS confirmed
+    at ``reprice/confirm/`` — its later word than the booking's ``price_info``."""
     mock_gts_signin()
     mock_gts_order(gts_order_body())
     order = await make_order(db_session, customer, amount=20, gts_response={})
@@ -215,11 +217,12 @@ async def test_start_refreshes_amount_and_deadline_from_gts(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["order"]["amount"] == {"amount": "287500.00", "currency": "UZS"}
-    assert data["payment"]["amount"] == {"amount": "287500.00", "currency": "UZS"}
+    assert data["order"]["amount"] == {"amount": "20.00", "currency": "UZS"}
+    assert data["payment"]["amount"] == {"amount": "20.00", "currency": "UZS"}
+    assert data["payment"]["price_confirmed"] is True
     assert data["order_data"]["gds_pnr"] == "UBPLKW"
     (attempt,) = await _attempts(db_session, order)
-    assert str(attempt.amount) == "287500.00"
+    assert str(attempt.amount) == "20.00"
 
 
 @respx.mock
@@ -1493,7 +1496,7 @@ async def test_payme_charges_and_tickets_end_to_end(
     mock_gts_ticketing()
     payme = mock_payme()
     await _enable_payme(client, staff_headers)
-    order = await make_order(db_session, customer)
+    order = await make_order(db_session, customer, amount="287500.00")
 
     started = await _start(client, order, customer_headers, method="payme")
 
