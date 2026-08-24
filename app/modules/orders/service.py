@@ -91,7 +91,11 @@ from app.modules.orders.schemas import (
 )
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
-from app.providers.payments.base import PaymentDeclined, PaymentOutcome
+from app.providers.payments.base import (
+    PaymentDeclined,
+    PaymentOutcome,
+    PaymentProvider,
+)
 from app.providers.products import gts_order
 from app.providers.products.base import (
     BookedOrder,
@@ -490,7 +494,7 @@ async def start_payment(
     the partial unique index instead of sending a second code.
     """
     # Everything that talks to the outside world, before any lock.
-    provider = await payments_service.payment_provider(session)
+    provider = await payments_service.payment_provider(session, method=data.method)
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
     _require_payable(order)
@@ -637,8 +641,18 @@ async def confirm_payment(
     unknown answer leaves the attempt ``confirming``; the sweep asks the
     provider what became of it. A repeat of this call while the attempt is
     ``confirming`` is a read, not a second charge.
+
+    The provider is the one that **started** the attempt (its code is on the
+    row), resolved from an unlocked read before the lock is taken — resolving
+    commits. The locked re-read then re-checks the id, so a start that
+    supersedes this attempt between the two reads turns into the ``409``, not
+    into a charge through the wrong adapter.
     """
-    provider = await payments_service.payment_provider(session)
+    order = await _owned(session, customer_id, order_id)
+    probe = await _open_attempt(session, order.id)
+    if probe is None or probe.id != data.payment_id:
+        raise Conflict("This payment is not open — start the payment again")
+    provider = await payments_service.provider_for_attempt(session, code=probe.provider)
 
     order = await _owned_locked(session, customer_id, order_id)
     attempt = await _open_attempt(session, order.id, for_update=True)
@@ -646,23 +660,22 @@ async def confirm_payment(
         raise Conflict("This payment is not open — start the payment again")
     if attempt.status == AttemptStatus.CONFIRMING:
         return await _present(session, order, language=language)
-    if attempt.provider != provider.code:
-        # The panel switched providers while the code was being typed. The
-        # provider that sent it charged nothing at ``start``, so the attempt
-        # is closed here and the next ``payment/`` opens one with the
-        # provider that charges now — a reference is never handed to an
-        # adapter that did not write it.
+    if provider is None:
+        # The panel switched this method off while the code was being typed.
+        # Nothing was charged at ``start``, so the attempt is closed here and
+        # the next ``payment/`` opens one with a method the panel still backs
+        # — a reference is never handed to an adapter that did not write it.
         attempt.status = AttemptStatus.ABANDONED
         await session.commit()
         logger.warning(
-            "payment_provider_changed",
+            "payment_method_unavailable",
             order_id=str(order.id),
             attempt=str(attempt.id),
-            started_with=attempt.provider,
-            active=provider.code,
+            provider=attempt.provider,
         )
         raise Conflict(
-            "This payment was started with another provider — start the payment again"
+            "The payment method this attempt was started with is no longer "
+            "enabled — start the payment again"
         )
     if attempt.provider_reference is None:
         raise Conflict("This payment was not started — start the payment again")
@@ -1036,12 +1049,12 @@ async def settle_stale_confirmations(session: AsyncSession) -> int:
     customer is not locked out of paying — logged at ERROR because a human
     should look at the provider's panel. Returns how many were settled.
 
-    The provider is resolved only once there is something to ask, and a
-    provider that cannot be resolved — none enabled, settings unfinished —
-    ends this question, not the sweep: the ticketing and expiry passes
-    behind it must still run. An attempt is asked about **only** from the
-    provider that started it; one started elsewhere is left alone and
-    reported, because that provider may have charged.
+    An attempt is asked about **only** by the provider that started it,
+    resolved from the code on its row. One whose provider is gone — switched
+    off, adapter not in this release — is left alone and reported, because
+    that provider may have charged; a human settles it. A resolution failure
+    ends that attempt's question, not the sweep: the ticketing and expiry
+    passes behind it must still run.
     """
     now = utcnow()
     rows = (
@@ -1057,23 +1070,25 @@ async def settle_stale_confirmations(session: AsyncSession) -> int:
     ).all()
     if not rows:
         return 0
-    try:
-        provider = await payments_service.payment_provider(session)
-    except UpstreamError as exc:
-        logger.error("payment_provider_unavailable", stale=len(rows), error=str(exc))
-        return 0
+    # Resolved per attempt (its own provider, never "the active one") and
+    # before any settle takes a lock — resolving commits.
+    providers: dict[str, PaymentProvider | None] = {}
+    for code in {probe.provider for probe in rows}:
+        providers[code] = await payments_service.provider_for_attempt(
+            session, code=code
+        )
     settled = 0
     for probe in rows:
         request_id_var.set(new_request_id())
+        provider = providers[probe.provider]
         if probe.provider_reference is None:
             outcome = PaymentOutcome("failed", error="no provider reference")
-        elif probe.provider != provider.code:
+        elif provider is None:
             logger.error(
-                "payment_provider_mismatch",
+                "payment_provider_unavailable",
                 order_id=str(probe.order_id),
                 attempt=str(probe.id),
-                started_with=probe.provider,
-                active=provider.code,
+                provider=probe.provider,
             )
             continue
         else:
@@ -1343,16 +1358,18 @@ async def sync_order(
 
     attempt = await _open_attempt(session, order.id)
     if attempt is not None and attempt.status == AttemptStatus.CONFIRMING:
-        provider = await payments_service.payment_provider(session)
-        if attempt.provider != provider.code:
+        provider = await payments_service.provider_for_attempt(
+            session, code=attempt.provider
+        )
+        if provider is None:
             # Only the provider that started a charge may say what became of
-            # it; the one that charges now never wrote this reference.
+            # it, and that provider is gone — it may have charged, so the
+            # attempt is left for a human, not settled blind.
             logger.error(
-                "payment_provider_mismatch",
+                "payment_provider_unavailable",
                 order_id=str(order.id),
                 attempt=str(attempt.id),
-                started_with=attempt.provider,
-                active=provider.code,
+                provider=attempt.provider,
             )
         elif attempt.provider_reference is not None:
             outcome = await provider.status(

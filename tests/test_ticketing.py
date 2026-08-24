@@ -32,7 +32,7 @@ from tests.conftest import (
 pytestmark = pytest.mark.usefixtures("gts_credential")
 
 ORDERS_URL = "/api/v1/public/orders/"
-RAW_CARD = {"card": {"number": "4111111111111111", "expire": "1230"}}
+RAW_CARD = {"method": "fake", "card": {"number": "4111111111111111", "expire": "1230"}}
 TICKET = "7653081297644"
 
 

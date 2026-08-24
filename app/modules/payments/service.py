@@ -15,11 +15,12 @@ Two rules that shape the code below:
   fills the provider's card step server-side when the client sends a
   ``card_id``, and its result must never be logged.
 
-The module also answers the one question the charge step asks of settings:
-**which provider charges** (``payment_provider``). The orders module owns the
-charge itself — the attempt row, the lock, the lifecycle — and comes here only
-for the card and the provider, so the card number crosses exactly one module
-boundary, on its way to the provider and nowhere else.
+The module also answers the two questions the charge step asks of settings:
+**which provider the customer's ``method`` names** (``payment_provider``) and
+**which provider started an attempt** (``provider_for_attempt``). The orders
+module owns the charge itself — the attempt row, the lock, the lifecycle — and
+comes here only for the card and the provider, so the card number crosses
+exactly one module boundary, on its way to the provider and nowhere else.
 """
 
 import uuid
@@ -51,7 +52,7 @@ from app.modules.payments.models import CustomerCard
 from app.modules.payments.schemas import CardCreateIn, CardIn, CardOut
 from app.providers import payments as payment_providers
 from app.providers.payments.base import CardDetails, PaymentProvider
-from app.providers.payments.sandbox import SandboxProvider
+from app.providers.payments.sandbox import SANDBOX_CODE, SandboxProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -259,34 +260,94 @@ async def mark_card_used(
         card.last_used_at = utcnow()
 
 
-async def payment_provider(session: AsyncSession) -> PaymentProvider:
-    """The provider that charges on this installation.
+async def _configured_providers(
+    session: AsyncSession,
+) -> list[integrations_service.ConfiguredPaymentProvider]:
+    """The panel's enabled, credentialed rows — committed away from any lock.
 
-    In order: a test's pinned provider; the provider the panel enabled, if
-    this release ships its adapter; the sandbox, when ``DEBUG`` is on and no
-    real provider is enabled — never otherwise, so a staging database copied
-    to production cannot carry a fake provider with it. Anything else is a
-    ``502``: the installation cannot take money yet.
-
-    **Call it before taking a row lock.** Reading the panel's rows commits
-    the session when one is open (``integrations.service``), and a commit in
+    Reading the rows can seed missing ones (``integrations.service``), so the
+    read is followed by a commit when a transaction is open; both resolvers
+    below therefore **must be called before taking a row lock** — a commit in
     the middle of a locked transaction quietly drops the lock.
+    """
+    configured = await integrations_service.payment_providers(session)
+    if session.in_transaction():
+        await session.commit()
+    return configured
+
+
+async def payment_provider(session: AsyncSession, *, method: str) -> PaymentProvider:
+    """The provider the customer's ``method`` names — the start-side question.
+
+    ``method`` is a ``code`` from site-config ``payment_methods``; there is no
+    default and no fallback. In order: a test's pinned provider (its code is
+    the whole choice); a panel-enabled provider whose adapter this release
+    ships; the sandbox, when ``DEBUG`` is on and no real provider is enabled —
+    never otherwise, so a staging database copied to production cannot carry a
+    fake provider with it.
+
+    Failure shapes: a method the installation has not enabled is a ``422`` on
+    ``method`` — the client offered a button the panel does not back. Nothing
+    enabled at all is a ``502``: the installation cannot take money yet,
+    whatever the client sends. **Call it before taking a row lock** (see
+    ``_configured_providers``).
     """
     pinned = payment_providers.get_override()
     if pinned is not None:
+        if method != pinned.code:
+            raise ValidationFailed(
+                "This payment method is not enabled on this installation",
+                field="method",
+            )
         return pinned
-    configured = await integrations_service.active_payment_provider(session)
-    if configured is not None:
-        factory = payment_providers.ADAPTERS.get(configured.code)
+    configured = await _configured_providers(session)
+    if not configured:
+        if settings.debug and method == SANDBOX_CODE:
+            return SandboxProvider()
+        if settings.debug:
+            raise ValidationFailed(
+                "This payment method is not enabled on this installation",
+                field="method",
+            )
+        raise UpstreamError("no payment provider is configured on this installation")
+    for row in configured:
+        if row.code.value != method:
+            continue
+        factory = payment_providers.ADAPTERS.get(row.code)
         if factory is None:
             raise UpstreamError(
-                f"payment provider {configured.code.value} is not available "
-                "in this release"
+                f"payment provider {row.code.value} is not available in this release"
             )
-        return factory(configured.credentials)
-    if settings.debug:
-        return SandboxProvider()
-    raise UpstreamError("no payment provider is configured on this installation")
+        return factory(row.credentials)
+    raise ValidationFailed(
+        "This payment method is not enabled on this installation", field="method"
+    )
+
+
+async def provider_for_attempt(
+    session: AsyncSession, *, code: str
+) -> PaymentProvider | None:
+    """The provider that started an attempt — the settle-side question.
+
+    Only the provider that wrote an attempt's reference may be asked what
+    became of it, so this resolves by the attempt's stored ``code`` and
+    answers ``None`` when that provider is gone — switched off, or an adapter
+    this release does not ship. The callers (confirm, the sweep, sync) each
+    have their own way to say "cannot settle here"; an exception would fit
+    none of them. **Call it before taking a row lock** (see
+    ``_configured_providers``).
+    """
+    pinned = payment_providers.get_override()
+    if pinned is not None:
+        return pinned if pinned.code == code else None
+    if code == SANDBOX_CODE:
+        return SandboxProvider() if settings.debug else None
+    for row in await _configured_providers(session):
+        if row.code.value != code:
+            continue
+        factory = payment_providers.ADAPTERS.get(row.code)
+        return None if factory is None else factory(row.credentials)
+    return None
 
 
 # --- removing ---------------------------------------------------------------------
@@ -329,6 +390,7 @@ __all__ = [
     "list_cards",
     "mark_card_used",
     "payment_provider",
+    "provider_for_attempt",
     "remember_card",
     "reveal_card",
 ]

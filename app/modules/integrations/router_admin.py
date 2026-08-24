@@ -171,8 +171,9 @@ payments_router = enveloped_router(
     description=(
         "Every provider this release knows, whether the installation uses it "
         "or not. `fields` is the form the adapter asks for; `credentials` is "
-        "what is stored, secret values masked. At most one provider is "
-        "`enabled` — that is the one that charges."
+        "what is stored, secret values masked. Several may be `enabled` at "
+        "once — the customer picks one by `method` when paying — and "
+        "site-config `payment_methods` lists exactly those."
     ),
     response_description="One row per provider code.",
 )
@@ -201,8 +202,9 @@ async def get_payment_provider(
         "back from `GET` is ignored, so a form can resend what it received. "
         "For a provider with `fields`, an unknown key, a `choice` outside its "
         "choices or a non-numeric `int` is a `422` naming the key.\n\n"
-        "`enabled: true` needs every `required` field stored and switches "
-        "every other provider off in the same call. Press `test/` first."
+        "`enabled: true` needs every `required` field stored, and a code "
+        "this release ships no adapter for cannot be switched on — nothing "
+        "else is switched off. Press `test/` first."
     ),
     response_description="The row after the change, secrets masked.",
 )

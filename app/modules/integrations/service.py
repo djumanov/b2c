@@ -58,6 +58,7 @@ from app.providers.notifications.base import Notifier
 from app.providers.notifications.log import LogNotifier
 from app.providers.notifications.smtp import SmtpConfig, SmtpNotifier
 from app.providers.payments.base import PaymentProviderCode
+from app.providers.payments.sandbox import SANDBOX_CODE
 from app.providers.social.base import SocialProviderCode, SocialVerifier
 from app.providers.social.google import GoogleVerifier
 from app.providers.storage.base import UploadPurpose
@@ -768,6 +769,11 @@ async def update_payment_provider(
         )
 
     if data.enabled is not None:
+        if data.enabled and payment_adapters.ADAPTERS.get(code) is None:
+            raise ValidationFailed(
+                f"payment provider {code.value} is not available in this release",
+                field="enabled",
+            )
         if data.enabled and not credentials:
             raise ValidationFailed(
                 "Add the provider's credentials before switching it on",
@@ -778,8 +784,6 @@ async def update_payment_provider(
                 f"Add {', '.join(missing)} before switching it on", field="enabled"
             )
         row.enabled = data.enabled
-        if data.enabled:
-            await _switch_others_off(session, code)
 
     await session.commit()
     await session.refresh(row)
@@ -830,31 +834,6 @@ async def test_payment_provider(
     return PaymentTestOut(ok=ok, detail=detail, tested_at=row.last_tested_at)
 
 
-async def _switch_others_off(session: AsyncSession, keep: PaymentProviderCode) -> None:
-    """Only one provider may be enabled, and it is the one that charges (``O15``).
-
-    Switching one on switches the rest off, in this transaction, rather than
-    refusing with a ``409``: the owner said which provider should take the
-    money, and turning that one intent into a two-step puzzle would help nobody.
-    Each row that changes is described to the audit journal on its own, so the
-    panel can show what a single click did.
-
-    Credentials are left where they are — an installation may keep a second
-    provider configured and dark, ready for the day it switches.
-    """
-    for row in await repository.payment_providers(session):
-        if row.code is keep or not row.enabled:
-            continue
-        row.enabled = False
-        audit_context.describe(
-            changes={
-                "enabled": {"before": True, "after": False},
-                "code": row.code.value,
-            }
-        )
-        logger.info("payment_provider_switched_off", code=row.code.value, reason=keep)
-
-
 async def _attach_logo(
     session: AsyncSession, row: PaymentProvider, new_id: uuid.UUID
 ) -> None:
@@ -887,18 +866,36 @@ async def _purge_site_config() -> None:
 async def enabled_payment_methods(session: AsyncSession) -> list[dict[str, Any]]:
     """What ``site-config`` shows (API.md §17).
 
-    Only the enabled ones, and no ``enabled`` field: the site turns this list
-    into buttons, and a disabled provider would be a button that does nothing.
+    Only the enabled ones whose adapter this release ships, and no ``enabled``
+    field: the site turns this list into buttons, the customer sends the
+    chosen ``code`` as ``method`` when paying, and a button the backend would
+    refuse must never appear. A row left enabled by a release that still had
+    the adapter is filtered out here for the same reason the panel refuses to
+    enable it now.
+
+    When nothing is enabled and ``DEBUG`` is on, the list is the sandbox
+    alone — mirroring ``payments.service.payment_provider``, so a development
+    client always has exactly the buttons the backend will accept.
     """
-    return [
+    rows = await repository.payment_providers(session)
+    # The read above can seed missing rows (a fresh code this release added);
+    # committed here, the same as ``list_payment_providers`` and
+    # ``any_payment_provider_ready`` — site-config is a plain read and must
+    # not leave a seeding insert open for a concurrent write to collide with.
+    if session.in_transaction():
+        await session.commit()
+    methods = [
         {
             "code": row.code.value,
             "title": row.title,
             "logo_url": await uploads_service.url_for(session, row.logo_id),
         }
-        for row in await repository.payment_providers(session)
-        if row.enabled
+        for row in rows
+        if row.enabled and payment_adapters.ADAPTERS.get(row.code) is not None
     ]
+    if not methods and settings.debug:
+        return [{"code": SANDBOX_CODE, "title": "Sandbox", "logo_url": None}]
+    return methods
 
 
 async def payment_providers(
@@ -920,29 +917,6 @@ async def payment_providers(
         for row in await repository.payment_providers(session)
         if row.enabled and row.credentials
     ]
-
-
-async def active_payment_provider(
-    session: AsyncSession,
-) -> ConfiguredPaymentProvider | None:
-    """The provider that charges, or ``None`` if this installation cannot yet.
-
-    One provider is enabled at a time (``O15``), so "which one is on" and "which
-    one takes the money" are the same question and there is only one place to
-    answer it. ``sort_order`` decides if an older installation still has two
-    rows enabled from before the rule — a tie-break rather than a policy, and
-    the panel closes the gap the next time anything is saved.
-
-    Returning ``None`` is not an error here. The caller turns it into a ``502``
-    and, deliberately, writes no attempt row: an attempt is evidence of a
-    conversation with a provider, and there was no conversation.
-    """
-    configured = await payment_providers(session)
-    if session.in_transaction():
-        await session.commit()
-    return min(
-        configured, key=lambda row: (row.sort_order, row.code.value), default=None
-    )
 
 
 async def any_payment_provider_ready(session: AsyncSession) -> bool:

@@ -29,10 +29,16 @@ from app.core.money import Money
 
 class PaymentProviderCode(StrEnum):
     """The providers the panel knows. The sandbox is not one of them on
-    purpose: it is chosen by ``DEBUG``, never by a client's settings."""
+    purpose: it is chosen by ``DEBUG``, never by a client's settings.
+
+    ``demo`` is a panel provider like the others — enabled for demo
+    installations, it charges nobody and accepts one static code the panel
+    sets (``providers/payments/demo.py``).
+    """
 
     PAYME = "payme"
     CLICK = "click"
+    DEMO = "demo"
 
 
 @dataclass(frozen=True, slots=True, repr=False)

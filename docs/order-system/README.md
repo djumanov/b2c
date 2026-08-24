@@ -147,8 +147,12 @@ kod ustida nima bo'lishidan qat'i nazar.
 
 Qadamlar (`orders/service.py`):
 
-1. **`POST /public/orders/{id}/payment/`** — body `{card_id}` yoki
-   `{card: {number, expire}}` (aynan bittasi); `card` bilan `save: true` —
+1. **`POST /public/orders/{id}/payment/`** — body `{method, card_id}` yoki
+   `{method, card: {number, expire}}` (karta — aynan bittasi). `method` —
+   **majburiy**, site-config `payment_methods` dagi `code` (masalan `payme`);
+   default yo'q, fallback yo'q: yoqilmagan yoki notanish kod → **422**
+   (`field=method`), hech biri yoqilmagan bo'lsa → 502. `card` bilan
+   `save: true` —
    provider kartani qabul qilgach (`start` muvaffaqiyatli) u `customer_cards`
    ga yoziladi, urinish unga bog'lanadi (`card_id`), to'lov `paid` bo'lganda
    `last_used_at` bosiladi; rad etilgan karta saqlanmaydi; allaqachon bor
@@ -163,11 +167,13 @@ Qadamlar (`orders/service.py`):
    `payment_status=failed`, javob 200 (`payment.status=failed`, `error`);
    provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
 2. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
-   Qulf ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa —
-   provider chaqirilmaydi, joriy holat qaytadi (o'qish); urinishni boshqa
-   provider boshlagan bo'lsa (panel o'rtada almashtirgan) → `abandoned` +
-   409 "start again" — `start` pul yechmaydi, yangi urinish hozirgi provider
-   bilan ochiladi; muddat o'tgan bo'lsa → `abandoned` + `cancelled/expired`
+   Provider urinishning o'z `provider` kodi bo'yicha topiladi
+   (`provider_for_attempt`), qulfdan **oldin** — resolve commit qiladi. Qulf
+   ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa — provider
+   chaqirilmaydi, joriy holat qaytadi (o'qish); urinish boshlangan method
+   panel tomonidan o'chirilgan bo'lsa → `abandoned` + 409 "start again" —
+   `start` pul yechmaydi, yangi urinish yoqiq method bilan ochiladi; muddat
+   o'tgan bo'lsa → `abandoned` + `cancelled/expired`
    + 409. Urinish `confirming`, **commit**
    — charge provider'ga hech qachon ikki marta ketmaydi. So'ng
    `provider.confirm()` qulfsiz; natija `settle_attempt` bilan **qayta qulf +
@@ -177,12 +183,19 @@ Qadamlar (`orders/service.py`):
    `payment.status=processing` (order `status` esa `booked` bo'lib
    qolaveradi — §2).
 
-Provider tanlovi (`payments.service.payment_provider`): test override →
-panelda yoqilgan provider adapteri (`ADAPTERS`: hozir **Payme**; Click
-kelgunicha "bu relizda yo'q" → 502) → `DEBUG=true` va hech biri yoqilmagan
-→ **sandbox** → aks holda 502. Sandbox kodlari: `000000` paid · `111111`
-declined · `222222` timeout (noma'lum) · `333333` pending · boshqasi —
-noto'g'ri kod.
+Provider tanlovi — **mijozniki**: panel bir nechta providerni birga yoqadi
+(adaptersiz kodni yoqish → 422 "not available in this release"), site-config
+`payment_methods` yoqiqlarini ko'rsatadi (`code, title, logo_url`,
+`sort_order` tartibida), mijoz 1-qadamda `method` bilan bittasini nomlaydi.
+`payments.service.payment_provider(method)`: test override (kodi mos
+bo'lmasa 422) → yoqilgan qatorlar ichidan `method` bo'yicha (`ADAPTERS`:
+hozir **Payme** va **Demo**) → hech biri yoqilmagan bo'lsa: `DEBUG=true` va
+`method=sandbox` → **sandbox** (site-config ham shu holatda ro'yxatga faqat
+sandbox'ni chiqaradi), aks holda 502. Urinishni yakunlash tomonida
+`provider_for_attempt(code)` — urinish qatoridagi kod bo'yicha; topilmasa
+`None`, chaqiruvchi o'zi hal qiladi. Sandbox kodlari: `000000` paid ·
+`111111` declined · `222222` timeout (noma'lum) · `333333` pending ·
+boshqasi — noto'g'ri kod.
 
 **Payme** (`providers/payments/payme.py`, Subscribe API, JSON-RPC
 `POST {base}/api`). Merchant — loyiha egasi, Payme Business kassasi bilan;
@@ -197,6 +210,19 @@ mijoz ilovadan chiqmaydi. Port qadamlari Payme metodlariga shunday tushadi:
 
 `X-Auth`: `cards.*` → `{merchant_id}`, `receipts.*` → `{merchant_id}:{key}`.
 Faqat `UZS`; boshqa valyuta yoki `0` narx — hech narsa chaqirilmasdan 502.
+
+**Demo** (`providers/payments/demo.py`) — pul yechmaydigan namoyish metodi.
+Sandbox'dan farqi: `DEBUG`ga bog'liq emas, panelda xuddi Payme kabi yoqiladi
+va boshqa providerlar bilan yonma-yon site-config ro'yxatida chiqadi.
+Bitta sozlama (`fields`): `otp` — to'laydigan yagona statik kod, default
+`123456`, panelda ochiq ko'rinadi (sir emas — operator namoyishda o'qiydi).
+`start` har qanday kartani oladi, hech narsa yechmaydi; `confirm` da kod mos
+→ `paid`, aks holda `failed` "wrong code"; `status` → `pending` (stateless);
+`probe` doim ok. To'lovdan keyin ticketing odatdagidek GTS'ga boradi (demo
+server GTS test bilan). Kod kengaytmasi migratsiya bilan:
+`payment_providers.code` CHECK'iga `demo` qo'shildi
+(`20260824_1500_payment_provider_demo_code.py`); qatorni birinchi o'qish
+o'zi yaratadi.
 
 Xato qoidasi (port: **faqat natija noma'lum bo'lsa raise**): tarmoq/timeout,
 HTTP ≠ 200, JSON emas, kutilmagan shakl, JSON-RPC kod `≤ -32000` (auth,
@@ -216,7 +242,9 @@ maskalanadi), `environment` (`production` | `test`), `account_field`
 `fiscal_vat_percent`, `fiscal_package_code`, `fiscal_units` — to'ldirilsa
 `detail` yuboriladi. `POST /admin/integrations/payments/{code}/test/` —
 saqlangan sozlamalar bilan `probe`; `ok: false` + sabab javob, 502 emas;
-`last_tested_at/ok/error` yoziladi. Yoqish uchun `merchant_id` va `key` shart.
+`last_tested_at/ok/error` yoziladi. Yoqish uchun `merchant_id`, `key` va shu
+relizda adapter shart; bir vaqtda bir nechta provider yoqiq turishi mumkin.
+Demo uchun yoqish sharti — `otp` saqlangan bo'lishi.
 
 Sweep (`app/tasks/orders.py::reconcile_orders`, beat 30 s, har qator o'z
 tranzaksiyasida, `SKIP LOCKED`):
@@ -224,15 +252,14 @@ tranzaksiyasida, `SKIP LOCKED`):
 - `confirming` va 120 s dan eski → `provider.status()`; `paid/failed` →
   qo'llanadi; `pending` → kutiladi; 15 daqiqadan keyin ham `pending` →
   `failed` "the provider never confirmed this charge" + `ERROR
-  payment_unconfirmed` (support provider panelini tekshiradi). Provider
-  faqat so'raladigan qator bo'lsa hal qilinadi; hal bo'lmasa (hech biri
-  yoqilmagan, sozlama chala) — `ERROR payment_provider_unavailable`, shu
-  savol 0 bilan tugaydi, ticketing va muddat sweep'lari ishlayveradi.
-  Urinishni **faqat uni boshlagan provider** yakunlaydi: `attempt.provider`
-  hozirgisiga mos kelmasa qator o'tkazib yuboriladi (`ERROR
-  payment_provider_mismatch`) — eski provider pul yechgan bo'lishi mumkin,
-  uni odam hal qiladi. `status()` 15 daqiqadan keyin ham o'qilmasa log
-  WARNING'dan ERROR'ga ko'tariladi, holat o'zgarmaydi.
+  payment_unconfirmed` (support provider panelini tekshiradi). Urinishni
+  **faqat uni boshlagan provider** yakunlaydi: adapter `attempt.provider`
+  kodi bo'yicha topiladi (`provider_for_attempt`); topilmasa (method
+  o'chirilgan, adapter bu relizda yo'q, sozlama chala) qator o'tkazib
+  yuboriladi (`ERROR payment_provider_unavailable`) — u provider pul yechgan
+  bo'lishi mumkin, uni odam hal qiladi; qolgan savollar (ticketing, muddat)
+  ishlayveradi. `status()` 15 daqiqadan keyin ham o'qilmasa log WARNING'dan
+  ERROR'ga ko'tariladi, holat o'zgarmaydi.
 - To'lanmagan, muddati 10 daqiqadan ko'p o'tgan (yoki muddatsiz va 24 soatdan
   eski) orderlar → `GET /v1/orders/{n}/`: GTS `CB/VO/STATUS_VOID` →
   `cancelled/expired`; hali `BO` → muddat yangilanadi, `gts_checked_at` 10
@@ -316,7 +343,7 @@ qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 | POST | `/public/{product}/booking/` | customer | 1 — **idempotent**: bir xil so'rov ikkinchi marta o'sha orderni **hozirgi holatida** qaytaradi; GTS xatosi claim'ni bo'shatadi, GTS timeout — **bo'shatmaydi** (60 s) |
 | GET | `/public/orders/` | customer | 1 — ro'yxat: `status` (§2, detail bilan bir xil), `routes`, yo'lovchi ismlari |
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
-| POST | `/public/orders/{id}/payment/` | customer | 2 — kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint` |
+| POST | `/public/orders/{id}/payment/` | customer | 2 — `{method, card_id \| card}`; kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint`; yoqilmagan `method` → 422 |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
 | GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`, sabab uchun `cancel_reason`, `ticketing_error`, `updated_at`; filtrlar: `status` (§2 dagi oltita so'z — SQL `stage_of` ning o'zidan hosil qilinadi, `lifecycle.stage_filter`) va uchta xom ustun, birga ishlaydi; **support inbox = `status=ticketing_failed`** — ekrani "supportga murojaat qiling" deydigan har bir order, puli qaytgani emas; `ordering` — `created_at` yoki `updated_at` (`-updated_at` — eng so'nggi o'zgargan birinchi); `search` — PNR yoki GTS raqami |
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |

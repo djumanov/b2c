@@ -11,7 +11,7 @@ scripted provider.
 from collections.abc import Callable
 from typing import Final
 
-from app.providers.payments import payme
+from app.providers.payments import demo, payme
 from app.providers.payments.base import (
     PaymentProvider,
     PaymentProviderCode,
@@ -38,12 +38,14 @@ ADAPTERS: Final[
     dict[PaymentProviderCode, Callable[[dict[str, str]], PaymentProvider]]
 ] = {
     PaymentProviderCode.PAYME: payme.PaymeProvider.from_credentials,
+    PaymentProviderCode.DEMO: demo.DemoProvider.from_credentials,
 }
 
 #: code → the settings its adapter reads from the panel. A code without an
 #: adapter declares nothing, and the panel takes any key for it.
 FIELDS: Final[dict[PaymentProviderCode, tuple[ProviderField, ...]]] = {
     PaymentProviderCode.PAYME: payme.FIELDS,
+    PaymentProviderCode.DEMO: demo.FIELDS,
 }
 
 

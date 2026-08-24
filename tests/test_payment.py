@@ -88,10 +88,17 @@ async def _events(session: AsyncSession, order: Order) -> list[str]:
 
 
 async def _start(
-    client: httpx.AsyncClient, order: Order, headers: dict[str, str], body: Any = None
+    client: httpx.AsyncClient,
+    order: Order,
+    headers: dict[str, str],
+    body: Any = None,
+    method: str = "fake",
 ) -> httpx.Response:
+    """POST ``payment/`` — ``method`` defaults to the pinned FakeProvider's code."""
     return await client.post(
-        _payment_url(order), json=RAW_CARD if body is None else body, headers=headers
+        _payment_url(order),
+        json={"method": method, **(RAW_CARD if body is None else body)},
+        headers=headers,
     )
 
 
@@ -411,6 +418,58 @@ async def test_start_needs_exactly_one_card(
     assert neither.status_code == 422
     assert both.status_code == 422
     assert PAN not in both.text
+
+
+async def test_method_is_required(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    order = await make_order(db_session, customer)
+
+    response = await client.post(
+        _payment_url(order), json=RAW_CARD, headers=customer_headers
+    )
+
+    assert response.status_code == 422
+    assert "method" in response.text
+    assert await _attempts(db_session, order) == []
+
+
+@respx.mock
+async def test_unknown_or_disabled_method_is_422_naming_the_field(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    from app.providers import payments as payment_providers
+
+    order = await make_order(db_session, customer)
+
+    # A method the installation has not enabled: refused before GTS, before
+    # the provider, before any attempt row.
+    refused = await _start(client, order, customer_headers, method="click")
+    assert refused.status_code == 422
+    assert refused.json()["errors"][0]["field"] == "method"
+    assert await _attempts(db_session, order) == []
+
+    # The sandbox never coexists with a real provider, DEBUG or not.
+    payment_providers.set_provider(None)
+    await _enable_payme(client, staff_headers)
+    sandbox = await _start(
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "sandbox-along-payme"},
+        method="sandbox",
+    )
+    assert sandbox.status_code == 422
+    assert sandbox.json()["errors"][0]["field"] == "method"
+    assert await _attempts(db_session, order) == []
 
 
 # --- confirm --------------------------------------------------------------------
@@ -889,15 +948,20 @@ async def test_no_provider_configured_is_502_and_no_attempt(
 async def test_sandbox_only_in_debug(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.api.errors import ValidationFailed
     from app.core.config import settings
     from app.providers.payments.sandbox import SandboxProvider
 
     assert isinstance(
-        await payments_service.payment_provider(db_session), SandboxProvider
+        await payments_service.payment_provider(db_session, method="sandbox"),
+        SandboxProvider,
     )
+    # In DEBUG with nothing enabled, the sandbox is the one method offered.
+    with pytest.raises(ValidationFailed):
+        await payments_service.payment_provider(db_session, method="payme")
     monkeypatch.setattr(settings, "debug", False)
     with pytest.raises(UpstreamError):
-        await payments_service.payment_provider(db_session)
+        await payments_service.payment_provider(db_session, method="sandbox")
 
 
 async def test_sandbox_codes() -> None:
@@ -930,15 +994,110 @@ async def test_sandbox_codes() -> None:
     assert (await sandbox.status(reference=started.reference)).status == "pending"
 
 
+async def test_demo_adapter_pays_on_the_configured_code_alone() -> None:
+    from app.core.money import Money
+    from app.providers.payments.base import CardDetails
+    from app.providers.payments.demo import DemoProvider
+
+    demo = DemoProvider.from_credentials({})
+    started = await demo.start(
+        card=CardDetails(number=PAN, expire="1230"),
+        amount=Money(amount="0.00", currency="UZS"),
+        order_ref="o",
+    )
+    assert started.reference.startswith("demo-")
+    assert started.phone_hint == "+99890***0000"
+    assert PAN not in repr(started)
+    assert (
+        await demo.confirm(reference=started.reference, otp="123456")
+    ).status == "paid"
+    wrong = await demo.confirm(reference=started.reference, otp="000000")
+    assert wrong.status == "failed"
+    assert wrong.error == "wrong code"
+    assert (await demo.status(reference=started.reference)).status == "pending"
+    assert await demo.probe() is None
+
+    # The panel's code wins; whitespace and an empty save fall back to default.
+    custom = DemoProvider.from_credentials({"otp": " 777777 "})
+    assert (await custom.confirm(reference="r", otp="777777")).status == "paid"
+    assert (await custom.confirm(reference="r", otp="123456")).status == "failed"
+    fallback = DemoProvider.from_credentials({"otp": "  "})
+    assert (await fallback.confirm(reference="r", otp="123456")).status == "paid"
+
+
+DEMO_ADMIN_URL = "/api/v1/admin/integrations/payments/demo/"
+
+
+@respx.mock
+async def test_demo_method_pays_with_the_panels_static_otp_and_no_debug(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The demo method is a panel provider, not a DEBUG artefact: enabled
+    like Payme, listed in site-config, and paid with the panel's one code."""
+    from app.core.config import settings
+    from app.modules.integrations import service as integrations_service
+
+    monkeypatch.setattr(settings, "debug", False)
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_ticketing()
+    enabled = await client.patch(
+        DEMO_ADMIN_URL,
+        json={"credentials": {"otp": "123456"}, "enabled": True},
+        headers=staff_headers,
+    )
+    assert enabled.status_code == 200, enabled.text
+    methods = await integrations_service.enabled_payment_methods(db_session)
+    assert [method["code"] for method in methods] == ["demo"]
+
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers, method="demo")
+    assert started.status_code == 200, started.text
+    data = started.json()["data"]
+    assert data["payment"]["status"] == "awaiting_otp"
+    assert data["payment"]["provider"] == "demo"
+    assert data["payment"]["phone_hint"] == "+99890***0000"
+
+    wrong = await _confirm(
+        client, order, customer_headers, data["payment"]["payment_id"], "999999"
+    )
+    assert wrong.status_code == 200
+    assert wrong.json()["data"]["payment"]["status"] == "failed"
+    assert wrong.json()["data"]["payment"]["error"] == "wrong code"
+
+    again = await _start(
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "demo-2"},
+        method="demo",
+    )
+    assert again.status_code == 200, again.text
+    payment_id = again.json()["data"]["payment"]["payment_id"]
+    paid = await _confirm(client, order, customer_headers, payment_id, "123456")
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["data"]["payment"]["status"] == "paid"
+    assert paid.json()["data"]["order"]["status"] == "ticketed"
+    failed, charged = await _attempts(db_session, order)
+    assert failed.status == "failed"
+    assert charged.status == "paid"
+    assert charged.provider == "demo"
+
+
 async def test_customer_token_cannot_reach_admin_but_payment_needs_owner(
     client: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
     stranger = await make_customer(db_session, "stranger@example.com")
     order = await make_order(db_session, stranger)
-    response = await client.post(_payment_url(order), json=RAW_CARD)
+    body = {"method": "fake", **RAW_CARD}
+    response = await client.post(_payment_url(order), json=body)
     assert response.status_code == 401
     assert (
-        await client.post(_payment_url(order), json=RAW_CARD, headers=bearer(stranger))
+        await client.post(_payment_url(order), json=body, headers=bearer(stranger))
     ).status_code != 401
 
 
@@ -978,7 +1137,7 @@ async def test_payme_charges_and_tickets_end_to_end(
     await _enable_payme(client, staff_headers)
     order = await make_order(db_session, customer)
 
-    started = await _start(client, order, customer_headers)
+    started = await _start(client, order, customer_headers, method="payme")
 
     assert started.status_code == 200, started.text
     data = started.json()["data"]
@@ -1045,7 +1204,10 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
     # A refused card: 200, ``failed``, Payme's words, and a new start works.
     mock_payme({"cards.create": RpcError(-31300, {"uz": "Karta raqami noto'g'ri"})})
     declined = await _start(
-        client, order, {**customer_headers, "Idempotency-Key": "payme-1"}
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "payme-1"},
+        method="payme",
     )
     assert declined.status_code == 200
     assert declined.json()["data"]["payment"]["status"] == "failed"
@@ -1057,7 +1219,10 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
     mock_gts_order(gts_order_body())
     mock_payme({"receipts.create": RpcError(-31001, "Недопустимая сумма")})
     refused = await _start(
-        client, order, {**customer_headers, "Idempotency-Key": "payme-2"}
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "payme-2"},
+        method="payme",
     )
     assert refused.status_code == 502
     assert refused.json()["meta"] == {
@@ -1071,7 +1236,10 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
     mock_gts_order(gts_order_body())
     payme = mock_payme({"cards.verify": RpcError(-31103, "Неверный код")})
     started = await _start(
-        client, order, {**customer_headers, "Idempotency-Key": "payme-3"}
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "payme-3"},
+        method="payme",
     )
     payment_id = started.json()["data"]["payment"]["payment_id"]
     wrong = await _confirm(client, order, customer_headers, payment_id, "000000")
@@ -1080,7 +1248,10 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
     assert wrong.json()["data"]["payment"]["error"] == "Неверный код"
     assert payme.count("receipts.pay") == 0
     again = await _start(
-        client, order, {**customer_headers, "Idempotency-Key": "payme-4"}
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "payme-4"},
+        method="payme",
     )
     assert again.json()["data"]["payment"]["status"] == "awaiting_otp"
     assert payme.count("cards.get_verify_code") == 2
@@ -1100,7 +1271,7 @@ async def test_payme_lost_pay_answer_is_settled_by_reading_the_receipt(
     payme = mock_payme({"receipts.pay": httpx.ReadTimeout("gone")})
     await _enable_payme(client, staff_headers)
     order = await make_order(db_session, customer)
-    started = await _start(client, order, customer_headers)
+    started = await _start(client, order, customer_headers, method="payme")
     payment_id = started.json()["data"]["payment"]["payment_id"]
 
     lost = await _confirm(client, order, customer_headers, payment_id, "666666")
@@ -1121,6 +1292,47 @@ async def test_payme_lost_pay_answer_is_settled_by_reading_the_receipt(
     assert attempt.status == "paid"
     await db_session.refresh(order)
     assert order.payment_status == "paid"
+
+
+@respx.mock
+async def test_the_chosen_method_charges_when_two_are_enabled(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both Payme and Click on at once: `method` — not the panel — decides
+    which adapter the card goes to."""
+    from app.providers import payments as payment_providers
+    from app.providers.payments.base import PaymentProviderCode
+
+    click = FakeProvider()
+    click.code = "click"
+    monkeypatch.setitem(
+        payment_providers.ADAPTERS, PaymentProviderCode.CLICK, lambda credentials: click
+    )
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    payme = mock_payme()
+    await _enable_payme(client, staff_headers)
+    enabled = await client.patch(
+        "/api/v1/admin/integrations/payments/click/",
+        json={"credentials": {"merchant_id": "click-m"}, "enabled": True},
+        headers=staff_headers,
+    )
+    assert enabled.status_code == 200, enabled.text
+    order = await make_order(db_session, customer)
+
+    started = await _start(client, order, customer_headers, method="click")
+
+    assert started.status_code == 200, started.text
+    assert started.json()["data"]["payment"]["provider"] == "click"
+    assert click.count("start") == 1
+    assert payme.methods == []
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.provider == "click"
 
 
 # --- the sweep and the panel: guards --------------------------------------------------
@@ -1181,7 +1393,7 @@ async def test_sweep_outlives_a_provider_it_cannot_resolve(
 
 
 @respx.mock
-async def test_an_attempt_is_settled_only_by_the_provider_that_started_it(
+async def test_an_attempt_whose_method_is_gone_is_abandoned_and_left_to_a_human(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
@@ -1199,27 +1411,30 @@ async def test_an_attempt_is_settled_only_by_the_provider_that_started_it(
     started = await _start(client, order, customer_headers)
     payment_id = started.json()["data"]["payment"]["payment_id"]
 
-    # The panel switches to Payme while the code is being typed.
+    # The panel switches the started method off (Payme on) mid-typing.
     payment_providers.set_provider(None)
     await _enable_payme(client, staff_headers)
 
     stale = await _confirm(client, order, customer_headers, payment_id, "000000")
 
     assert stale.status_code == 409
-    assert "another provider" in stale.json()["errors"][0]["message"]
+    assert "no longer enabled" in stale.json()["errors"][0]["message"]
     assert payme.methods == []
     assert fake_provider.count("confirm") == 0
     (abandoned,) = await _attempts(db_session, order)
     assert abandoned.status == "abandoned"
-    # The next start belongs to Payme.
+    # The next start names a method the panel still backs.
     again = await _start(
-        client, order, {**customer_headers, "Idempotency-Key": "payme-after"}
+        client,
+        order,
+        {**customer_headers, "Idempotency-Key": "payme-after"},
+        method="payme",
     )
     assert again.status_code == 200, again.text
     assert again.json()["data"]["payment"]["provider"] == "payme"
     assert payme.methods == ["receipts.create", "cards.create", "cards.get_verify_code"]
 
-    # A charge the old provider may have made is never asked of the new one:
+    # A charge the vanished provider may have made is never asked of another:
     # the sweep and ``sync/`` leave it, loudly, to a human.
     other = await make_order(db_session, customer, gts_order_number=777)
     confirming = await _stale_confirming(
@@ -1228,7 +1443,8 @@ async def test_an_attempt_is_settled_only_by_the_provider_that_started_it(
     with caplog.at_level(logging.ERROR):
         assert await service.settle_stale_confirmations(db_session) == 0
     assert any(
-        "payment_provider_mismatch" in record.getMessage() for record in caplog.records
+        "payment_provider_unavailable" in record.getMessage()
+        for record in caplog.records
     )
     assert payme.count("receipts.check") == 0
     mock_gts_order(gts_order_body(order_number=777), order_number=777)
@@ -1239,6 +1455,34 @@ async def test_an_attempt_is_settled_only_by_the_provider_that_started_it(
     assert payme.count("receipts.check") == 0
     await db_session.refresh(confirming)
     assert confirming.status == "confirming"
+
+
+@respx.mock
+async def test_an_attempt_is_settled_by_its_own_provider_even_when_another_is_enabled(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """Two providers live at once: the sweep asks the attempt's own, never
+    "the other one" — resolution is per attempt, not per installation."""
+    payme = mock_payme()
+    await _enable_payme(client, staff_headers)
+    order = await make_order(db_session, customer)
+    attempt = await _stale_confirming(
+        db_session, order, provider="fake", reference="ref-5"
+    )
+    fake_provider.status_outcomes = [PaymentOutcome("failed", error="declined late")]
+
+    assert await service.settle_stale_confirmations(db_session) == 1
+
+    assert fake_provider.count("status") == 1
+    assert payme.methods == []
+    await db_session.refresh(attempt)
+    assert attempt.status == "failed"
+    await db_session.refresh(order)
+    assert order.payment_status == "failed"
 
 
 # --- save: true — keep the card the provider accepted ---------------------------------
