@@ -22,35 +22,17 @@ _SEPARATORS = re.compile(r"[\s-]")
 _EXPIRE = re.compile(r"(0[1-9]|1[0-2])\d{2}$")
 
 
-def _luhn_ok(number: str) -> bool:
-    """The check digit every card carries.
-
-    Cheap, and it turns the commonest typo into a ``422`` before anything is
-    stored.
-    """
-    total, odd = 0, False
-    for char in reversed(number):
-        digit = int(char)
-        if odd:
-            digit *= 2
-            if digit > 9:
-                digit -= 9
-        total += digit
-        odd = not odd
-    return total % 10 == 0
-
-
 def _clean_number(value: SecretStr) -> SecretStr:
-    """Digits only, or a refusal — shared by saving a card and paying with one.
+    """Digits only, 13–19 of them, or a refusal — shared by saving a card and
+    paying with one.
 
-    A number good enough to store is exactly a number good enough to spend, so
-    both request models are held to the same rule.
+    Length only, no Luhn check: the provider is the one that actually charges
+    the number and refuses a bad one on its own (``PaymentDeclined``), so this
+    is not the last line of defence — just enough to reject an obviously
+    malformed value before it is stored or sent anywhere.
     """
     digits = _SEPARATORS.sub("", value.get_secret_value())
-    if not _DIGITS.fullmatch(digits) or not _luhn_ok(digits):
-        # Deliberately does not say which of the two failed: length and check
-        # digit are both "this is not a card number" to the person typing it,
-        # and naming the check digit only helps somebody generating candidates.
+    if not _DIGITS.fullmatch(digits):
         raise ValueError("This does not look like a card number")
     return SecretStr(digits)
 
@@ -87,8 +69,8 @@ class CardOut(BaseModel):
 class CardCreateIn(BaseModel):
     """A card to keep for next time. Saving is local: no charge, no code.
 
-    The number is checked (length, Luhn) and sealed at rest; the answer never
-    carries it. The same card saved twice is a `422` on `number`.
+    The number is length-checked and sealed at rest; the answer never carries
+    it. The same card saved twice is a `422` on `number`.
     """
 
     # ``hide_input_in_errors`` is not a nicety here. Pydantic records the raw
@@ -108,7 +90,7 @@ class CardCreateIn(BaseModel):
     number: SecretStr = Field(
         description=(
             "13–19 digits; spaces and dashes are allowed and ignored. "
-            "Luhn-checked. Write-only: never echoed, never logged."
+            "Write-only: never echoed, never logged."
         ),
         json_schema_extra={"example": "8600 0691 9540 6311"},
     )
@@ -137,7 +119,7 @@ class CardIn(BaseModel):
     number: SecretStr = Field(
         description=(
             "13–19 digits; spaces and dashes are allowed and ignored. "
-            "Luhn-checked. Write-only: never echoed, never logged."
+            "Write-only: never echoed, never logged."
         ),
         json_schema_extra={"example": "8600 0691 9540 6311"},
     )
