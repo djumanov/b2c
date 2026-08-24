@@ -1,6 +1,7 @@
 """Seed demo content: CMS pages/FAQ/fun facts, profile deletion reasons, the
-site's company contacts, leads support contact, available currencies and the
-order status messages customers see while paying and ticketing, in uz / ru / en.
+site's company contacts, leads support contact, available currencies, the
+order status messages customers see while paying and ticketing, and every
+payment provider this release can switch on, in uz / ru / en.
 
 Operational tooling, not application code — it drives the cms, customers and
 settings modules through their service functions, the same way a panel
@@ -36,6 +37,8 @@ from app.modules.cms.schemas import FaqIn, FixedPageIn, FunFactIn
 from app.modules.customers import service as customers_service
 from app.modules.customers.models import DeletionReason
 from app.modules.customers.schemas import DeletionReasonIn
+from app.modules.integrations import service as integrations_service
+from app.modules.integrations.schemas import PaymentProviderIn
 from app.modules.leads import service as leads_service
 from app.modules.leads.schemas import SupportContactIn
 from app.modules.orders import service as orders_service
@@ -43,6 +46,8 @@ from app.modules.orders.lifecycle import Stage
 from app.modules.orders.schemas import OrderMessageIn
 from app.modules.settings import service as settings_service
 from app.modules.settings.schemas import CurrenciesIn, SiteIn
+from app.providers import payments as payment_adapters
+from app.providers.payments.base import PaymentProviderCode
 
 # --- pages -----------------------------------------------------------------------
 
@@ -963,6 +968,56 @@ async def seed_order_messages(session: AsyncSession) -> None:
         print(f"order message {status.value!r}: seeded")
 
 
+# --- payment providers (``/admin/integrations/payments/``) ------------------------
+
+#: Credentials for every provider this release can actually switch on, keyed
+#: by code. A code with no entry here — an adapter this release does not
+#: ship (Click, until its own iteration), or one nobody has written seed
+#: credentials for yet — is left off and reported, never guessed at.
+#:
+#: Payme's ``merchant_id``/``key`` are placeholders, not a real cashbox, and
+#: cannot become one by typing better values: GTS's test server prices
+#: everything at ``0.00`` and the adapter refuses a zero amount before any
+#: call reaches Payme (docs/order-system/README.md §4a). Enabled anyway, on
+#: its own `test` environment, so the panel and site-config show what an
+#: installation with more than one method looks like — the method that
+#: actually completes a charge on this GTS test server is **Demo**.
+PAYMENT_PROVIDER_CREDENTIALS: dict[PaymentProviderCode, dict[str, str]] = {
+    PaymentProviderCode.DEMO: {"otp": "123456"},
+    PaymentProviderCode.PAYME: {
+        "merchant_id": "demo-merchant-id",
+        "key": "demo-secret-key",
+        "environment": "test",
+    },
+}
+
+
+async def seed_payment_providers(session: AsyncSession) -> None:
+    # Same skip rule as the panel settings above: a provider staff already
+    # switched on — with their own real credentials or otherwise — is
+    # theirs, and a rerun must not touch it.
+    for code in PaymentProviderCode:
+        if payment_adapters.ADAPTERS.get(code) is None:
+            print(
+                f"payment provider {code.value!r}: no adapter in this release, skipped"
+            )
+            continue
+        credentials = PAYMENT_PROVIDER_CREDENTIALS.get(code)
+        if credentials is None:
+            print(
+                f"payment provider {code.value!r}: no seed credentials defined, skipped"
+            )
+            continue
+        current = await integrations_service.get_payment_provider(session, code)
+        if current.enabled:
+            print(f"payment provider {code.value!r}: already enabled, skipped")
+            continue
+        await integrations_service.update_payment_provider(
+            session, code, PaymentProviderIn(credentials=credentials, enabled=True)
+        )
+        print(f"payment provider {code.value!r}: enabled")
+
+
 # --- deletion reasons -------------------------------------------------------------
 
 DELETION_REASONS: list[dict] = [
@@ -1044,6 +1099,7 @@ async def main() -> None:
         await seed_support_contact(session)
         await seed_currencies(session)
         await seed_order_messages(session)
+        await seed_payment_providers(session)
     await dispose_engine()
 
 
