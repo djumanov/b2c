@@ -4,7 +4,8 @@
 confirmed the booking; it is the flow's only write and its own transaction.
 There is nothing here for a failed booking on purpose: no row is the record.
 
-Paying is two calls — ``start_payment`` sends the cardholder a code,
+Paying is three calls — ``start_payment`` sends the cardholder a code,
+``resend_payment_otp`` sends it again for the same attempt,
 ``confirm_payment`` charges with it — and every write between them follows
 one shape: **lock → re-read → validate → mutate → commit**. A network call
 sits either before the first lock (a pure read) or between two locks, never
@@ -86,6 +87,7 @@ from app.modules.orders.schemas import (
     PaymentAttemptAdminOut,
     PaymentAttemptView,
     PaymentConfirmIn,
+    PaymentResendIn,
     PaymentStartIn,
     RefundIn,
 )
@@ -730,6 +732,101 @@ async def confirm_payment(
     return await _present(
         session, await _owned(session, customer_id, order_id), language=language
     )
+
+
+async def resend_payment_otp(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    data: PaymentResendIn,
+    *,
+    language: str | None = None,
+) -> BookingResultOut:
+    """Resend: send the same open attempt's code again — no new attempt, no charge.
+
+    Same reference, same provider: the cardholder is asked to look at their
+    phone again, never asked to hand over a card twice. Blocked while the
+    attempt is ``confirming`` — a code is not resent once its answer might
+    already be on the wire. The rate limit (``RateLimit("payment")``, ten a
+    minute, shared with ``start`` and ``confirm``) is the only cooldown;
+    there is no attempt-level "wait N seconds" column to keep in sync with it.
+
+    The provider is the one that **started** the attempt, resolved unlocked
+    before the lock, exactly as ``confirm_payment`` does. An unknown answer
+    (``UpstreamError``/``UpstreamTimeout``) leaves the attempt exactly as it
+    was — unlike ``start``'s failure path, nothing here is thrown away on a
+    guess, because the code already sent at ``start`` may still be good.
+    Only a definitive refusal (``PaymentDeclined``) ends the attempt, the
+    same way a refusal at ``start`` does.
+    """
+    order = await _owned(session, customer_id, order_id)
+    probe = await _open_attempt(session, order.id)
+    if probe is None or probe.id != data.payment_id:
+        raise Conflict("This payment is not open — start the payment again")
+    provider = await payments_service.provider_for_attempt(session, code=probe.provider)
+
+    order = await _owned_locked(session, customer_id, order_id)
+    attempt = await _open_attempt(session, order.id, for_update=True)
+    if attempt is None or attempt.id != data.payment_id:
+        raise Conflict("This payment is not open — start the payment again")
+    if attempt.status == AttemptStatus.CONFIRMING:
+        raise Conflict("A payment for this order is being confirmed")
+    if provider is None:
+        # The panel switched this method off while the code was being typed.
+        attempt.status = AttemptStatus.ABANDONED
+        await session.commit()
+        logger.warning(
+            "payment_method_unavailable",
+            order_id=str(order.id),
+            attempt=str(attempt.id),
+            provider=attempt.provider,
+        )
+        raise Conflict(
+            "The payment method this attempt was started with is no longer "
+            "enabled — start the payment again"
+        )
+    if attempt.provider_reference is None:
+        raise Conflict("This payment was not started — start the payment again")
+
+    reference = decrypt(attempt.provider_reference, attempt.key_version or 0)
+    attempt_id = attempt.id
+    # Nothing has been mutated yet — drop the lock before the network call,
+    # the same way every write in this module keeps a slow provider from
+    # holding a row.
+    await session.rollback()
+
+    try:
+        started = await provider.resend(reference=reference)
+    except PaymentDeclined as exc:
+        await _fail_attempt(session, attempt_id, error=str(exc))
+        return await _present(
+            session, await _owned(session, customer_id, order_id), language=language
+        )
+    # UpstreamError/UpstreamTimeout propagate on purpose: the outcome is
+    # unknown, but the code ``start`` already sent may still be good, so the
+    # attempt is left open rather than failed forward.
+
+    order = await _owned_locked(session, customer_id, order_id)
+    row = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
+    if row is not None and row.status == AttemptStatus.STARTED:
+        row.phone_hint = started.phone_hint or row.phone_hint
+        row.provider_data = {**(row.provider_data or {}), "resend": started.raw}
+        session.add(
+            lifecycle.event(
+                order,
+                event="payment.otp_resent",
+                actor=lifecycle.CUSTOMER,
+                data={"attempt": str(row.id)},
+            )
+        )
+    await session.commit()
+    logger.info(
+        "payment_otp_resent",
+        order_id=str(order.id),
+        attempt=str(attempt_id),
+        provider=provider.code,
+    )
+    return await _present(session, order, language=language)
 
 
 async def settle_attempt(
@@ -1493,6 +1590,7 @@ __all__ = [
     "mark_refund",
     "message_catalogue",
     "recheck_processing",
+    "resend_payment_otp",
     "retry_ticketing",
     "settle_attempt",
     "settle_stale_confirmations",

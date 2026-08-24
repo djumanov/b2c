@@ -25,6 +25,7 @@ DOCUMENTED: tuple[tuple[str, str], ...] = (
     ("/api/v1/public/orders/", "get"),
     ("/api/v1/public/orders/{id}/", "get"),
     ("/api/v1/public/orders/{id}/payment/", "post"),
+    ("/api/v1/public/orders/{id}/payment/resend/", "post"),
     ("/api/v1/public/orders/{id}/payment/confirm/", "post"),
     ("/api/v1/public/{product}/booking/", "post"),
     ("/api/v1/public/profile/cards/", "get"),
@@ -160,6 +161,15 @@ def test_the_money_endpoints_list_the_errors_they_raise() -> None:
     assert set(codes) == {"conflict", "offer_expired"}
     assert "Nothing was charged" in start["502"]["description"]
 
+    resend = PATHS["/api/v1/public/orders/{id}/payment/resend/"]["post"]["responses"]
+    assert {"409", "502", "504"} <= set(resend)
+    resend_codes = resend["409"]["content"]["application/json"]["schema"]["properties"][
+        "errors"
+    ]["items"]["properties"]["code"]["enum"]
+    assert set(resend_codes) == {"conflict"}
+    # Resend never re-reads GTS or checks the ticketing deadline.
+    assert "offer_expired" not in resend_codes
+
     confirm = PATHS["/api/v1/public/orders/{id}/payment/confirm/"]["post"]["responses"]
     assert "409" in confirm
     # Confirm has no upstream path of its own: a lost provider answer is a
@@ -227,6 +237,7 @@ def test_every_documented_operation_explains_itself() -> None:
         "BookingResultOut",
         "PaymentStartIn",
         "PaymentConfirmIn",
+        "PaymentResendIn",
         "CardOut",
         "CardCreateIn",
         "CardIn",

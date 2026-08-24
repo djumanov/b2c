@@ -132,7 +132,7 @@ tamg'a oladi. `seq` — bazaning o'z hisoblagichi (identity), yozilish tartibi;
 tarix `created_at, seq` bo'yicha o'qiladi, shuning uchun tartib hech qachon
 tasodifiy emas.
 
-## 4a. To'lov — `payment_attempts` va ikki qadam
+## 4a. To'lov — `payment_attempts` va uch qadam
 
 Provider bilan har suhbat — `payment_attempts` da bir qator: `order_id,
 customer_id, provider, status` (`started` · `confirming` · `paid` · `failed` ·
@@ -166,7 +166,25 @@ Qadamlar (`orders/service.py`):
    yoziladi. Provider rad etsa (`PaymentDeclined`) → urinish `failed`,
    `payment_status=failed`, javob 200 (`payment.status=failed`, `error`);
    provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
-2. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
+2. **`POST /public/orders/{id}/payment/resend/`** — body `{payment_id}`. Xuddi
+   shu ochiq urinishga (`payment_id` mos kelishi shart) kodni **qayta**
+   yuboradi — yangi karta ro'yxatga olinmaydi, yangi urinish ochilmaydi, pul
+   yechilmaydi. Provider urinishning o'z `provider` kodi bo'yicha topiladi
+   (`provider_for_attempt`), xuddi confirm kabi qulfdan **oldin** — resolve
+   commit qiladi. Qulf ostida: urinish ochiq va `payment_id` mos; `confirming`
+   bo'lsa → 409 (kod chiqib bo'lgan bo'lishi mumkin, qayta yuborilmaydi);
+   method panel tomonidan o'chirilgan bo'lsa → xuddi confirm bilan bir xil
+   `abandoned` + 409. Payme uchun `cards.get_verify_code` yana chaqiriladi
+   (`start`dagi xuddi shu yordamchi — yangi chek yoki karta yo'q); Demo va
+   Sandbox — no-op, chunki ularning kodi statik/deterministik va qayta
+   yuborishga hojat yo'q. Provider rad etsa (`PaymentDeclined`) → urinish
+   `failed`, javob 200 (`start`dagi bilan bir xil qoida); provider javob
+   bermasa (`UpstreamError`/`UpstreamTimeout`) → urinish **o'zgarishsiz
+   qoladi** (`start`dan farqli — eski kod hali ham ishlashi mumkin) va
+   502/504 qaytadi. Alohida "kutish" holati yo'q — yagona cheklov
+   `RateLimit("payment")` (daqiqasiga 10 so'rov, `payment/` va
+   `payment/confirm/` bilan bir xil).
+3. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
    Provider urinishning o'z `provider` kodi bo'yicha topiladi
    (`provider_for_attempt`), qulfdan **oldin** — resolve commit qiladi. Qulf
    ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa — provider
@@ -199,7 +217,8 @@ sandbox'ni chiqaradi), aks holda 502. Urinishni yakunlash tomonida
 `provider_for_attempt(code)` — urinish qatoridagi kod bo'yicha; topilmasa
 `None`, chaqiruvchi o'zi hal qiladi. Sandbox kodlari: `000000` paid ·
 `111111` declined · `222222` timeout (noma'lum) · `333333` pending ·
-boshqasi — noto'g'ri kod.
+boshqasi — noto'g'ri kod. Sandbox'da ham `resend` — no-op (kodlar
+deterministik, qayta yuborishga hojat yo'q).
 
 **Payme** (`providers/payments/payme.py`, Subscribe API, JSON-RPC
 `POST {base}/api`). Merchant — loyiha egasi, Payme Business kassasi bilan;
@@ -208,6 +227,7 @@ mijoz ilovadan chiqmaydi. Port qadamlari Payme metodlariga shunday tushadi:
 | Port | Payme | Izoh |
 |---|---|---|
 | `start` | `receipts.create` (tiyin, `account: {account_field: order.id}`, ixtiyoriy `detail`) → `cards.create {save: false}` → `cards.get_verify_code` | chek **birinchi**: karta tegilmasdan va SMS ketmasdan `merchant_id:key` tekshiriladi. Token bitta urinish uchun — saqlangan karta bizda PAN (shifrlangan), Payme tokeni emas. `reference` = `{v, token, receipt}` JSON (orders shifrlab saqlaydi); `phone_hint` = Payme'ning masklangan raqami |
+| `resend` | `cards.get_verify_code` (yana, xuddi shu token bilan) | faqat kodni qayta yuboradi — yangi chek yoki karta yo'q; `reference` o'zgarmaydi. Rad javobi (`sent:false` yoki biznes xato) `start`dagidek `PaymentDeclined` |
 | `confirm` | `cards.verify {token, code}` → `receipts.pay {id, token}` | `receipts.pay` urinish boshiga **bir marta** (`confirming` commit'i kafolatlaydi). Chek holati 4/5 → `paid`; 50 → `failed`; boshqasi → `pending` |
 | `status` | `receipts.check {id}` | yo'qolgan `receipts.pay` javobi uchun |
 | `probe` | `receipts.get_all` (oxirgi 24 soat, `count: 1`) | panel "test" tugmasi; pul ko'chirmaydi |
@@ -220,9 +240,11 @@ Sandbox'dan farqi: `DEBUG`ga bog'liq emas, panelda xuddi Payme kabi yoqiladi
 va boshqa providerlar bilan yonma-yon site-config ro'yxatida chiqadi.
 Bitta sozlama (`fields`): `otp` — to'laydigan yagona statik kod, default
 `123456`, panelda ochiq ko'rinadi (sir emas — operator namoyishda o'qiydi).
-`start` har qanday kartani oladi, hech narsa yechmaydi; `confirm` da kod mos
-→ `paid`, aks holda `failed` "wrong code"; `status` → `pending` (stateless);
-`probe` doim ok. To'lovdan keyin ticketing odatdagidek GTS'ga boradi (demo
+`start` har qanday kartani oladi, hech narsa yechmaydi; `resend` — no-op:
+kod statik bo'lgani uchun hech narsa qilinmaydi, xuddi shu `phone_hint`
+qaytariladi; `confirm` da kod mos → `paid`, aks holda `failed` "wrong code";
+`status` → `pending` (stateless); `probe` doim ok. To'lovdan keyin ticketing
+odatdagidek GTS'ga boradi (demo
 server GTS test bilan). Kod kengaytmasi migratsiya bilan:
 `payment_providers.code` CHECK'iga `demo` qo'shildi
 (`20260824_1500_payment_provider_demo_code.py`); qatorni birinchi o'qish

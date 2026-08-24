@@ -10,14 +10,15 @@ saved-cards arrangement.
 endpoint, and the sweep — not the read — is what asks GTS; two polls racing a
 sweep must not be able to move an order twice.
 
-Paying is two ``POST``s on the order — ``payment/`` sends the code,
-``payment/confirm/`` charges with it — both under the tight ``payment`` rate
-limit and both idempotent: a repeat answers with the order as it stands now,
-and never reaches the provider twice. The row lock and the attempt table are
+Paying is three ``POST``s on the order — ``payment/`` sends the code,
+``payment/resend/`` sends it again for the same attempt, ``payment/confirm/``
+charges with it — all three under the tight ``payment`` rate limit and all
+three idempotent: a repeat answers with the order as it stands now, and
+never reaches the provider twice. The row lock and the attempt table are
 what make the charge single; the idempotency key only spares the provider a
-call. Every failure releases the key — nothing is charged at ``start``, and
-``confirm`` answers a lost provider call with the order rather than an error,
-so there is no outcome a kept claim would guard.
+call. Every failure releases the key — nothing is charged at ``start`` or
+``resend``, and ``confirm`` answers a lost provider call with the order
+rather than an error, so there is no outcome a kept claim would guard.
 
 The ``description`` on each route is written for the developer reading
 Swagger: what to send, what comes back, what to do next.
@@ -45,6 +46,7 @@ from app.modules.orders.schemas import (
     BookingResultOut,
     OrderListItemOut,
     PaymentConfirmIn,
+    PaymentResendIn,
     PaymentStartIn,
 )
 
@@ -234,6 +236,79 @@ async def confirm_payment(
         )
     try:
         result = await service.confirm_payment(
+            session, customer.id, id, payload, language=language.requested
+        )
+    except AppError:
+        await idempotency.release()
+        raise
+    await idempotency.store({"order_id": str(id)})
+    return result
+
+
+@router.post(
+    "/{id}/payment/resend/",
+    summary="Pay — resend the code",
+    description=(
+        "Sends the cardholder the same one-time code again, for the open "
+        "attempt from step 1 — no new card is registered, no new attempt "
+        "is opened, and nothing is charged. Send the `payment_id` from "
+        "step 1 (or from a previous resend).\n\n"
+        "Real providers (Payme) text a fresh code over the same channel; "
+        "providers whose code is fixed for the whole installation (the "
+        "demo, the sandbox) do nothing — there is nothing to resend. "
+        "Either way the answer is the order with `payment.status` still "
+        "`awaiting_otp` and `payment.phone_hint`.\n\n"
+        "A refusal to send another code is **not an error**: `200` with "
+        "`payment.status = failed` and the reason in `payment.error`, "
+        "exactly like a declined card at step 1 — start a fresh payment "
+        "to try again. If the provider's answer is lost instead "
+        "(`502`/`504`), the attempt is left open and the code already sent "
+        "may still work — retry the resend or go straight to step 2.\n\n"
+        "Under the same `payment` rate limit as steps 1 and 2 (ten "
+        "requests a minute) — that limit is the only cooldown between "
+        "resends, on purpose: there is no separate per-attempt wait timer "
+        "to keep in sync with it.\n\n"
+        "Idempotent like the other two steps: the same body within 24 "
+        "hours replays the stored answer and sends no second SMS — send a "
+        "fresh `Idempotency-Key` for a deliberate extra resend."
+    ),
+    response_description=(
+        "The order with `payment.status` still `awaiting_otp` (a fresh "
+        "code is on its way) or `failed` (the provider refused to send "
+        "another one, see `payment.error`)."
+    ),
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict=(
+            "`payment_id` is not the open attempt (a newer step 1 "
+            "superseded it, or it was never started), a charge for it is "
+            "being confirmed right now, or the payment method it was "
+            "started with has been switched off since — start again."
+        ),
+        upstream_error=(
+            "The provider's own system refused the request — nothing to "
+            "do with this card. Nothing was charged; try again shortly."
+        ),
+        upstream_timeout="The provider did not answer. Nothing was charged.",
+    ),
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def resend_payment_otp(
+    id: uuid.UUID,
+    payload: PaymentResendIn,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    idempotency: IdempotencyKey,
+    language: LanguageDep,
+) -> BookingResultOut:
+    if idempotency.is_replay:
+        return await service.get_order(
+            session, customer.id, id, language=language.requested
+        )
+    try:
+        result = await service.resend_payment_otp(
             session, customer.id, id, payload, language=language.requested
         )
     except AppError:

@@ -20,6 +20,9 @@ anything   a wrong code, i.e. ``failed``
 
 It never reaches production: ``payments.service.payment_provider`` picks it
 only when ``DEBUG`` is on **and** no real provider is enabled in the panel.
+
+``resend`` does nothing — the codes are fixed and deterministic, so there is
+nothing to send again.
 """
 
 import uuid
@@ -50,6 +53,10 @@ class SandboxProvider:
             phone_hint="+99890***4567",
             raw={"sandbox": True, "order_ref": order_ref, "amount": str(amount.amount)},
         )
+
+    async def resend(self, *, reference: str) -> PaymentStart:
+        # Stateless and deterministic — see the module docstring.
+        return PaymentStart(reference=reference, phone_hint="+99890***4567")
 
     async def confirm(self, *, reference: str, otp: str) -> PaymentOutcome:
         if otp == OTP_PAID:

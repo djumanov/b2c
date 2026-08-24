@@ -216,6 +216,58 @@ async def test_start_unexpected_shapes_are_upstream_errors() -> None:
         await _provider().start(card=CARD, amount=AMOUNT, order_ref=ORDER_REF)
 
 
+# --- resend --------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_resend_sends_the_code_again_with_the_same_token() -> None:
+    payme = mock_payme()
+
+    started = await _provider().resend(reference=_reference())
+
+    # No new receipt, no new card — only the code, again.
+    assert payme.methods == ["cards.get_verify_code"]
+    assert payme.params("cards.get_verify_code") == {"token": PAYME_TOKEN}
+    assert payme.auth("cards.get_verify_code") == "m-1234abcd"
+    assert started.reference == _reference()
+    assert started.phone_hint == "99890*****31"
+    assert started.raw == {"resend": True, "wait": 60000}
+    assert PAYME_TOKEN not in json.dumps(started.raw)
+    assert PAYME_TOKEN not in repr(started)
+
+
+@respx.mock
+async def test_resend_of_a_foreign_reference_is_unknown_and_never_sent() -> None:
+    mock_payme()
+    route = respx.routes[0]
+
+    with pytest.raises(UpstreamError, match="not started with Payme"):
+        await _provider().resend(reference="sbx-0123456789abcdef")
+
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_resend_code_not_sent_is_declined() -> None:
+    refused = mock_payme({"cards.get_verify_code": RpcError(-31304, "SMS недоступен")})
+    with pytest.raises(PaymentDeclined, match="SMS недоступен"):
+        await _provider().resend(reference=_reference())
+    assert refused.count("cards.get_verify_code") == 1
+
+    respx.reset()
+    mock_payme({"cards.get_verify_code": {"sent": False, "phone": None, "wait": 0}})
+    with pytest.raises(PaymentDeclined, match="could not send the code"):
+        await _provider().resend(reference=_reference())
+
+
+@respx.mock
+async def test_resend_system_error_is_upstream_not_declined() -> None:
+    mock_payme({"cards.get_verify_code": RpcError(-32504, "Insufficient privileges")})
+
+    with pytest.raises(UpstreamError, match="Insufficient privileges"):
+        await _provider().resend(reference=_reference())
+
+
 # --- confirm -------------------------------------------------------------------------
 
 

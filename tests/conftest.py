@@ -430,9 +430,10 @@ async def make_order(
 class FakeProvider:
     """Implements ``PaymentProvider`` from a script the test writes.
 
-    ``confirm_outcomes`` / ``status_outcomes`` are consumed in order; an
-    exception in the list is raised instead of returned. ``calls`` records
-    every call for assertions such as "the provider was charged once".
+    ``resend_outcomes`` / ``confirm_outcomes`` / ``status_outcomes`` are
+    consumed in order; an exception in the list is raised instead of
+    returned. ``calls`` records every call for assertions such as "the
+    provider was charged once".
     """
 
     code = "fake"
@@ -442,6 +443,7 @@ class FakeProvider:
 
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.start_error: Exception | None = None
+        self.resend_outcomes: list[Any] = []
         self.confirm_outcomes: list[PaymentOutcome | Exception] = []
         self.status_outcomes: list[PaymentOutcome | Exception] = []
         self.references: list[str] = []
@@ -470,6 +472,15 @@ class FakeProvider:
         reference = f"ref-{len(self.references) + 1}"
         self.references.append(reference)
         return PaymentStart(reference=reference, phone_hint="+99890***1234")
+
+    async def resend(self, *, reference: str) -> Any:
+        from app.providers.payments.base import PaymentStart
+
+        self.calls.append(("resend", {"reference": reference}))
+        return self._next(
+            self.resend_outcomes,
+            PaymentStart(reference=reference, phone_hint="+99890***1234"),
+        )
 
     async def confirm(self, *, reference: str, otp: str) -> Any:
         from app.providers.payments.base import PaymentOutcome

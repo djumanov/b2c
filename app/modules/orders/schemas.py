@@ -342,6 +342,21 @@ class PaymentConfirmIn(BaseModel):
     )
 
 
+class PaymentResendIn(BaseModel):
+    """Resend: the same open attempt to speak to again — nothing else changes."""
+
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [{"payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f"}]
+        },
+    }
+
+    payment_id: uuid.UUID = Field(
+        description="`payment.payment_id` from the step-1 (or a later resend's) answer."
+    )
+
+
 # --- the payment block ---------------------------------------------------------------
 
 #: ``PaymentOut.status`` — the order's ``payment_status`` plus three readings
@@ -877,6 +892,7 @@ __all__ = [
     "PaymentAttemptView",
     "PaymentConfirmIn",
     "PaymentOut",
+    "PaymentResendIn",
     "PaymentStartIn",
     "PaymentViewStatus",
     "RefundIn",
