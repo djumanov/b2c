@@ -1,9 +1,10 @@
 """``/admin/integrations/payments/`` with a real adapter behind ``payme``.
 
-The registry itself — one row per code, masking, merge, one enabled at a
-time — predates the adapter. What the adapter adds is pinned here: the
-declared ``fields``, what ``PATCH`` refuses, which values come back in the
-clear, and the test button.
+The registry itself — one row per code, masking, merge, several enabled at
+once — predates the adapter. What the adapter adds is pinned here: the
+declared ``fields``, what ``PATCH`` refuses (including switching on a code
+this release ships no adapter for), which values come back in the clear,
+and the test button.
 """
 
 from typing import Any
@@ -26,6 +27,7 @@ from tests.conftest import (
 PAYMENTS = "/api/v1/admin/integrations/payments/"
 PAYME = f"{PAYMENTS}payme/"
 CLICK = f"{PAYMENTS}click/"
+DEMO = f"{PAYMENTS}demo/"
 
 
 async def _patch(
@@ -211,7 +213,7 @@ async def test_the_test_button_needs_settings_an_adapter_and_an_owner(
     assert (await client.post(f"{PAYME}test/")).status_code == 401
 
 
-@pytest.mark.parametrize("code", ["payme", "click"])
+@pytest.mark.parametrize("code", ["payme", "click", "demo"])
 async def test_reads_are_open_to_admins(
     client: httpx.AsyncClient, db_session: AsyncSession, code: str
 ) -> None:
@@ -219,3 +221,113 @@ async def test_reads_are_open_to_admins(
     response = await client.get(f"{PAYMENTS}{code}/", headers=staff_bearer(admin))
     assert response.status_code == 200
     assert response.json()["data"]["code"] == code
+
+
+async def test_demo_declares_its_otp_field_and_needs_it_to_switch_on(
+    client: httpx.AsyncClient, staff_headers: dict[str, str]
+) -> None:
+    listed = await client.get(PAYMENTS, headers=staff_headers)
+    by_code = {row["code"]: row for row in listed.json()["data"]}
+    assert by_code["demo"]["fields"] == [
+        {
+            "key": "otp",
+            "kind": "text",
+            "required": True,
+            "choices": [],
+            "default": "123456",
+        }
+    ]
+
+    bare = await client.patch(DEMO, json={"enabled": True}, headers=staff_headers)
+    assert bare.status_code == 422
+    assert bare.json()["errors"][0]["field"] == "enabled"
+
+    on = await client.patch(
+        DEMO,
+        json={"credentials": {"otp": "123456"}, "enabled": True},
+        headers=staff_headers,
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["data"]["enabled"] is True
+    # The code is not a secret: the operator reads it back off the panel.
+    assert on.json()["data"]["credentials"]["otp"] == "123456"
+
+
+# --- several methods at once (the customer picks one by ``method``) -------------------
+
+
+async def test_several_providers_may_be_enabled_at_once(
+    client: httpx.AsyncClient,
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.integrations import service as integrations_service
+    from app.providers import payments as payment_adapters
+    from app.providers.payments.base import PaymentProviderCode
+    from tests.conftest import FakeProvider
+
+    monkeypatch.setitem(
+        payment_adapters.ADAPTERS,
+        PaymentProviderCode.CLICK,
+        lambda credentials: FakeProvider(),
+    )
+    first = await _patch(
+        client, staff_headers, credentials=PAYME_CREDENTIALS, enabled=True
+    )
+    assert first.status_code == 200, first.text
+    second = await client.patch(
+        CLICK,
+        json={"credentials": {"merchant_id": "click-m"}, "enabled": True},
+        headers=staff_headers,
+    )
+    assert second.status_code == 200, second.text
+
+    listed = await client.get(PAYMENTS, headers=staff_headers)
+    by_code = {row["code"]: row for row in listed.json()["data"]}
+    assert by_code["payme"]["enabled"] is True
+    assert by_code["click"]["enabled"] is True  # nothing was switched off
+
+    methods = await integrations_service.enabled_payment_methods(db_session)
+    assert {method["code"] for method in methods} == {"payme", "click"}
+
+
+async def test_enabling_a_provider_without_an_adapter_is_refused(
+    client: httpx.AsyncClient, staff_headers: dict[str, str]
+) -> None:
+    refused = await client.patch(
+        CLICK,
+        json={"credentials": PAYME_CREDENTIALS, "enabled": True},
+        headers=staff_headers,
+    )
+    assert refused.status_code == 422
+    assert refused.json()["errors"][0]["field"] == "enabled"
+    assert "not available in this release" in refused.json()["errors"][0]["message"]
+    # The credentials patch was refused with it — the row is untouched.
+    shown = await client.get(CLICK, headers=staff_headers)
+    assert shown.json()["data"]["enabled"] is False
+
+
+async def test_sandbox_is_offered_only_in_debug_and_only_alone(
+    client: httpx.AsyncClient,
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.modules.integrations import service as integrations_service
+
+    assert await integrations_service.enabled_payment_methods(db_session) == [
+        {"code": "sandbox", "title": "Sandbox", "logo_url": None}
+    ]
+
+    monkeypatch.setattr(settings, "debug", False)
+    assert await integrations_service.enabled_payment_methods(db_session) == []
+
+    monkeypatch.setattr(settings, "debug", True)
+    enabled = await _patch(
+        client, staff_headers, credentials=PAYME_CREDENTIALS, enabled=True
+    )
+    assert enabled.status_code == 200, enabled.text
+    methods = await integrations_service.enabled_payment_methods(db_session)
+    assert [method["code"] for method in methods] == ["payme"]

@@ -161,7 +161,10 @@ def test_the_money_endpoints_list_the_errors_they_raise() -> None:
     assert "Nothing was charged" in start["502"]["description"]
 
     confirm = PATHS["/api/v1/public/orders/{id}/payment/confirm/"]["post"]["responses"]
-    assert {"409", "502"} <= set(confirm)
+    assert "409" in confirm
+    # Confirm has no upstream path of its own: a lost provider answer is a
+    # ``200 processing`` and ticketing failures never surface here.
+    assert "502" not in confirm
     assert "504" not in confirm
 
     booking = PATHS["/api/v1/public/{product}/booking/"]["post"]["responses"]
@@ -307,7 +310,10 @@ def test_booking_answers_with_the_documented_model_and_a_full_example() -> None:
     assert body["example"]["data"]["payment"]["status"] == "pending"
     examples = SCHEMAS["BookingResultOut"]["examples"]
     assert examples[0]["payment"]["status"] == "awaiting_otp"
-    assert len(SCHEMAS["PaymentStartIn"]["examples"]) == 3
+    start = SCHEMAS["PaymentStartIn"]
+    assert "method" in start["required"]
+    assert len(start["examples"]) == 3
+    assert all("method" in example for example in start["examples"])
 
 
 # --- the pages ------------------------------------------------------------------------

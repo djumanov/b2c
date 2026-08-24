@@ -171,9 +171,12 @@ class PaymentProviderOut(BaseModel):
     masked because nothing says which ones are secret.
     """
 
-    code: PaymentProviderCode = Field(description="`payme` or `click`.")
+    code: PaymentProviderCode = Field(description="`payme`, `click`, or `demo`.")
     enabled: bool = Field(
-        description="Whether this is the provider that charges. One at a time."
+        description=(
+            "Whether the customer may choose this method by `method` when "
+            "paying. Several providers may be enabled at once."
+        )
     )
     title: str = Field(description="How the site names the method on its buttons.")
     logo_id: uuid.UUID | None = Field(description="The uploaded logo, if any.")
@@ -230,8 +233,10 @@ class PaymentProviderIn(BaseModel):
     enabled: bool | None = Field(
         default=None,
         description=(
-            "`true` switches this provider on and every other off; needs the "
-            "required keys stored first. `false` switches it off."
+            "`true` switches this provider on — several may be on at once, "
+            "and the customer picks one by `method` when paying. Needs the "
+            "required keys stored first; a provider this release ships no "
+            "adapter for cannot be switched on. `false` switches it off."
         ),
     )
     title: ProviderTitle | None = Field(

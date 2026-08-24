@@ -113,9 +113,12 @@ async def get_order(
     "/{id}/payment/",
     summary="Pay — step 1: choose the card, receive the code",
     description=(
-        "Starts a payment for a `booked`, unpaid order. Send **either** "
-        "`card_id` (a saved card) **or** `card` (number + `MMYY`), optionally "
-        "`save: true` to keep a typed card once the provider accepts it.\n\n"
+        "Starts a payment for a `booked`, unpaid order. Send `method` — a "
+        "`code` from site-config `payment_methods` (the methods this "
+        "installation has switched on; anything else is a `422` naming "
+        "`method`) — and **either** `card_id` (a saved card) **or** `card` "
+        "(number + `MMYY`), optionally `save: true` to keep a typed card "
+        "once the provider accepts it.\n\n"
         "What happens: the hold is re-checked with GTS (its price wins), the "
         "card is registered with the payment provider and the cardholder is "
         "texted a one-time code. **Nothing is charged yet.** The answer is the "
@@ -203,17 +206,15 @@ async def start_payment(
     responses=error_responses(
         ErrorCode.CONFLICT,
         ErrorCode.OFFER_EXPIRED,
-        ErrorCode.UPSTREAM_ERROR,
         conflict=(
             "`payment_id` is not the open attempt (a newer step 1 superseded "
-            "it, or it was never started), or the attempt was started with a "
-            "provider that is no longer the active one — start again."
+            "it, or it was never started), or the payment method it was "
+            "started with has been switched off since — start again."
         ),
         offer_expired=(
             "The payment deadline passed while the code was being typed; the "
             "order is `cancelled` and nothing was charged."
         ),
-        upstream_error="No payment provider is configured on this installation.",
     ),
     dependencies=[Depends(RateLimit("payment"))],
 )

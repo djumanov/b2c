@@ -242,11 +242,13 @@ class OrderListItemOut(BaseModel):
 
 
 class PaymentStartIn(BaseModel):
-    """Step 1 of paying: which card — a saved one by id, **or** one typed now.
+    """Step 1 of paying: which method charges, and which card.
 
-    Exactly one of `card_id` and `card`. A validation error never echoes a
-    card number. `save` keeps a typed card for next time, once the provider
-    has accepted it (never before); it means nothing with `card_id`.
+    `method` is a `code` from site-config `payment_methods` — required, no
+    default. The card is exactly one of `card_id` and `card`. A validation
+    error never echoes a card number. `save` keeps a typed card for next
+    time, once the provider has accepted it (never before); it means nothing
+    with `card_id`.
     """
 
     model_config = {
@@ -254,9 +256,16 @@ class PaymentStartIn(BaseModel):
         "hide_input_in_errors": True,
         "json_schema_extra": {
             "examples": [
-                {"card_id": "3f7c9b2e-1d44-4a3b-9a1e-2b7c8d9e0f11"},
-                {"card": {"number": "8600 0691 9540 6311", "expire": "03/99"}},
                 {
+                    "method": "payme",
+                    "card_id": "3f7c9b2e-1d44-4a3b-9a1e-2b7c8d9e0f11",
+                },
+                {
+                    "method": "payme",
+                    "card": {"number": "8600 0691 9540 6311", "expire": "03/99"},
+                },
+                {
+                    "method": "click",
                     "card": {"number": "8600069195406311", "expire": "0399"},
                     "save": True,
                 },
@@ -264,6 +273,16 @@ class PaymentStartIn(BaseModel):
         },
     }
 
+    method: str = Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            "Which payment method charges — a `code` from site-config "
+            "`payment_methods` (e.g. `payme`), sent verbatim. Required: "
+            "there is no default and no fallback; a method this installation "
+            "has not enabled is a `422` naming `method`."
+        ),
+    )
     card_id: uuid.UUID | None = Field(
         default=None,
         description=(
@@ -391,7 +410,7 @@ class PaymentOut(BaseModel):
         description="The attempt to confirm — send it back in `payment/confirm/`.",
     )
     provider: str | None = Field(
-        default=None, description="`payme`, `click`, or `sandbox` in debug."
+        default=None, description="`payme`, `click`, `demo`, or `sandbox` in debug."
     )
     card_last4: str | None = Field(
         default=None, description="Last four digits of the card being charged."
@@ -629,7 +648,7 @@ class PaymentAttemptAdminOut(BaseModel):
     id: uuid.UUID = Field(description="The `payment_id` the customer confirmed with.")
     created_at: datetime
     updated_at: datetime
-    provider: str = Field(description="`payme`, `click`, `sandbox`.")
+    provider: str = Field(description="`payme`, `click`, `demo`, `sandbox`.")
     status: AttemptStatus = Field(
         description=(
             "`started` — code sent; `confirming` — charge sent, answer not "
