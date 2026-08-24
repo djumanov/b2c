@@ -212,8 +212,10 @@ async def start_payment(
             "started with has been switched off since — start again."
         ),
         offer_expired=(
-            "The payment deadline passed while the code was being typed; the "
-            "order is `cancelled` and nothing was charged."
+            "The payment deadline passed while the code was being typed and "
+            "GTS, asked again, has released the hold; the order is `cancelled` "
+            "and nothing was charged. While GTS still holds the seat the "
+            "charge goes through as usual, whatever our clock says."
         ),
     ),
     dependencies=[Depends(RateLimit("payment"))],

@@ -654,20 +654,61 @@ async def test_confirm_wrong_payment_id_is_409(
 
 
 @respx.mock
-async def test_confirm_after_deadline_is_offer_expired_and_no_charge(
+async def test_confirm_after_deadline_asks_gts_and_charges_while_held(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
     fake_provider: FakeProvider,
 ) -> None:
-    """GTS still said ``BO`` at start but its deadline has passed by confirm."""
+    """Our deadline passed by confirm, but GTS still holds the seat: charge."""
     mock_gts_signin()
     past = (utcnow() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    mock_gts_order(gts_order_body(ticket_time_limit=past))
+    route = mock_gts_order(gts_order_body(ticket_time_limit=past))
     order = await make_order(db_session, customer)
     started = await _start(client, order, customer_headers)
     payment_id = started.json()["data"]["payment"]["payment_id"]
+    route.mock(
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": gts_order_body(status="BO")}
+        )
+    )
+
+    response = await _confirm(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["payment"]["status"] == "paid"
+    assert route.call_count == 2  # start's read-back, then confirm's
+    assert fake_provider.count("confirm") == 1
+    await db_session.refresh(order)
+    assert order.status == "booked" and order.payment_status == "paid"
+    assert order.ticket_time_limit_at > utcnow()  # refreshed from GTS
+
+
+@respx.mock
+async def test_confirm_after_deadline_is_offer_expired_when_gts_released(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """GTS said ``BO`` at start; by confirm it has let the hold go."""
+    mock_gts_signin()
+    past = (utcnow() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    route = mock_gts_order(gts_order_body(ticket_time_limit=past))
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    route.mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": gts_order_body(status="STATUS_VOID", ticket_time_limit=past),
+            },
+        )
+    )
 
     response = await _confirm(client, order, customer_headers, payment_id)
 
@@ -676,8 +717,38 @@ async def test_confirm_after_deadline_is_offer_expired_and_no_charge(
     assert fake_provider.count("confirm") == 0
     await db_session.refresh(order)
     assert order.status == "cancelled" and order.cancel_reason == "expired"
+    assert order.gts_status == "STATUS_VOID"
     (attempt,) = await _attempts(db_session, order)
     assert attempt.status == "abandoned"
+
+
+@respx.mock
+async def test_confirm_after_deadline_with_gts_unreadable_charges_nothing(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """Past our deadline and GTS cannot be read: a 502, and the attempt keeps."""
+    mock_gts_signin()
+    past = (utcnow() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    route = mock_gts_order(gts_order_body(ticket_time_limit=past))
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    route.mock(
+        return_value=httpx.Response(500, json={"status": "error", "message": "x"})
+    )
+
+    response = await _confirm(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 502
+    assert fake_provider.count("confirm") == 0
+    await db_session.refresh(order)
+    assert order.status == "booked"
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
 
 
 async def test_confirm_without_start_is_409(
