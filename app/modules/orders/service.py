@@ -647,12 +647,26 @@ async def confirm_payment(
     commits. The locked re-read then re-checks the id, so a start that
     supersedes this attempt between the two reads turns into the ``409``, not
     into a charge through the wrong adapter.
+
+    Our copy of the deadline is a best-effort reading of a field GTS spells
+    three ways, so a deadline that has passed by our clock is a reason to
+    **ask GTS**, never to cancel: the order already exists, and a hold GTS
+    still reports as ``BO`` is charged as usual with the deadline refreshed.
+    Only GTS saying the hold is gone ends the attempt — the same rule the
+    expiry sweep follows. That read happens before the lock, like every
+    other call that leaves the process; a read that fails is the ``502`` /
+    ``504`` it is, and nothing is charged on a guess.
     """
     order = await _owned(session, customer_id, order_id)
     probe = await _open_attempt(session, order.id)
     if probe is None or probe.id != data.payment_id:
         raise Conflict("This payment is not open — start the payment again")
     provider = await payments_service.provider_for_attempt(session, code=probe.provider)
+    snapshot: OrderSnapshot | None = None
+    deadline = order.ticket_time_limit_at
+    if deadline is not None and deadline <= utcnow():
+        client = await integrations_service.gts_client(session)
+        snapshot = await _adapter(order).retrieve(client, order.gts_order_number)
 
     order = await _owned_locked(session, customer_id, order_id)
     attempt = await _open_attempt(session, order.id, for_update=True)
@@ -679,24 +693,14 @@ async def confirm_payment(
         )
     if attempt.provider_reference is None:
         raise Conflict("This payment was not started — start the payment again")
-    if (
-        order.ticket_time_limit_at is not None
-        and order.ticket_time_limit_at <= utcnow()
-    ):
-        # The hold lapsed while the code was being typed. Charging now would
-        # buy nothing; GTS's own status is re-read by the sweep.
-        attempt.status = AttemptStatus.ABANDONED
-        session.add_all(
-            lifecycle.transition(
-                order,
-                actor=lifecycle.SYSTEM,
-                status=OrderStatus.CANCELLED,
-                cancel_reason=CancelReason.EXPIRED,
-                note="payment deadline passed before confirmation",
-            )
-        )
-        await session.commit()
-        raise OfferExpired("The payment deadline has passed — please search again")
+    if snapshot is not None:
+        # Past our deadline while the code was being typed: GTS decides.
+        apply_snapshot(order, snapshot)
+        if gts_order.is_released(snapshot.gts_status):
+            attempt.status = AttemptStatus.ABANDONED
+            session.add_all(_released(order, snapshot))
+            await session.commit()
+            raise OfferExpired("The booking has expired at GTS — please search again")
     reference = decrypt(attempt.provider_reference, attempt.key_version or 0)
     attempt.status = AttemptStatus.CONFIRMING
     session.add(

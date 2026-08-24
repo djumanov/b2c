@@ -172,9 +172,13 @@ Qadamlar (`orders/service.py`):
    ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa — provider
    chaqirilmaydi, joriy holat qaytadi (o'qish); urinish boshlangan method
    panel tomonidan o'chirilgan bo'lsa → `abandoned` + 409 "start again" —
-   `start` pul yechmaydi, yangi urinish yoqiq method bilan ochiladi; muddat
-   o'tgan bo'lsa → `abandoned` + `cancelled/expired`
-   + 409. Urinish `confirming`, **commit**
+   `start` pul yechmaydi, yangi urinish yoqiq method bilan ochiladi. Bizdagi
+   muddat o'tgan bo'lsa order **bekor qilinmaydi** — order allaqachon bor,
+   muddat esa GTS uch xil yozadigan maydonning taxminiy o'qilishi: qulfdan
+   **oldin** `GET /v1/orders/{n}/`; GTS `CB/VO/STATUS_VOID` desa →
+   `abandoned` + `cancelled/expired` + 409 `offer_expired`; hali `BO` bo'lsa
+   muddat yangilanadi va to'lov davom etadi (sweep qoidasi bilan bir xil);
+   o'qilmasa → 502/504, pul yechilmaydi. Urinish `confirming`, **commit**
    — charge provider'ga hech qachon ikki marta ketmaydi. So'ng
    `provider.confirm()` qulfsiz; natija `settle_attempt` bilan **qayta qulf +
    qayta o'qish** ostida qo'llanadi (sweep bilan poyga): `paid` → urinish
