@@ -207,6 +207,107 @@
           "response": []
         },
         {
+          "name": "Upload — payment logo",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/uploads/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "uploads",
+                ""
+              ]
+            },
+            "description": "multipart/form-data. purpose=payment_logo — PNG/JPEG/WEBP/GIF/SVG, max 1 MB. Pick a file in the `file` row below (Postman leaves it empty in a shared collection; select one on your machine before sending). Saves {{upload_id}}; attach it with Payme — attach logo (or any other provider's logo_id the same way).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "purpose",
+                  "type": "text",
+                  "value": "payment_logo"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.id) {",
+                  "  pm.collectionVariables.set('upload_id', body.data.id);",
+                  "  console.log('upload', body.data.id, body.data.url);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Payme — attach logo",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/payme/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                "payme",
+                ""
+              ]
+            },
+            "description": "Points the row at the file Upload — payment logo just created (replaces whatever logo it held before, if any). The response's logo_url is what site-config's payment_methods will show next to the Payme button.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"logo_id\": \"{{upload_id}}\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Payme — settings",
           "request": {
             "method": "PATCH",
@@ -1217,6 +1318,10 @@
     },
     {
       "key": "credential_id",
+      "value": ""
+    },
+    {
+      "key": "upload_id",
       "value": ""
     },
     {
