@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "b2c-admin",
-    "description": "Manual testing collection for the B2C platform API.\n\nRun order:\n1. admin — setup: Staff login → GTS credentials create → activate (once per environment); health should say gts: ok\n2. auth — customer: Login (or Register + confirm)\n3. flight: Search → Offers (repeat until search_status is \"success\") → Verify → Booking\n4. orders: list and detail\n\nTokens, request_id, offer_id and order_id are captured into collection variables automatically. Every response uses the {status, data, errors, meta} envelope; errors carry GTS's own message in meta.upstream.\n\nWARNING: Booking against a live GTS account creates a real hold at the supplier.",
+    "description": "Manual testing collection for the B2C platform API.\n\nRun order:\n1. admin — setup: Staff login → GTS credentials create → activate (once per environment); Demo — switch on (works end to end); Payme — settings + switch on (optional — GTS's test server prices everything at 0.00, and the Payme adapter refuses a zero amount, so a real charge never completes here; it is included to show the panel and site-config with more than one method enabled). health should say gts: ok\n2. auth — customer: Login (or Register + confirm)\n3. flight: Search → Offers (repeat until search_status is \"success\") → Verify → Booking\n4. orders: list and detail\n\nTokens, request_id, offer_id, order_id and payment_id are captured into collection variables automatically. Every response uses the {status, data, errors, meta} envelope; errors carry GTS's own message in meta.upstream.\n\nPay — step 1 sends {{payment_method}} (default demo — the only method that actually pays here); switch it to payme to exercise the panel/site-config path instead, keeping in mind it cannot complete a charge.\n\nWARNING: Booking against a live GTS account creates a real hold at the supplier.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -303,7 +303,7 @@
                 ""
               ]
             },
-            "description": "Enabling one provider switches the others off.",
+            "description": "Needs merchant_id and key already stored (Payme — settings). Several providers may be enabled at once — this does not switch any other off.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -317,6 +317,47 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Demo — switch on",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/integrations/payments/demo/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "integrations",
+                "payments",
+                "demo",
+                ""
+              ]
+            },
+            "description": "Charges nobody; the one code that pays is the panel's own otp (default 123456, shown here explicitly) — not DEBUG-gated, and the method Pay — step 1/2 exercise end to end by default.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"credentials\": {\n    \"otp\": \"123456\"\n  },\n  \"enabled\": true\n}"
             }
           },
           "response": []
@@ -815,7 +856,7 @@
           "response": []
         },
         {
-          "name": "Pay — step 1 (sandbox: any Luhn-valid card)",
+          "name": "Pay — step 1",
           "request": {
             "method": "POST",
             "header": [
@@ -842,9 +883,9 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"card\": {\n    \"number\": \"4111111111111111\",\n    \"expire\": \"1230\"\n  },\n  \"save\": false\n}"
+              "raw": "{\n  \"method\": \"{{payment_method}}\",\n  \"card\": {\n    \"number\": \"4111111111111111\",\n    \"expire\": \"1230\"\n  },\n  \"save\": false\n}"
             },
-            "description": "Either {card_id} (a saved card) or {card: {number, expire}} — exactly one. save: true with a typed card keeps it once the provider accepted it. Answers awaiting_otp with payment_id and phone_hint; a declined card is 200 with payment.status=failed."
+            "description": "method — a code from site-config payment_methods, required (default here: {{payment_method}}). Either card_id (a saved card) or card: {number, expire} — exactly one. save: true with a typed card keeps it once the provider accepted it. Answers awaiting_otp with payment_id and phone_hint; a declined card is 200 with payment.status=failed; an unlisted/disabled method is 422 naming method."
           },
           "event": [
             {
@@ -863,7 +904,7 @@
           ]
         },
         {
-          "name": "Pay — step 2 (sandbox OTP: 000000 paid · 111111 declined · 222222 lost · 333333 pending)",
+          "name": "Pay — step 2",
           "request": {
             "method": "POST",
             "header": [
@@ -892,7 +933,8 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"payment_id\": \"{{payment_id}}\",\n  \"otp\": \"000000\"\n}"
-            }
+            },
+            "description": "otp — 123456 pays with the demo method (any other code is failed, nothing charged). With payme instead: any code fails here (GTS's test server prices at 0.00, which the Payme adapter refuses before it ever sends a charge)."
           },
           "event": [
             {
@@ -1132,6 +1174,10 @@
     {
       "key": "admin_password",
       "value": "change-me"
+    },
+    {
+      "key": "payment_method",
+      "value": "demo"
     },
     {
       "key": "customer_email",
