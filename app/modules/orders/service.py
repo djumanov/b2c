@@ -1308,6 +1308,123 @@ async def _after_paid(session: AsyncSession, order: Order, *, actor: str) -> Non
         )
 
 
+# --- cancelling ------------------------------------------------------------------
+
+
+async def cancel_order(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    *,
+    language: str | None = None,
+) -> BookingResultOut:
+    """The customer lets a hold go — **at GTS first, in our record second**.
+
+    GTS releasing the seat is the act; the row is the record of it. So the
+    cancellation goes out before anything here is written, and what is
+    written afterwards describes what GTS did. The other order would put a
+    cancelled order in the books against a seat GTS keeps holding until the
+    deadline.
+
+    Only before a ticket. GTS ends a hold with ``cancel`` and an issued
+    ticket with ``void`` or ``refund``, and neither of those is part of this
+    flow — so the guard is the payment one: ``_require_payable`` names an
+    order whose hold is still ours to release, because an order that can
+    still take money is exactly that order. ``lifecycle.transition`` has the
+    final word under the lock. A charge being confirmed refuses the
+    cancellation twice, before GTS is asked and again after: nothing about an
+    order may change while its money is in flight.
+
+    **The answer is read back whatever GTS said**, because neither answer
+    settles it alone: the cancellation carries no status, and a refusal may
+    only mean the hold is already gone — an order GTS has released refuses a
+    second cancellation, and that is a cancelled order, not a failure. One
+    ``retrieve`` decides both. A refusal with the hold still alive is the
+    ``502`` it is and writes nothing.
+
+    Asking again once the order is cancelled is neither an error nor a second
+    call to GTS: the order comes back as it stands.
+    """
+    order = await _owned(session, customer_id, order_id)
+    if order.status == OrderStatus.CANCELLED:
+        return await _present(session, order, language=language)
+    _require_payable(order)
+    open_attempt = await _open_attempt(session, order.id)
+    if open_attempt is not None and open_attempt.status == AttemptStatus.CONFIRMING:
+        raise Conflict("A payment for this order is being confirmed")
+
+    adapter = _adapter(order)
+    client = await integrations_service.gts_client(session)
+    refusal: UpstreamError | UpstreamTimeout | None = None
+    try:
+        await adapter.cancel(client, order.gts_order_number)
+    except (UpstreamError, UpstreamTimeout) as exc:
+        refusal = exc
+    snapshot: OrderSnapshot | None
+    try:
+        snapshot = await adapter.retrieve(client, order.gts_order_number)
+    except (UpstreamError, UpstreamTimeout) as exc:
+        logger.warning(
+            "gts_read_after_cancel_failed",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            error=str(exc),
+        )
+        snapshot = None
+    released = snapshot is not None and gts_order.is_released(snapshot.gts_status)
+    if refusal is not None and not released:
+        raise refusal
+    if refusal is None and snapshot is not None and not released:
+        # GTS accepted the cancellation and still shows the hold. The POST is
+        # the act and the read is the corroboration, so the act stands — but
+        # a disagreement this shape is worth a person seeing.
+        logger.warning(
+            "gts_still_holds_after_cancel",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            gts_status=snapshot.gts_status,
+        )
+
+    order = await _owned_locked(session, customer_id, order_id)
+    open_attempt = await _open_attempt(session, order.id, for_update=True)
+    try:
+        events = lifecycle.transition(
+            order,
+            actor=lifecycle.CUSTOMER,
+            status=OrderStatus.CANCELLED,
+            cancel_reason=CancelReason.CUSTOMER,
+            open_attempt=open_attempt.status if open_attempt is not None else None,
+            data={"gts_status": snapshot.gts_status if snapshot else order.gts_status},
+        )
+    except Conflict:
+        # The seat is gone at GTS and the order moved under us in the moment
+        # it took to ask — only a payment can do that here. Left for support:
+        # the ticket GTS will now refuse is what makes it visible, and
+        # ``/admin/orders/{id}/sync/`` shows the released hold right away.
+        logger.error(
+            "cancel_raced_payment",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            payment_status=order.payment_status,
+        )
+        raise
+    if open_attempt is not None:
+        # A code sent for an order nobody will pay for; the index that allows
+        # one open attempt per order should not keep holding it either.
+        open_attempt.status = AttemptStatus.ABANDONED
+    if snapshot is not None:
+        apply_snapshot(order, snapshot)
+    session.add_all(events)
+    await session.commit()
+    logger.info(
+        "order_cancelled",
+        order_id=str(order.id),
+        gts_order_number=order.gts_order_number,
+        gts_status=order.gts_status,
+    )
+    return await _present(session, order, language=language)
+
+
 # --- ticketing -------------------------------------------------------------------
 
 Decision = Literal["ticketed", "failed", "wait", "resend"]
@@ -1971,6 +2088,7 @@ __all__ = [
     "TICKETING_MAX_WAIT",
     "TICKETING_POST_GRACE",
     "apply_snapshot",
+    "cancel_order",
     "confirm_payment",
     "confirm_price",
     "create_order",

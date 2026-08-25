@@ -450,6 +450,58 @@ so'ralmagan — crash xavfsizlik to'ri) → `recheck_processing` (har `processin
 order `GET` bilan, `gts_checked_at` tartibida, 20 tadan) → to'lov va muddat
 qismlari (4a).
 
+## 4c. Bekor qilish — avval GTS, keyin biz
+
+`POST /public/orders/{id}/cancel/` (body yo'q) — mijoz **to'lanmagan** bronni
+qo'yib yuboradi. GTS hayot siklida bu `cancel`: "отмена брони до выписки"
+(`docs/gts-api-v1.4.pdf`, 12-bet). Chiqarilgan chipta bu yerda qaytarilmaydi —
+u `void` yoki `refund`, ikkalasi ham bu relizda yo'q.
+
+Tartib **GTS avval**: joyni ushlab turgan GTS, bizdagi qator esa uning yozuvi.
+Teskarisi bekor qilingan orderni GTS hali ushlab turgan joyga qarshi qo'yardi —
+muddat o'tguncha.
+
+1. Egasi (`404`), so'ng `_require_payable`: pul qabul qila oladigan order —
+   broni hali bizniki bo'lgan order, predikat aynan bir xil. Ochiq urinish
+   `confirming` bo'lsa **409**, GTS'ga borilmasdan.
+2. `POST /v1/content/cancel/ {order_number}` (`FlightAdapter.cancel`). Javob
+   **o'qilmaydi**: GTS uni uchta konvertining qaysi biridir bilan qaytaradi va
+   u **status olib yurmaydi** — faqat `order_number`, `cancel_booking_date`,
+   `ticket_date`.
+3. **`GET /v1/orders/{n}/` — har holatda.** GTS hozir nima ushlab turganini
+   faqat shu aytadi, va u rad javobini ham hal qiladi: allaqachon qo'yib
+   yuborilgan orderni GTS ikkinchi marta bekor qilishdan bosh tortadi, bu esa
+   **bekor qilingan order**, xato emas. Rad javobi (yoki timeout) + bron tirik
+   → 502/504, hech narsa yozilmaydi.
+4. Qulf ostida: `transition(status=cancelled, cancel_reason=customer)`, ochiq
+   `started` urinish → `abandoned`, `apply_snapshot` (`gts_status = CB`), event
+   `order.cancelled {gts_status}`, commit.
+
+Chekka holatlar:
+
+- **Allaqachon `cancelled`** → GTS'ga umuman borilmaydi, order shundayligicha
+  qaytadi (200). Endpoint shu bilan idempotent — `Idempotency-Key` kerak emas.
+- **GTS `success` dedi-yu, o'qiganda hali `BO`** → POST — harakat, o'qish —
+  faqat tasdiq: bekor qilish o'z kuchida qoladi, farq WARNING
+  `gts_still_holds_after_cancel` bilan yoziladi.
+- **O'qib bo'lmadi** (cancel muvaffaqiyatli bo'lsa) → bekor qilish baribir
+  yoziladi, `gts_status` eski holida qoladi, WARNING
+  `gts_read_after_cancel_failed`.
+- **Poyga.** GTS'ga cancel ketgandan keyin, qulfgacha bo'lgan oniyda to'lov o'tib
+  ketsa — `transition` 409 beradi, ERROR `cancel_raced_payment`. Order
+  `paid + booked` bo'lib qoladi; `ticket_paid_pending` chipta so'raydi, GTS `CB`
+  order uchun rad etadi → `ticketing_failed` → support. `sync/` buni hoziroq
+  ko'rsatadi.
+- **Commit yiqilsa** (GTS bekor qildi, biz yozolmadik): keyingi `payment/` GTS'ni
+  o'qib `offer_expired` beradi va orderni `cancelled/expired` qiladi; sweep
+  muddat o'tgach o'zi topadi; `sync/` esa darhol.
+- Booking **idempotency** 24 soat yashaydi: bekor qilib, **aynan o'sha** booking
+  body'si qayta yuborilsa yangi bron emas, bekor qilingan order qaytadi. Yangi
+  qidiruvdan keyin `offer_id` boshqa bo'ladi, shuning uchun amalda uchramaydi.
+
+Staff cancel'i yo'q — `lifecycle` unga ruxsat bersa ham, to'langan bronni bekor
+qilish refund savoli va u 4-bosqichda qo'lda hal qilinadi.
+
 ## 5. API
 
 Javob shakli hamma joyda bir xil — `BookingResultOut`:
@@ -484,6 +536,7 @@ qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — `{method, card_id \| card}`; kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint`; yoqilmagan `method` → 422 |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
+| POST | `/public/orders/{id}/cancel/` | customer | 1 — body yo'q (§4c): avval `POST /v1/content/cancel/`, keyin `cancelled/customer`; allaqachon bekor qilingan order → 200 va GTS'ga borilmaydi; to'langan, ticketing'dagi yoki `confirming` urinishli order → 409 |
 | GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`, sabab uchun `cancel_reason`, `ticketing_error`, `updated_at`; filtrlar: `status` (§2 dagi oltita so'z — SQL `stage_of` ning o'zidan hosil qilinadi, `lifecycle.stage_filter`) va uchta xom ustun, birga ishlaydi; **support inbox = `status=ticketing_failed`** — ekrani "supportga murojaat qiling" deydigan har bir order, puli qaytgani emas; `ordering` — `created_at` yoki `updated_at` (`-updated_at` — eng so'nggi o'zgargan birinchi); `search` — PNR yoki GTS raqami |
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
 | POST | `/admin/orders/{id}/refund/` | staff | `{status: refunding \| refunded \| refund_failed, note}` — pul provider kabinetida qaytariladi, bu yozuv; `ticketed` orderga — 409 |
@@ -513,8 +566,8 @@ status o'zgarishi va izoh).
 
 ## 7. Keyingi ishlar (bu to'rt bosqichdan tashqarida)
 
-- `POST /public/orders/{id}/cancel/` — mijoz to'lanmagan bronni bekor qiladi
-  (`POST /v1/content/cancel/`, `cancelled/customer`); guard'lar tayyor.
+- ~~`POST /public/orders/{id}/cancel/`~~ — §4c: mijoz to'lanmagan bronni avval
+  GTS'da, keyin bizda bekor qiladi (`cancelled/customer`).
 - Email xabarnomalar (`ticket_waiting`, `ticketed`, `ticketing_failed`) —
   `customers.service._send` namunasi; commit'dan keyin, faqat event qaytgan
   yo'l yuboradi. Hozir mijoz xabarni ilovada (`order.message`) ko'radi.

@@ -235,6 +235,24 @@ class ProductAdapter(Protocol):
         """
         ...
 
+    async def cancel(self, client: GtsClient, order_number: int) -> None:
+        """Release a held booking before any ticket is issued (``cancel``).
+
+        GTS's own exit from a hold — "отмена брони до выписки". A ticket
+        already issued is not undone here: that is ``void`` or ``refund``,
+        and neither is part of this flow.
+
+        Nothing is returned because there is nothing trustworthy to return.
+        The answer names the order and the moment it was released and
+        **carries no status**, so the caller reads the order back with
+        ``retrieve`` to learn what GTS now holds (``CB`` once the hold is
+        gone). A refusal raises ``UpstreamError`` with GTS's words — and is
+        read back before it is believed, exactly as after a refused
+        ``ticket``: an order GTS has already released refuses a second
+        cancellation.
+        """
+        ...
+
 
 class ProductRegistry:
     """Product code → adapter. Adding a vertical is one registration."""

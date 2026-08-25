@@ -549,6 +549,25 @@ class FlightAdapter:
             raise UpstreamError("the GTS ticketing answer had an unexpected shape")
         return _snapshot(order_number, order)
 
+    async def cancel(self, client: GtsClient, order_number: int) -> None:
+        """``POST /v1/content/cancel/`` — release the hold before ticketing.
+
+        The answer is not read at all, and that is deliberate twice over.
+        Where it puts the order is not settled — under ``data.order`` in the
+        documentation, under a bare ``order`` with no ``data`` key at all in
+        the shape that once turned every successful cancellation into a 502 —
+        and whichever arrives, what it holds is the order number and a
+        ``cancel_booking_date``, **never a status**. So the whole envelope is
+        taken for the single verdict it does carry (the client raises on
+        GTS's refusal) and the caller asks ``retrieve`` what GTS now holds.
+        Reading nothing is what makes this step indifferent to the shape.
+        """
+        await client.post_envelope(
+            "/v1/content/cancel/",
+            json={"order_number": order_number},
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
+
     async def retrieve(self, client: GtsClient, order_number: int) -> OrderSnapshot:
         """``GET /v1/orders/{n}/`` — the order as GTS holds it right now.
 
