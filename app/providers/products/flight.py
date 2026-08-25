@@ -560,7 +560,7 @@ class FlightAdapter:
         order_number: int,
         *,
         passenger_index: int | None = None,
-    ) -> GtsDocument:
+    ) -> GtsDocument | None:
         """``GET /v1/receipt/pattern/view/`` — the itinerary receipt, as a file.
 
         The only step whose answer is a file. ``product`` is GTS's own name
@@ -570,7 +570,9 @@ class FlightAdapter:
 
         Nothing is read out of the bytes and nothing is added to them: what a
         customer downloads is what GTS rendered, which is the point of asking
-        GTS for it rather than laying out a ticket of our own.
+        GTS for it rather than laying out a ticket of our own. ``None`` is
+        GTS saying it has drawn nothing for this order — the body reads
+        ``None`` and the caller decides what to tell the customer.
         """
         params: dict[str, Any] = {
             "order_number": order_number,

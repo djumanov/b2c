@@ -338,14 +338,21 @@ RECEIPT_PDF = b"%PDF-1.4 itinerary receipt"
 def mock_gts_receipt(
     content: bytes = RECEIPT_PDF,
     *,
-    content_type: str = "application/pdf",
+    content_type: str = "application/json",
     error: str | None = None,
 ) -> Any:
     """``GET /v1/receipt/pattern/view/`` — the file, or GTS's refusal.
 
-    A refusal arrives the way every GTS refusal does, and that is the point
-    of the mock: HTTP 200 with a JSON envelope where the document should
-    have been.
+    ``content_type`` defaults to the **wrong** one on purpose: live GTS
+    serves its documents from the same DRF stack as its data and labels
+    every one of them ``application/json``, receipts included (orders 4903
+    and 4905, 2026-08-25). A mock that labelled the PDF honestly would test
+    a server we do not have.
+
+    A refusal arrives the way every GTS refusal does, and that is the other
+    half of the point: HTTP 200 with a JSON envelope where the document
+    should have been. GTS's way of saying it has drawn nothing is a body
+    reading ``None`` — pass it as ``content``.
     """
     import respx
 

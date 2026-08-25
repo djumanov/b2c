@@ -528,7 +528,16 @@ tugma shu maydonni kutadi.
   holati, bizdagi nusxa esa GTS orderga tegishi bilan eskiradi. Qidiruv
   natijalari qoidasi, faylga qo'llangani.
 - **Faqat `ticketed`** — aks holda 409, GTS'ga umuman borilmasdan: javobni o'z
-  ustunimiz allaqachon biladi.
+  ustunimiz allaqachon biladi. GTS'ning o'zi hujjat chizmagan bo'lsa ham 409
+  (WARNING `gts_receipt_absent`) — javob keldi, xato yo'q, faqat qog'oz hali
+  yo'q; 502 aloqani ayblagan bo'lardi.
+- **`Content-Type` ga ishonilmaydi.** Jonli GTS ma'lumotni ham, hujjatni ham
+  bir xil DRF stack'idan beradi va **hammasini `application/json`** deb
+  belgilaydi (4903 va 4905 orderlari, 2026-08-25: `application/json` ostida
+  4 baytlik `None`). Shuning uchun qaror **birinchi baytlar** bo'yicha:
+  `%PDF-` → `application/pdf`, `<` → `text/html`, `{`/`[` → bu hujjat emas,
+  data (rad javobi bo'lsa `upstream_error`), `None`/`null` → hujjat yo'q.
+  Yorliqqa ishonish tayyor kvitansiyani "parse xatosi" ga aylantirgan edi.
 - GTS'ning `Content-Type` i o'z holicha, `Content-Disposition` da
   `receipt-{PNR}.pdf` (PNR — GTS matni, faqat harf va raqamlari o'tadi, chunki
   header'ga tushadi). Kutilmagan tur — WARNING `gts_receipt_unexpected_type`,

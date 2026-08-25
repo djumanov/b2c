@@ -42,8 +42,10 @@ RECEIPT_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
         ErrorCode.UPSTREAM_ERROR,
         ErrorCode.UPSTREAM_TIMEOUT,
         conflict=(
-            "There is no receipt yet: GTS has not issued the ticket. Poll "
-            "`GET /public/orders/{id}/` until `ticketing.status` is `ticketed`."
+            "There is no receipt yet. Either GTS has not issued the ticket — "
+            "poll `GET /public/orders/{id}/` until `ticketing.status` is "
+            "`ticketed` — or it has issued it and not drawn the document "
+            "yet, in which case try again shortly."
         ),
         upstream_error=(
             "GTS could not render the receipt; its words are in "

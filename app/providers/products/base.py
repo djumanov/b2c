@@ -241,7 +241,7 @@ class ProductAdapter(Protocol):
         order_number: int,
         *,
         passenger_index: int | None = None,
-    ) -> GtsDocument:
+    ) -> GtsDocument | None:
         """The travel document of a **ticketed** order, as GTS renders it.
 
         The flight vertical's is the itinerary receipt ("маршрутная
@@ -251,9 +251,12 @@ class ProductAdapter(Protocol):
         would be the staler of the two the moment anything changed.
 
         ``passenger_index`` (0-based) narrows it to one traveller; without it
-        the document covers everyone on the order. Asking before the ticket
-        exists is the caller's mistake to prevent — GTS answers a refusal,
-        and that is an ``UpstreamError`` like any other.
+        the document covers everyone on the order.
+
+        ``None`` is GTS answering that it has no such document — for an order
+        it has not ticketed, and for a ticketed one whose paper it has not
+        drawn yet. Not a failure: the caller knows what the order's state
+        makes of it.
         """
         ...
 
