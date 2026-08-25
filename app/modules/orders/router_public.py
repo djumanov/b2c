@@ -55,6 +55,7 @@ from app.api.openapi import error_responses
 from app.db.session import SessionDep
 from app.modules.orders import service
 from app.modules.orders.schemas import (
+    TICKETED_EXAMPLE,
     BookingResultOut,
     OrderListItemOut,
     PaymentConfirmIn,
@@ -116,6 +117,27 @@ async def list_orders(
         "reflects it. Another customer's order is a `404`, not a `403`."
     ),
     response_description="The order, in the same shape booking answered.",
+    # A **ticketed** order for the example, not the booked one the model
+    # carries: the fields a client comes here for — `receipt_url`, the ticket
+    # numbers, `paid_at` — are exactly the ones a booked order leaves `null`,
+    # and Swagger's generation deletes nulls from a model-level example.
+    # ``openapi_extra`` is re-applied afterwards, so this one survives whole.
+    openapi_extra={
+        "responses": {
+            "200": {
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "status": "success",
+                            "data": TICKETED_EXAMPLE,
+                            "errors": [],
+                            "meta": None,
+                        }
+                    }
+                }
+            }
+        }
+    },
 )
 async def get_order(
     id: uuid.UUID,
