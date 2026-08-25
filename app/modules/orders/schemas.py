@@ -614,13 +614,37 @@ class TicketingOut(BaseModel):
         description="Issued ticket numbers by passenger; empty until `ticketed`."
     )
     error: str | None = Field(description="GTS's reason when `status` is `failed`.")
+    receipt_url: str | None = Field(
+        description=(
+            "The itinerary receipt — the travel document the passenger shows "
+            "at the airport. A **whole link**, straight to GTS, which is the "
+            "one that renders it: open or download it as it stands, no token "
+            "of ours involved. Add `&passenger_index=0` (counted from zero) "
+            "for a single traveller's copy.\n\n"
+            "Set only once `status` is `ticketed` — `null` before that, "
+            "because there is nothing to render yet, so this field is what "
+            "the download button waits for. The host is this installation's "
+            "own GTS, so it differs between the sandbox and production; "
+            "never store or hardcode it, read it here each time.\n\n"
+            "`GET /public/orders/{id}/receipt/` serves the same document "
+            "through this API instead, for a client that would rather not "
+            "call GTS itself."
+        )
+    )
 
     @classmethod
-    def from_order(cls, order: Order) -> "TicketingOut":
+    def from_order(
+        cls, order: Order, *, receipt_url: str | None = None
+    ) -> "TicketingOut":
+        ticketing = TicketingStatus(order.ticketing_status)
         return cls(
-            status=TicketingStatus(order.ticketing_status),
+            status=ticketing,
             requested_at=order.ticketing_requested_at,
             ticketed_at=order.ticketed_at,
+            # Passed in rather than built here: the link is GTS's, and where
+            # GTS lives is a database setting the vertical spells (the orders
+            # service reads both and hands the result over).
+            receipt_url=receipt_url,
             tickets=[
                 TicketOut.model_validate(ticket)
                 for ticket in gts_order.tickets(order.gts_response)
@@ -675,6 +699,7 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
         "ticketed_at": None,
         "tickets": [],
         "error": None,
+        "receipt_url": None,
     },
     "order_data": {
         "order_number": 61453,
@@ -720,6 +745,7 @@ class BookingResultOut(BaseModel):
         language: str | None,
         messages: MessageCatalogue,
         attempt: PaymentAttemptView | None = None,
+        receipt_url: str | None = None,
     ) -> "BookingResultOut":
         # The attempt shapes the ``payment`` block only; ``order.status`` is
         # the columns' reading and says the same on the list and here.
@@ -727,9 +753,22 @@ class BookingResultOut(BaseModel):
             product=order.product,
             order=OrderOut.from_order(order, language=language, messages=messages),
             payment=PaymentOut.from_order(order, attempt),
-            ticketing=TicketingOut.from_order(order),
+            ticketing=TicketingOut.from_order(order, receipt_url=receipt_url),
             order_data=_order_data(order),
         )
+
+
+class ReceiptDocument(BaseModel):
+    """The receipt on its way out — bytes, not JSON.
+
+    Never part of the published schema: the route answers with the file
+    itself, so this only carries it from the service to the route together
+    with the two things the response needs to say about it.
+    """
+
+    content: bytes
+    content_type: str
+    filename: str
 
 
 # --- the support desk ----------------------------------------------------------------
@@ -1012,6 +1051,7 @@ __all__ = [
     "PaymentResendIn",
     "PaymentStartIn",
     "PaymentViewStatus",
+    "ReceiptDocument",
     "RefundIn",
     "RepriceOut",
     "strip_commission",

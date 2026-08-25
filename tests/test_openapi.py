@@ -24,6 +24,7 @@ SCHEMAS: dict[str, Any] = SCHEMA["components"]["schemas"]
 DOCUMENTED: tuple[tuple[str, str], ...] = (
     ("/api/v1/public/orders/", "get"),
     ("/api/v1/public/orders/{id}/", "get"),
+    ("/api/v1/public/orders/{id}/receipt/", "get"),
     ("/api/v1/public/orders/{id}/reprice/", "post"),
     ("/api/v1/public/orders/{id}/reprice/confirm/", "post"),
     ("/api/v1/public/orders/{id}/payment/", "post"),
@@ -326,6 +327,13 @@ def test_success_bodies_are_enveloped_and_lists_unfold() -> None:
     assert listing["meta"] == {"$ref": "#/components/schemas/PageMeta"}
     delete = PATHS["/api/v1/public/profile/cards/{id}/"]["delete"]["responses"]["204"]
     assert "content" not in delete
+    # The receipt is a file: it is the one success body the envelope leaves
+    # alone, and it says so by offering no ``application/json`` at all.
+    receipt = PATHS["/api/v1/public/orders/{id}/receipt/"]["get"]["responses"]["200"]
+    assert set(receipt["content"]) == {"application/pdf", "text/html"}
+    index = _parameters("/api/v1/public/orders/{id}/receipt/", "get")["passenger_index"]
+    assert index["in"] == "query"
+    assert _resolve(index["schema"])["minimum"] == 0
 
 
 def test_booking_answers_with_the_documented_model_and_a_full_example() -> None:
