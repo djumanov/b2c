@@ -220,7 +220,9 @@ async def test_start_refreshes_the_order_from_gts_but_charges_the_confirmed_pric
     assert data["order"]["amount"] == {"amount": "20.00", "currency": "UZS"}
     assert data["payment"]["amount"] == {"amount": "20.00", "currency": "UZS"}
     assert data["payment"]["price_confirmed"] is True
+    # ``order_data`` is the read-back, with the repriced figures over it.
     assert data["order_data"]["gds_pnr"] == "UBPLKW"
+    assert data["order_data"]["price_info"]["price"] == 20.0
     (attempt,) = await _attempts(db_session, order)
     assert str(attempt.amount) == "20.00"
 

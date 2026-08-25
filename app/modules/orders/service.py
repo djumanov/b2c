@@ -346,10 +346,12 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
     an installation that sends minutes-remaining shrinks it on every read
     rather than extending it.
 
-    A **confirmed price is not overwritten**: ``reprice_confirm`` is GTS's
-    later and final word on what ticketing debits, and the order's own
+    A **repriced order's amount is not overwritten**: once the price step
+    has run, ``price_response`` (``reprice_check``/``reprice_confirm``) is
+    GTS's later word on what ticketing debits, and the order record's own
     ``price_info`` is the booking's. A read that disagrees is logged, not
-    believed — the price the customer accepted is the one charged.
+    believed — ``gts_response`` is still replaced whole (it is the record,
+    verbatim), and ``order_data`` shows the repriced figures over it.
     """
     if snapshot.gts_status:
         order.gts_status = snapshot.gts_status
@@ -358,14 +360,14 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
     if snapshot.pnr:
         order.pnr = snapshot.pnr
     if snapshot.amount is not None and snapshot.currency:
-        if order.price_confirmed_at is None:
+        if order.repriced_at is None:
             order.amount = snapshot.amount
             order.currency = snapshot.currency
         elif (snapshot.amount, snapshot.currency) != (order.amount, order.currency):
             logger.warning(
-                "gts_price_differs_from_confirmed",
+                "gts_price_differs_from_reprice",
                 order_id=str(order.id),
-                confirmed=f"{order.amount} {order.currency}",
+                repriced=f"{order.amount} {order.currency}",
                 read=f"{snapshot.amount} {snapshot.currency}",
             )
     if snapshot.trip_type:
@@ -518,10 +520,13 @@ def _take_price(
 ) -> bool:
     """Write a price GTS answered with. ``True`` when it differs from the one held.
 
-    A different price invalidates what the customer saw: the confirmation
-    is cleared, and an open attempt — a code sent for the old amount — is
-    abandoned so it can never confirm a charge of a price nobody accepted.
+    The answer is kept whole (``price_response``: the breakdown the client
+    shows) whatever the figure. A different price invalidates what the
+    customer saw: the confirmation is cleared, and an open attempt — a code
+    sent for the old amount — is abandoned so it can never confirm a charge
+    of a price nobody accepted.
     """
+    order.price_response = dict(price.raw)
     before = (order.amount, order.currency)
     if before == (price.amount, price.currency):
         return False
@@ -596,17 +601,42 @@ async def confirm_price(
     normally equals the check's; when it does not, the difference is written
     as an event and the order is confirmed at GTS's figure, which is what the
     answer to this call shows the customer.
+
+    GTS has repriced its record by now, so the order is **read back** and
+    the answer is the order as it stands — status, deadline, ``order_data``
+    — at the confirmed price. The read-back is best effort: the confirmation
+    is the act that matters, and a read that fails is a warning, not a
+    confirmation undone. A hold GTS has released since is the same
+    ``offer_expired`` the payment step would have found.
     """
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
     _require_payable(order)
     if order.repriced_at is None:
         raise Conflict("Check the price first — call reprice/ before confirming it")
-    price = await _adapter(order).confirm_price(client, order.gts_order_number)
+    adapter = _adapter(order)
+    price = await adapter.confirm_price(client, order.gts_order_number)
+    snapshot: OrderSnapshot | None
+    try:
+        snapshot = await adapter.retrieve(client, order.gts_order_number)
+    except (UpstreamError, UpstreamTimeout) as exc:
+        logger.warning(
+            "gts_read_after_confirm_failed",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            error=str(exc),
+        )
+        snapshot = None
 
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
     if order.repriced_at is None:
         raise Conflict("Check the price first — call reprice/ before confirming it")
+    if snapshot is not None:
+        apply_snapshot(order, snapshot)
+        if gts_order.is_released(snapshot.gts_status):
+            session.add_all(_released(order, snapshot))
+            await session.commit()
+            raise OfferExpired("The booking has expired at GTS — please search again")
     changed = _take_price(session, order, open_attempt, price, event="price.repriced")
     if changed:
         logger.warning(

@@ -176,6 +176,13 @@ class Order(Entity):
     #: (``reprice_confirm``) — what ticketing will debit. Payment refuses
     #: without it; a later reprice that finds another price clears it.
     price_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The last reprice answer (``data`` of ``reprice_check`` /
+    #: ``reprice_confirm``: ``price_info``, ``price_details``), verbatim. GTS's
+    #: **later** word on the price than the order record's own ``price_info``
+    #: in ``gts_response`` — ``amount``/``currency`` are its typed reading,
+    #: and ``order_data`` shows its figures over the record's. NULL until the
+    #: price step has run.
+    price_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     # --- ticketing bookkeeping -----------------------------------------------
     #: When we last asked GTS to issue the ticket — the clock the sweep's

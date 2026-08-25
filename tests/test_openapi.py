@@ -155,16 +155,17 @@ def test_every_error_is_the_envelope_and_never_fastapis_shape() -> None:
 
 
 def test_the_money_endpoints_list_the_errors_they_raise() -> None:
-    for path in (
-        "/api/v1/public/orders/{id}/reprice/",
-        "/api/v1/public/orders/{id}/reprice/confirm/",
+    for path, expected in (
+        ("/api/v1/public/orders/{id}/reprice/", {"conflict"}),
+        # Confirm reads the order back, so it can find the hold released.
+        ("/api/v1/public/orders/{id}/reprice/confirm/", {"conflict", "offer_expired"}),
     ):
         price = PATHS[path]["post"]["responses"]
         assert {"409", "502", "504"} <= set(price), path
         codes = price["409"]["content"]["application/json"]["schema"]["properties"][
             "errors"
         ]["items"]["properties"]["code"]["enum"]
-        assert set(codes) == {"conflict"}, path
+        assert set(codes) == expected, path
 
     start = PATHS["/api/v1/public/orders/{id}/payment/"]["post"]["responses"]
     assert {"409", "502", "504"} <= set(start)

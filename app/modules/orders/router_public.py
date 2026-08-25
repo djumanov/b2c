@@ -119,7 +119,8 @@ async def get_order(
     summary="Pay — step 0: check today's price",
     description=(
         "Asks GTS what the held order costs right now (`reprice_check`) and "
-        "answers with the order — `payment.amount` is that price. GTS "
+        "answers with the order — `payment.amount`, `order.amount` and "
+        "`order_data.price_info` / `price_details` are that price. GTS "
         "requires this and `reprice/confirm/` before it will issue a "
         "ticket, so `payment/` refuses an order whose price is not "
         "confirmed (`payment.price_confirmed`).\n\n"
@@ -167,25 +168,35 @@ async def reprice_order(
     summary="Pay — step 0b: accept the price",
     description=(
         "The customer accepted the price `reprice/` showed: tells GTS so "
-        "(`reprice_confirm`) and unlocks `payment/`. Refused (`409`) before "
-        "`reprice/` has been called for this order.\n\n"
+        "(`reprice_confirm`), reads the order back from GTS and unlocks "
+        "`payment/`. Refused (`409`) before `reprice/` has been called for "
+        "this order.\n\n"
         "GTS answers with the price it confirmed, and that is the one "
-        "stored and charged — read `payment.amount` from the answer and "
-        "show it on the payment screen; it is what the customer pays and "
-        "what GTS will debit at ticketing. `payment.price_confirmed` is now "
-        "`true`. Repeatable."
+        "stored and charged. The answer is the order as it now stands, "
+        "everything at that price — `payment.amount`, `order.amount`, "
+        "`order_data.price_info` / `price_details` — plus a fresh "
+        "`pay_before` and `order_data`. Show `payment.amount` on the "
+        "payment screen; it is what the customer pays and what GTS will "
+        "debit at ticketing. `payment.price_confirmed` is now `true`. "
+        "Repeatable."
     ),
     response_description=(
-        "The order with the confirmed price in `payment.amount` and "
+        "The order, re-read from GTS, with the confirmed price in "
+        "`payment.amount`, `order.amount` and `order_data`, and "
         "`payment.price_confirmed = true`."
     ),
     responses=error_responses(
         ErrorCode.CONFLICT,
+        ErrorCode.OFFER_EXPIRED,
         ErrorCode.UPSTREAM_ERROR,
         ErrorCode.UPSTREAM_TIMEOUT,
         conflict=(
             "`reprice/` has not been called yet, the order is not payable, "
             "or a charge for it is being confirmed right now."
+        ),
+        offer_expired=(
+            "GTS confirmed the price but the read-back shows it has released "
+            "the hold since; the order is `cancelled` — search again."
         ),
         upstream_error=(
             "GTS refused to confirm the price; GTS's words are in "

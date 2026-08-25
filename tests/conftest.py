@@ -472,6 +472,7 @@ async def make_order(
         "ticket_time_limit_at": utcnow() + timedelta(days=1),
         "repriced_at": utcnow(),
         "price_confirmed_at": utcnow(),
+        "price_response": gts_price(20.0),
         "gts_response": {"order_number": ORDER_NUMBER},
     }
     fields.update(overrides)

@@ -7,6 +7,7 @@ refuses until the price is confirmed. GTS is ``respx``; the payment provider
 is the scripted ``FakeProvider``.
 """
 
+import logging
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -123,6 +124,8 @@ async def test_same_price_stamps_the_check_and_keeps_the_confirmation(
     await db_session.refresh(order)
     assert order.repriced_at is not None
     assert order.price_confirmed_at is not None
+    # The answer is kept whole even when the figure did not move.
+    assert order.price_response == gts_price(20.0)
     assert await _events(db_session, order) == []
 
 
@@ -144,9 +147,15 @@ async def test_new_price_replaces_the_amount_and_clears_the_confirmation(
     assert data["payment"]["amount"] == UZS_300000
     assert data["order"]["amount"] == UZS_300000
     assert data["payment"]["price_confirmed"] is False
+    # ``order_data`` says the same price — the record's own ``price_info``
+    # is the booking's and never reaches the client once repriced.
+    assert data["order_data"]["price_info"]["price"] == 300000.0
+    assert data["order_data"]["price_info"]["currency"] == "UZS"
+    assert "commission_amount" not in data["order_data"]["price_info"]
     await db_session.refresh(order)
     assert str(order.amount) == "300000.00"
     assert order.price_confirmed_at is None
+    assert order.price_response == NEW_PRICE
     assert await _events(db_session, order) == [
         ("price.repriced", {"from": UZS_20, "to": UZS_300000})
     ]
@@ -343,21 +352,120 @@ async def test_confirm_stores_gts_final_price_when_it_differs_from_the_check(
 ) -> None:
     """The confirmation's figure is what ticketing debits, so it is what is charged."""
     mock_gts_signin()
+    mock_gts_order(gts_order_body())
     mock_gts_reprice_confirm(NEW_PRICE)
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
     response = await _confirm_price(client, order, customer_headers)
 
     assert response.status_code == 200, response.text
-    payment = response.json()["data"]["payment"]
-    assert payment["amount"] == UZS_300000
-    assert payment["price_confirmed"] is True
+    data = response.json()["data"]
+    assert data["payment"]["amount"] == UZS_300000
+    assert data["payment"]["price_confirmed"] is True
+    assert data["order_data"]["price_info"]["price"] == 300000.0
     await db_session.refresh(order)
     assert str(order.amount) == "300000.00"
     assert order.price_confirmed_at is not None
     assert await _events(db_session, order) == [
         ("price.repriced", {"from": UZS_20, "to": UZS_300000}),
         ("price.confirmed", UZS_300000),
+    ]
+
+
+@respx.mock
+async def test_confirm_reads_the_order_back_and_keeps_the_confirmed_price_over_it(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """After confirming, the order is GTS's current record — at the confirmed
+    price, even where the record's own ``price_info`` still says the booking's."""
+    mock_gts_signin()
+    read = mock_gts_order(gts_order_body())  # status BO, pnr, deadline, price 287500
+    mock_gts_reprice_confirm(gts_price(20.0))
+    order = await make_order(
+        db_session,
+        customer,
+        price_confirmed_at=None,
+        gts_status="STATUS_BOOK",
+        pnr=None,
+        gts_response={"order_number": ORDER_NUMBER},
+    )
+
+    response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert read.call_count == 1
+    assert data["payment"]["amount"] == UZS_20
+    assert data["order"]["amount"] == UZS_20
+    assert data["payment"]["price_confirmed"] is True
+    assert data["payment"]["pay_before"] is not None
+    # The read-back filled in the record...
+    assert data["order_data"]["gds_pnr"] == "UBPLKW"
+    assert data["order_data"]["routes"][0]["direction"] == "TAS-VKO"
+    # ...and the confirmed price sits over its booking-time figure.
+    assert data["order_data"]["price_info"]["price"] == 20.0
+    await db_session.refresh(order)
+    assert order.gts_status == "BO"
+    assert order.pnr == "UBPLKW"
+    assert order.gts_checked_at is not None
+    assert order.gts_response["price_info"]["price"] == 287500.0
+    assert str(order.amount) == "20.00"
+
+
+@respx.mock
+async def test_confirm_stands_when_the_read_back_fails(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The confirmation is the act; a read that fails is a warning, not an undo."""
+    mock_gts_signin()
+    mock_gts_order(None)
+    mock_gts_reprice_confirm(gts_price(20.0))
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    with caplog.at_level(logging.WARNING):
+        response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["payment"]["price_confirmed"] is True
+    assert any(
+        "gts_read_after_confirm_failed" in record.getMessage()
+        for record in caplog.records
+    )
+    await db_session.refresh(order)
+    assert order.price_confirmed_at is not None
+    assert order.gts_checked_at is None
+
+
+@respx.mock
+async def test_confirm_finds_the_hold_released_and_cancels(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body(status="CB"))
+    mock_gts_reprice_confirm(gts_price(20.0))
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "offer_expired"
+    await db_session.refresh(order)
+    assert order.status == "cancelled"
+    assert order.cancel_reason == "expired"
+    assert order.gts_status == "CB"
+    assert order.price_confirmed_at is None
+    assert [event for event, _ in await _events(db_session, order)] == [
+        "order.cancelled"
     ]
 
 
@@ -383,26 +491,36 @@ async def test_confirm_refused_by_gts_leaves_the_price_unconfirmed(
 # --- the confirmed price and GTS's read-backs -----------------------------------------
 
 
-async def test_a_read_back_refreshes_an_unconfirmed_price_and_keeps_a_confirmed_one(
+async def test_a_read_back_refreshes_the_price_only_before_the_first_reprice(
     customer: Customer, db_session: AsyncSession
 ) -> None:
-    """``reprice_confirm`` is GTS's later word than the order's own ``price_info``."""
+    """The reprice answer is GTS's later word than the order's own ``price_info``
+    — from the check on, not only from the confirmation: between the two the
+    sweep must not put the booking's figure back."""
     snapshot = OrderSnapshot(
         gts_order_number=ORDER_NUMBER,
         gts_status="BO",
         amount=Decimal("287500.00"),
         currency="UZS",
-        raw={},
+        raw={"price_info": {"price": 287500.0}},
     )
-    unconfirmed = await make_order(db_session, customer, price_confirmed_at=None)
-    service.apply_snapshot(unconfirmed, snapshot)
-    assert str(unconfirmed.amount) == "287500.00"
+    untouched = await make_order(
+        db_session, customer, repriced_at=None, price_confirmed_at=None
+    )
+    service.apply_snapshot(untouched, snapshot)
+    assert str(untouched.amount) == "287500.00"
+
+    checked = await make_order(db_session, customer, price_confirmed_at=None)
+    service.apply_snapshot(checked, snapshot)
+    assert str(checked.amount) == "20.00"
 
     confirmed = await make_order(db_session, customer)
     service.apply_snapshot(confirmed, snapshot)
     assert str(confirmed.amount) == "20.00"
     assert confirmed.gts_status == "BO"
     assert confirmed.gts_checked_at is not None
+    # The record itself is still refreshed whole; the overlay is presentational.
+    assert confirmed.gts_response == {"price_info": {"price": 287500.0}}
 
 
 async def test_the_columns_start_empty_for_an_order_booked_before_the_price_steps(
@@ -415,3 +533,37 @@ async def test_the_columns_start_empty_for_an_order_booked_before_the_price_step
     assert row is not None
     assert row.repriced_at is None and row.price_confirmed_at is None
     assert uuid.UUID(str(row.id)) == order.id
+
+
+async def test_order_data_shows_the_record_alone_until_repriced(
+    customer: Customer, db_session: AsyncSession
+) -> None:
+    from app.modules.orders.schemas import _order_data
+
+    body = {
+        "order_number": ORDER_NUMBER,
+        "price_info": {"price": 287500.0, "currency": "UZS", "commission_amount": 0},
+        "price_details": [{"passenger_type": "ADT", "total_amount": 287500.0}],
+    }
+    before = await make_order(
+        db_session,
+        customer,
+        repriced_at=None,
+        price_confirmed_at=None,
+        price_response=None,
+        gts_response=body,
+    )
+    assert _order_data(before)["price_info"] == {"price": 287500.0, "currency": "UZS"}
+    assert _order_data(before)["price_details"] == body["price_details"]
+
+    after = await make_order(
+        db_session,
+        customer,
+        gts_response=body,
+        price_response={**gts_price(20.0), "price_details": []},
+    )
+    shown = _order_data(after)
+    assert shown["price_info"] == {"price": 20.0, "currency": "UZS", "fee_amount": 0}
+    # An empty breakdown in the answer does not blank the record's.
+    assert shown["price_details"] == body["price_details"]
+    assert shown["order_number"] == ORDER_NUMBER
