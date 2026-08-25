@@ -706,6 +706,80 @@ async def test_confirm_after_deadline_asks_gts_and_charges_while_held(
 
 
 @respx.mock
+async def test_start_is_offer_expired_when_gts_reports_the_deadline_gone(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """``BO`` past its ticketing deadline is not a hold anyone may charge.
+
+    Live GTS keeps the record ``BO`` after ``ticket_time_limit`` and then
+    refuses the ticket ("Выписка билета запрещена после истечения лимита
+    времени на выписку", order 91068, 2026-08-25). No code is sent, no card
+    is touched — and the order is **not** cancelled: GTS still has it.
+    """
+    mock_gts_signin()
+    gone = (utcnow() - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mock_gts_order(gts_order_body(status="BO", ticket_time_limit=gone))
+    order = await make_order(db_session, customer)
+
+    response = await _start(client, order, customer_headers)
+
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "offer_expired"
+    assert fake_provider.count("start") == 0
+    await db_session.refresh(order)
+    assert order.status == "booked" and order.cancel_reason is None
+    assert order.payment_status == "pending"
+    assert await _attempts(db_session, order) == []
+
+
+@respx.mock
+async def test_confirm_is_offer_expired_when_gts_keeps_the_deadline_past(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """The deadline went by while the code was being typed, and GTS agrees.
+
+    ``BO`` is not enough here either: charging buys a ticket GTS will refuse
+    and a refund to hand back.
+    """
+    mock_gts_signin()
+    route = mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    gone = (utcnow() - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db_session.refresh(order)
+    order.ticket_time_limit_at = utcnow() - timedelta(minutes=1)
+    await db_session.commit()
+    route.mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": gts_order_body(status="BO", ticket_time_limit=gone),
+            },
+        )
+    )
+
+    response = await _confirm(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "offer_expired"
+    assert fake_provider.count("confirm") == 0
+    await db_session.refresh(order)
+    assert order.status == "booked" and order.payment_status == "pending"
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "abandoned"
+
+
+@respx.mock
 async def test_confirm_after_deadline_is_offer_expired_when_gts_released(
     client: httpx.AsyncClient,
     customer: Customer,

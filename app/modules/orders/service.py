@@ -822,6 +822,11 @@ async def confirm_price(
         session.add_all(_released(order, snapshot))
         await session.commit()
         raise OfferExpired("The booking has expired at GTS — please search again")
+    if snapshot is not None and _window_closed(snapshot, now=utcnow()):
+        # Confirming a price GTS will not ticket only sets up the refund.
+        apply_snapshot(order, snapshot)
+        await session.commit()
+        raise OfferExpired(DEADLINE_PASSED_MESSAGE)
     if price is not None:
         changed = _take_price(
             session, order, open_attempt, price, event="price.repriced"
@@ -868,6 +873,36 @@ def _released(order: Order, snapshot: OrderSnapshot) -> list[OrderEvent]:
     )
 
 
+#: What the customer is told when GTS will no longer ticket the hold. Not
+#: "cancelled": GTS still has the record, and only GTS cancels it.
+DEADLINE_PASSED_MESSAGE: Final = (
+    "The ticketing deadline for this booking has passed — please search again"
+)
+
+
+def _window_closed(snapshot: OrderSnapshot, *, now: datetime) -> bool:
+    """GTS's own ticketing deadline, freshly read, has already gone.
+
+    ``BO`` on its own is not enough to charge a card on. Live GTS keeps the
+    record ``BO`` past ``ticket_time_limit`` — it even still offers
+    ``CANCEL_BOOKING`` — and then refuses the ticket outright: "Выписка
+    билета запрещена после истечения лимита времени на выписку" (order
+    91068, charged four hours after its deadline, 2026-08-25). The money
+    moved and no ticket could ever have come out of it.
+
+    Only GTS's figure from a read taken moments ago is trusted, and only
+    once ``EXPIRY_GRACE`` has passed on top of it: our clock against GTS's
+    is not worth a refused sale. A hold whose deadline GTS does not spell at
+    all is left to ``is_released``, as before.
+
+    This refuses the payment; it does **not** cancel the order. GTS still
+    holds the record, and cancelling by our clock is the thing this module
+    has always declined to do — ``expire_unpaid`` closes it when GTS lets go.
+    """
+    deadline = snapshot.ticket_time_limit_at
+    return deadline is not None and deadline < now - EXPIRY_GRACE
+
+
 async def start_payment(
     session: AsyncSession,
     customer_id: uuid.UUID,
@@ -906,6 +941,10 @@ async def start_payment(
         session.add_all(_released(order, snapshot))
         await session.commit()
         raise OfferExpired("The booking has expired at GTS — please search again")
+    if _window_closed(snapshot, now=utcnow()):
+        # No code is sent for a hold GTS has stopped ticketing.
+        await session.commit()
+        raise OfferExpired(DEADLINE_PASSED_MESSAGE)
     _require_payable(order)
     _require_price_confirmed(order)
     if order.amount is None or order.currency is None:
@@ -1045,12 +1084,14 @@ async def confirm_payment(
 
     Our copy of the deadline is a best-effort reading of a field GTS spells
     three ways, so a deadline that has passed by our clock is a reason to
-    **ask GTS**, never to cancel: the order already exists, and a hold GTS
-    still reports as ``BO`` is charged as usual with the deadline refreshed.
-    Only GTS saying the hold is gone ends the attempt — the same rule the
-    expiry sweep follows. That read happens before the lock, like every
-    other call that leaves the process; a read that fails is the ``502`` /
-    ``504`` it is, and nothing is charged on a guess.
+    **ask GTS**, never to cancel: the order already exists. What GTS answers
+    then ends the attempt two ways — the hold released, or the deadline GTS
+    itself reports already gone (``_window_closed``), which is the ticket it
+    will refuse to issue however alive ``BO`` looks. Neither cancels the
+    order; the expiry sweep does that when GTS lets go. That read happens
+    before the lock, like every other call that leaves the process; a read
+    that fails is the ``502`` / ``504`` it is, and nothing is charged on a
+    guess.
     """
     order = await _owned(session, customer_id, order_id)
     probe = await _open_attempt(session, order.id)
@@ -1096,6 +1137,10 @@ async def confirm_payment(
             session.add_all(_released(order, snapshot))
             await session.commit()
             raise OfferExpired("The booking has expired at GTS — please search again")
+        if _window_closed(snapshot, now=utcnow()):
+            attempt.status = AttemptStatus.ABANDONED
+            await session.commit()
+            raise OfferExpired(DEADLINE_PASSED_MESSAGE)
     reference = decrypt(attempt.provider_reference, attempt.key_version or 0)
     attempt.status = AttemptStatus.CONFIRMING
     session.add(
@@ -1963,6 +2008,7 @@ async def retry_ticketing(
 __all__ = [
     "ATTEMPT_STARTED_MAX_AGE",
     "CONFIRMING_STALE_AFTER",
+    "DEADLINE_PASSED_MESSAGE",
     "EXPIRY_GRACE",
     "EXPIRY_WITHOUT_DEADLINE",
     "PAYMENT_CONFIRM_MAX_WAIT",
