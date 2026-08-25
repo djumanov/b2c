@@ -252,6 +252,45 @@ async def test_an_answer_without_a_price_is_502(
 
 
 @respx.mock
+async def test_a_price_in_another_currency_is_refused_and_nothing_changes(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """GTS's documentation draws the confirm in USD and the check in UZS; a
+    figure in another currency is not a new price and must never be charged."""
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(gts_price(20.0, "USD"))
+    mock_gts_reprice_confirm(gts_price(20.0, "USD"))
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    with caplog.at_level(logging.ERROR):
+        checked = await _reprice(client, order, customer_headers)
+        confirmed = await _confirm_price(client, order, customer_headers)
+
+    for response in (checked, confirmed):
+        assert response.status_code == 502, response.text
+        message = response.json()["errors"][0]["message"]
+        assert "answered in USD" in message and "priced in UZS" in message
+    assert (
+        sum(
+            "gts_reprice_currency_mismatch" in record.getMessage()
+            for record in caplog.records
+        )
+        == 2
+    )
+    await db_session.refresh(order)
+    assert str(order.amount) == "20.00"
+    assert order.currency == "UZS"
+    assert order.price_confirmed_at is None
+    assert order.price_response == gts_price(20.0)
+    assert await _events(db_session, order) == []
+
+
+@respx.mock
 async def test_a_paid_order_cannot_be_repriced(
     client: httpx.AsyncClient,
     customer: Customer,

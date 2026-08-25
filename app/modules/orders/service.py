@@ -494,6 +494,30 @@ def _require_price_confirmed(order: Order) -> None:
         )
 
 
+def _require_same_currency(order: Order, price: OrderPrice, *, step: str) -> None:
+    """A reprice answers in the order's currency, or it is not believed.
+
+    GTS's documentation draws ``reprice_check`` in UZS and
+    ``reprice_confirm`` in USD for the same order. Misprint or not, a figure
+    in another currency is not a new price — it is a number that must never
+    reach a card or the deposit. Refused before anything is written, at
+    ERROR: this is GTS or the integration misbehaving, and a person looks.
+    """
+    if order.currency is not None and price.currency != order.currency:
+        logger.error(
+            "gts_reprice_currency_mismatch",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            step=step,
+            order_currency=order.currency,
+            answered=f"{price.amount} {price.currency}",
+        )
+        raise UpstreamError(
+            f"GTS {step} answered in {price.currency}; this order is priced in "
+            f"{order.currency} — the price was not changed"
+        )
+
+
 def _price_data(amount: Decimal | None, currency: str | None) -> dict[str, Any]:
     return {"amount": str(amount) if amount is not None else None, "currency": currency}
 
@@ -574,6 +598,7 @@ async def reprice_order(
     price = await _adapter(order).reprice(client, order.gts_order_number)
 
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
+    _require_same_currency(order, price, step="reprice_check")
     changed = _take_price(session, order, open_attempt, price, event="price.repriced")
     order.repriced_at = utcnow()
     await session.commit()
@@ -631,6 +656,7 @@ async def confirm_price(
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
     if order.repriced_at is None:
         raise Conflict("Check the price first — call reprice/ before confirming it")
+    _require_same_currency(order, price, step="reprice_confirm")
     if snapshot is not None:
         apply_snapshot(order, snapshot)
         if gts_order.is_released(snapshot.gts_status):

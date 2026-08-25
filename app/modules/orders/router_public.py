@@ -145,8 +145,10 @@ async def get_order(
             "right now."
         ),
         upstream_error=(
-            "GTS could not price the order — released, unknown, or an "
-            "answer without a price; GTS's words are in `meta.upstream`."
+            "GTS could not price the order — released, unknown, an answer "
+            "without a price, or a price in another currency than the "
+            "order's (refused, nothing changed); GTS's words are in "
+            "`meta.upstream`."
         ),
         upstream_timeout="GTS did not answer.",
     ),
@@ -199,8 +201,9 @@ async def reprice_order(
             "the hold since; the order is `cancelled` — search again."
         ),
         upstream_error=(
-            "GTS refused to confirm the price; GTS's words are in "
-            "`meta.upstream`. Check it again with `reprice/`."
+            "GTS refused to confirm the price, or confirmed it in another "
+            "currency than the order's (refused, nothing changed); GTS's "
+            "words are in `meta.upstream`. Check it again with `reprice/`."
         ),
         upstream_timeout="GTS did not answer.",
     ),

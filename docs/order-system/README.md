@@ -191,8 +191,20 @@ Qadamlar (`orders/service.py`):
      `payment.amount`, `order.amount`, `order_data.price_info/price_details`,
      yangi `pay_before`; mijoz to'lov ekranida shuni ko'radi.
    - GTS rad etsa (`status: error`) → 502, GTS matni `meta.upstream`da, hech
-     narsa yozilmaydi; narxsiz javob → 502 "carried no price". Ikkalasi
-     `RateLimit("payment")` ostida, idempotency kaliti yo'q (takrorlanadigan).
+     narsa yozilmaydi; narxsiz javob → 502 "carried no price". **Valyuta
+     orderning valyutasidan farq qilsa** (hujjat 12–13-betlarda check'ni `UZS`,
+     confirm'ni `USD` bilan chizadi — xato bosmami, yo'qmi, noma'lum) → 502
+     "answered in USD; this order is priced in UZS", ERROR
+     `gts_reprice_currency_mismatch`, **hech narsa yozilmaydi** — boshqa
+     valyutadagi raqam yangi narx emas, kartaga ham depozitga ham yetmasligi
+     kerak. Ikkalasi `RateLimit("payment")` ostida, idempotency kaliti yo'q
+     (takrorlanadigan).
+   - Hujjat aytmaydigan, jonli serverda tekshirilmagan ikki narsa: `price`
+     ("Итоговая цена", 16-bet) `fee_amount`/`service_fee_amount`ni o'z ichiga
+     oladimi — bron paytidagidek yakuniy deb olinadi; narx o'zgarmaganda
+     `reprice_confirm` `success` qaytaradimi — qaytarmasa 502 + `price_confirmed`
+     bo'sh, to'lov bloklanadi (xavfsiz, lekin oqim to'xtaydi; GTS'dan
+     so'raladi).
    - **`payment/` `price_confirmed_at` bo'sh orderni 409 bilan rad etadi**
      ("The price has not been confirmed") — qulfdan oldin ham, qulf ostida ham.
    - Ticketing (`§4b`) o'zgarmagan: narx qadamlari to'lovdan oldin bo'lib
