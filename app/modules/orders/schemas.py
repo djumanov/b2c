@@ -393,6 +393,13 @@ class RepriceOut(BaseModel):
     Everything else is GTS's ``data`` handed through (``price_info``,
     ``price_details`` and whatever GTS adds), agent commission stripped.
     Nothing here is stored: the order changes only at ``reprice/confirm/``.
+
+    ``changed`` is **GTS's own verdict** (``price_changed``), not a
+    comparison of the two figures: an unchanged order comes back either with
+    no price to hand through (``price_info`` empty) or with the provider's
+    fare in the provider's currency, and either way ``new_price`` is
+    ``old_price``. A client reads the two prices and the verdict, never the
+    raw quote.
     """
 
     model_config = {
@@ -416,10 +423,12 @@ class RepriceOut(BaseModel):
 
     changed: bool = Field(
         description=(
-            "`true` when `new_price` differs from `old_price` in amount or "
-            "currency (or the order held no price) — show the new price and "
-            "ask the customer before `reprice/confirm/`. `false`: same price, "
-            "confirm straight away."
+            "GTS's own verdict on whether the price moved. `true` — show "
+            "`new_price` (and `old_price`) and ask the customer before "
+            "`reprice/confirm/`. `false` — same price, confirm straight "
+            "away. Where GTS sends no verdict it is `new_price` differing "
+            "from `old_price` in amount or currency (or the order holding "
+            "no price)."
         )
     )
     old_price: Money | None = Field(
@@ -430,13 +439,22 @@ class RepriceOut(BaseModel):
         )
     )
     new_price: Money = Field(
-        description="What GTS says the order costs today — `price_info` as `Money`."
+        description=(
+            "What the order costs today: GTS's `price_info` as `Money` when "
+            "it says the price moved, `old_price` again when it says it did "
+            "not. **This, not `price_info`, is the figure to show.**"
+        )
     )
     price_info: dict[str, Any] = Field(
+        default_factory=dict,
         description=(
             "GTS's `price_info` verbatim (`price`, `currency`, `fee_amount`, …), "
-            "commission fields removed."
-        )
+            "commission fields removed — the breakdown, not the verdict. "
+            "Empty `{}` when GTS quoted nothing, and with `changed: false` "
+            "it may be the provider's own fare in another currency (294 EUR "
+            "for an order priced at 343.04 USD) — read `new_price` and "
+            "`changed`, which are always there."
+        ),
     )
     price_details: list[Any] = Field(
         default_factory=list,

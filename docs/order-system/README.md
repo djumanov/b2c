@@ -170,16 +170,25 @@ Qadamlar (`orders/service.py`):
      = `changed` (narx o'zgardimi), `old_price` (orderda saqlangan — mijoz
      ko'rib turgan narx: bron narxi yoki oxirgi tasdiqlangani), `new_price`
      (GTS'ning bugungi narxi) + GTS'ning `data`si (`price_info`,
-     `price_details`) komissiya maydonlarisiz aynan. `changed` = summa yoki
-     valyuta farq qilsa (yoki orderda narx bo'lmasa). Bizda **hech narsa
-     yozilmaydi** — `amount`, `price_confirmed`, ochiq urinish o'zgarmaydi.
+     `price_details`) komissiya maydonlarisiz aynan. `changed` — **GTS'ning
+     o'z hukmi**: javobdagi `price_changed`. GTS uni yubormasa (hujjatdagi
+     shakl) summa/valyuta solishtiriladi (yoki orderda narx bo'lmasa
+     `true`). Bizda **hech narsa yozilmaydi** — `amount`, `price_confirmed`,
+     ochiq urinish o'zgarmaydi.
      Mijoz ilovasi `changed: false` bo'lsa to'g'ridan-to'g'ri, `true` bo'lsa
      yangi narxni ko'rsatib rozilik olib `reprice/confirm/`ni chaqiradi. Faqat
      egasi (404), bizdan 409 yo'q; GTS rad etsa 502. Takrorlash bepul.
-   - `reprice/confirm/` → `POST /v1/content/reprice_confirm/ {order_number}`
-     (`FlightAdapter.confirm_price`) — narx qadamining **yagona yozuvi**. GTS
-     tartibi (avval check) GTS'ning o'zida: check'siz confirm'ni u rad etsa →
-     502. Narx saqlangandan **farq qilsa** → `amount/currency` yangilanadi,
+   - `reprice/confirm/` → **avval `reprice_check`**, va faqat u "narx
+     o'zgardi" desa `POST /v1/content/reprice_confirm/ {order_number}`
+     (`FlightAdapter.confirm_price`) — narx qadamining **yagona yozuvi**.
+     Nega avval check: narx o'zgarmagan bo'lsa GTS'da tasdiqlaydigan qayta
+     narxlangan taklif qolmaydi va confirm `400803` bilan rad etiladi
+     ("Срок действия предложения после перерасчёта истёк", jonli
+     2026-08-25); `payment/` esa shu qadamni kutgani uchun **har bir oddiy
+     order 502 ortida to'lanmay qolardi**. Check takrorlanadigan va GTS'da
+     hech narsani o'zgartirmaydi, ustiga-ustak ticketing'dan oldin GTS talab
+     qiladigan check aynan shu yerda bo'ladi. Narx saqlangandan **farq
+     qilsa** → `amount/currency` yangilanadi,
      event `price.repriced {from, to}`, ochiq `started` urinish → `abandoned`
      (eski summa uchun yuborilgan kod yangi summani tasdiqlay olmasligi
      kerak). So'ng **`GET /v1/orders/{n}/`** — GTS o'z yozuvini
@@ -194,21 +203,46 @@ Qadamlar (`orders/service.py`):
      event `price.confirmed {amount, currency}`. Javob — order **to'liq yangilangan narx bilan**:
      `payment.amount`, `order.amount`, `order_data.price_info/price_details`,
      yangi `pay_before`; mijoz to'lov ekranida shuni ko'radi.
+   - **Narx o'zgarmaganda (jonli, 2026-08-25 — oddiy holat).** `reprice_check`
+     `status: success`, `data.price_changed: false` va **provayderning o'z
+     valyutasidagi narxi** bilan javob beradi: 343.04 USD ga bron qilingan
+     order uchun `294.00 EUR`, GTS'ning o'z order yozuvi esa 343.04 USD
+     bo'lib turadi. Ya'ni raqam bu orderning narxi emas — hukm `price_changed`.
+     Ba'zi javoblarda narx umuman bo'lmaydi (`data: null`, `{}` yoki
+     `price_info`siz — shuning uchun adapter butun envelope'ni
+     `post_envelope` bilan o'qiydi: `post` `data` obyektini talab qilib,
+     oddiy holatning o'zini 502 ga aylantirardi). Ikkalasi ham **javob**,
+     xato emas:
+     - `reprice/` → `changed: false`, `new_price = old_price` (orderdagi narx
+       — bugungi narx), GTS bergan `price_info` esa baribir passthrough
+       bo'lib o'tadi (narx bermagan bo'lsa `{}`). Agar orderda ham narx
+       bo'lmasa (`amount = NULL`) → 502 "carried no price": ikkala tomon ham
+       raqam aytmadi, savol javobsiz qoldi.
+     - `reprice/confirm/` → GTS'ga confirm **yuborilmaydi** (u 400803 bilan
+       rad etadi), tasdiq **o'z kuchida**: `price_confirmed_at = now`,
+       `amount`/`price_response` tegilmaydi, `price.repriced` eventi yo'q,
+       ochiq urinish bekor qilinmaydi (summa o'zgarmadi), valyuta tekshiruvi
+       ham o'tkazilmaydi (tekshiradigan raqam yo'q). Rad etish mijozni umuman
+       to'lay olmaydigan qilib qo'yardi.
+     - Jonli tekshirilgan zanjir (2026-08-25, order 4903): `search → offers →
+       verify → booking (343.04 USD) → reprice (changed:false) →
+       reprice/confirm (200) → payment → payment/confirm → ticketing` — GTS
+       `PW` (chipta chiqarilmoqda), `ticket_date` qo'yilgan. `verify` ba'zi
+       offerlarda GTS'ning o'zidan `100500` ("Неизвестная ошибка со стороны
+       поставщика") qaytaradi — boshqa offerni sinash kerak, bu bizning
+       tomondan emas.
    - GTS rad etsa (`status: error`) → 502, GTS matni `meta.upstream`da, hech
-     narsa yozilmaydi; narxsiz javob → 502 "carried no price". **Confirm'da
-     valyuta orderning valyutasidan farq qilsa** (hujjat 12–13-betlarda check'ni `UZS`,
-     confirm'ni `USD` bilan chizadi — xato bosmami, yo'qmi, noma'lum) → 502
+     narsa yozilmaydi. **Confirm'da valyuta orderning valyutasidan farq
+     qilsa** (hujjat 12–13-betlarda check'ni `UZS`, confirm'ni `USD` bilan
+     chizadi — xato bosmami, yo'qmi, noma'lum) → 502
      "answered in USD; this order is priced in UZS", ERROR
      `gts_reprice_currency_mismatch`, **hech narsa yozilmaydi** — boshqa
      valyutadagi raqam yangi narx emas, kartaga ham depozitga ham yetmasligi
      kerak. Ikkalasi `RateLimit("payment")` ostida, idempotency kaliti yo'q
      (takrorlanadigan).
-   - Hujjat aytmaydigan, jonli serverda tekshirilmagan ikki narsa: `price`
+   - Hujjat aytmaydigan, jonli serverda tekshirilmagani: `price`
      ("Итоговая цена", 16-bet) `fee_amount`/`service_fee_amount`ni o'z ichiga
-     oladimi — bron paytidagidek yakuniy deb olinadi; narx o'zgarmaganda
-     `reprice_confirm` `success` qaytaradimi — qaytarmasa 502 + `price_confirmed`
-     bo'sh, to'lov bloklanadi (xavfsiz, lekin oqim to'xtaydi; GTS'dan
-     so'raladi).
+     oladimi — bron paytidagidek yakuniy deb olinadi.
    - **`payment/` `price_confirmed_at` bo'sh orderni 409 bilan rad etadi**
      ("The price has not been confirmed") — qulfdan oldin ham, qulf ostida ham.
    - Ticketing (`§4b`) o'zgarmagan: narx qadamlari to'lovdan oldin bo'lib

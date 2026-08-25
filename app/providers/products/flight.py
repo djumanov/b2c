@@ -248,14 +248,42 @@ def _booking_amount(order: dict[str, Any]) -> tuple[Decimal | None, str | None]:
     return amount, _text(source.get("currency"))
 
 
-def _order_price(data: dict[str, Any], *, step: str) -> OrderPrice:
+def _order_price(envelope: dict[str, Any], *, step: str) -> OrderPrice | None:
     """The price a reprice answer carries — ``data.price_info``, read like an
-    order's. No price is no answer: the price is what was asked for."""
+    order's — or ``None`` when the answer carries no price at all.
+
+    GTS quotes a figure only when there is a new one to quote: an order whose
+    price has not moved comes back ``success`` with nothing priceable under
+    ``data`` (live 2026-08-25). That is an answer — "the price stands" — not
+    a failure, and reading it as one turned the normal case into a ``502``
+    and blocked the payment flow. A refusal still arrives as
+    ``status: "error"`` and is still an ``UpstreamError``.
+
+    Which is why the whole envelope is read: a bare ``post`` demands a
+    ``data`` **object**, and GTS's silence may as easily be ``data: null`` as
+    an empty one.
+
+    ``price_changed`` travels with the figure when GTS sends it, because the
+    figure alone lies: live ``reprice_check`` answers 294 EUR for an order
+    booked at 343.04 USD and says ``price_changed: false`` in the same
+    breath — the provider's fare in the provider's currency, not a new price
+    for this order (live 2026-08-25).
+    """
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        logger.info("gts_reprice_no_data", step=step, keys=sorted(envelope))
+        return None
     amount, currency = _booking_amount(data)
     if amount is None or currency is None:
-        logger.warning("gts_reprice_unreadable", step=step, keys=sorted(data))
-        raise UpstreamError(f"the GTS {step} answer carried no price")
-    return OrderPrice(amount=amount, currency=currency, raw=data)
+        logger.info("gts_reprice_no_price", step=step, keys=sorted(data))
+        return None
+    verdict = data.get("price_changed")
+    return OrderPrice(
+        amount=amount,
+        currency=currency,
+        changed=verdict if isinstance(verdict, bool) else None,
+        raw=data,
+    )
 
 
 def _route_summary(order: dict[str, Any]) -> str | None:
@@ -461,33 +489,40 @@ class FlightAdapter:
             **_snapshot(order_number, order).model_dump(),
         )
 
-    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice:
+    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice | None:
         """``POST /v1/content/reprice_check/`` — the order's price today.
 
         GTS refuses to ticket a booking that was not priced again first
         ("Перед выпиской билета выполните reprice_check", live 2026-08-24),
-        so this and ``confirm_price`` sit between booking and payment. Bare
-        ``post``: the answer is a verdict, ``data.price_info`` or a refusal.
+        so this and ``confirm_price`` sit between booking and payment.
+
+        ``None`` when GTS answered without a price — its check quotes a
+        figure only when the price moved, and silence is "unchanged".
         """
-        data = await client.post(
+        envelope = await client.post_envelope(
             "/v1/content/reprice_check/",
             json={"order_number": order_number},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
-        return _order_price(data, step="reprice_check")
+        return _order_price(envelope, step="reprice_check")
 
-    async def confirm_price(self, client: GtsClient, order_number: int) -> OrderPrice:
+    async def confirm_price(
+        self, client: GtsClient, order_number: int
+    ) -> OrderPrice | None:
         """``POST /v1/content/reprice_confirm/`` — accept today's price.
 
-        Answers with a price too, and that one is GTS's final word: it is what
-        ticketing will debit, so the orders module stores it over the check's.
+        Answers with a price when there is a new one, and that one is GTS's
+        final word: it is what ticketing will debit, so the orders module
+        stores it over the check's. ``None`` — no price quoted — is the same
+        "unchanged" as in ``reprice``: the confirmation stands, the order
+        keeps the price it holds.
         """
-        data = await client.post(
+        envelope = await client.post_envelope(
             "/v1/content/reprice_confirm/",
             json={"order_number": order_number},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
-        return _order_price(data, step="reprice_confirm")
+        return _order_price(envelope, step="reprice_confirm")
 
     async def ticket(self, client: GtsClient, order_number: int) -> OrderSnapshot:
         """``POST /v1/content/ticketing/`` — issue the ticket against our deposit.

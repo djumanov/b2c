@@ -127,6 +127,14 @@ async def get_order(
         "`price_details`, with agent commission fields removed. A question, "
         "not a write: nothing on the order changes, `payment.amount` and "
         "`payment.price_confirmed` stay what they were, no code is voided.\n\n"
+        "**Read `changed` and the two prices, not `price_info`.** `changed` "
+        "is GTS's own verdict, and when it says the price did not move "
+        "`new_price` equals `old_price` whatever `price_info` holds: GTS "
+        "answers an unchanged order either with no price at all "
+        "(`price_info: {}`) or with the *provider's* fare in the provider's "
+        "currency — 294 EUR against an order booked at 343.04 USD, its own "
+        "record still reading 343.04. That figure is passed through for the "
+        "breakdown; it is not what this order costs.\n\n"
         "`changed: false` — confirm straight away. `changed: true` — show "
         "`new_price` (and `old_price`) and ask; once the customer accepts, "
         "call `reprice/confirm/` — that is the step that updates the order "
@@ -142,8 +150,9 @@ async def get_order(
         ErrorCode.UPSTREAM_ERROR,
         ErrorCode.UPSTREAM_TIMEOUT,
         upstream_error=(
-            "GTS could not price the order — released, unknown, or an answer "
-            "without a price; GTS's words are in `meta.upstream`."
+            "GTS could not price the order — released or unknown; GTS's words "
+            "are in `meta.upstream`. (An answer without a price is not this: "
+            "it means the price has not changed.)"
         ),
         upstream_timeout="GTS did not answer.",
     ),
@@ -159,14 +168,18 @@ async def reprice_order(
     "/{id}/reprice/confirm/",
     summary="Pay — step 0b: accept the price",
     description=(
-        "The customer accepted the price `reprice/` showed: tells GTS so "
-        "(`reprice_confirm`), reads the order back from GTS and unlocks "
-        "`payment/`. This is the step that **writes** — `reprice/` only "
-        "asks. GTS's own sequence is check, then confirm; a confirmation it "
-        "was not asked to check for is GTS's to refuse (`502`).\n\n"
-        "GTS answers with the price it confirmed, and that is the one "
-        "stored and charged — it replaces whatever the order held, and a "
-        "code already sent for another amount is void. The answer is the "
+        "The customer accepted the price `reprice/` showed: confirms it with "
+        "GTS, reads the order back and unlocks `payment/`. This is the step "
+        "that **writes** — `reprice/` only asks.\n\n"
+        "It re-checks the price with GTS first and sends `reprice_confirm` "
+        "only if that check says the price moved: with an unmoved price GTS "
+        "keeps nothing to confirm and refuses the call, so there is nothing "
+        "to send and the order's own price is the confirmed one. Either way "
+        "the confirmation counts and `payment/` opens.\n\n"
+        "When the price did move, GTS answers with the price it confirmed, "
+        "and that is the one stored and charged — it replaces whatever the "
+        "order held, and a code already sent for another amount is void. "
+        "The answer is the "
         "order as it now stands, everything at that price — "
         "`payment.amount`, `order.amount`, `order_data.price_info` / "
         "`price_details` — plus a fresh `pay_before` and `order_data`. Show "

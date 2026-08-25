@@ -576,6 +576,69 @@ def _take_price(
     return True
 
 
+def _order_money(order: Order) -> Money | None:
+    """The price the order holds, or nothing when it never held one."""
+    if order.amount is None or order.currency is None:
+        return None
+    return Money(amount=order.amount, currency=order.currency)
+
+
+def _price_moved(old: Money | None, price: OrderPrice | None) -> bool:
+    """Did the price move? **GTS's verdict when it gave one**, the figures else.
+
+    The one rule both price steps turn on, so ``reprice/`` cannot promise a
+    change ``reprice/confirm/`` then refuses to make. GTS's ``price_changed``
+    is believed over any comparison of our own: it quotes the provider's fare
+    in the provider's currency beside ``price_changed: false`` (294 EUR for
+    an order booked at 343.04 USD, live 2026-08-25), and comparing those two
+    figures would call that a change. No quote at all is no change either —
+    GTS quotes a figure only when it has a new one. The comparison is left
+    for an installation whose GTS sends no verdict.
+    """
+    if price is None:
+        return False
+    if price.changed is not None:
+        return price.changed
+    if old is None:
+        return True
+    return (old.amount, old.currency) != (price.amount, price.currency)
+
+
+def _price_unchanged(
+    order: Order, old: Money | None, answer: dict[str, Any] | None = None
+) -> RepriceOut:
+    """GTS's ``reprice_check`` said the price did not move: the order's own
+    figure is today's figure.
+
+    Two answers arrive at the same place. GTS either quotes no price at all —
+    it quotes a figure only when it has a new one — or quotes one and says
+    ``price_changed: false`` beside it, which live GTS does with the
+    *provider's* fare in the provider's currency (294 EUR against an order
+    booked at 343.04 USD, 2026-08-25). Neither is a new price for this order,
+    so ``new_price`` is ``old_price`` and the quote, when there was one, is
+    still handed through as ``price_info`` for a client that wants to show
+    the breakdown.
+
+    An order that holds no price of its own is the one case left unanswered:
+    neither side names a figure, and that is the ``502`` it always was.
+    """
+    if old is None:
+        logger.warning(
+            "gts_reprice_no_price_either_side",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+        )
+        raise UpstreamError("the GTS reprice_check answer carried no price")
+    logger.info(
+        "order_repriced",
+        order_id=str(order.id),
+        gts_order_number=order.gts_order_number,
+        amount=f"{old.amount} {old.currency}",
+        changed=False,
+    )
+    return RepriceOut(changed=False, old_price=old, new_price=old, **(answer or {}))
+
+
 async def reprice_order(
     session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
 ) -> RepriceOut:
@@ -593,26 +656,36 @@ async def reprice_order(
     (agent commission stripped, as everywhere on the customer surface):
     checking again costs nothing and changes nothing. Somebody else's order
     is a ``404``, like every read.
+
+    **GTS's own verdict decides**, not our comparison. Its check sends
+    ``price_changed`` and, when that is ``false``, a figure that is the
+    provider's fare rather than this order's price — 294 EUR against an
+    order booked at 343.04 USD, its own order record still reading 343.04
+    (live 2026-08-25). Comparing the two would announce a price change that
+    is not one and send the customer to a confirmation GTS refuses. So a
+    ``false`` verdict, and an answer with no price at all, both come back as
+    ``changed: false`` at the order's own price (``_price_unchanged``); only
+    when GTS says the price moved — or says nothing either way and the
+    figures really differ — is it a change.
     """
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
     price = await _adapter(order).reprice(client, order.gts_order_number)
-    old = (
-        Money(amount=order.amount, currency=order.currency)
-        if order.amount is not None and order.currency is not None
-        else None
-    )
+    old = _order_money(order)
+    if price is None:
+        return _price_unchanged(order, old)
+    if not _price_moved(old, price):
+        return _price_unchanged(order, old, strip_commission(price.raw))
     new = Money(amount=price.amount, currency=price.currency)
-    changed = old is None or (old.amount, old.currency) != (new.amount, new.currency)
     logger.info(
         "order_repriced",
         order_id=str(order.id),
         gts_order_number=order.gts_order_number,
         amount=f"{price.amount} {price.currency}",
-        changed=changed,
+        changed=True,
     )
     answer: dict[str, Any] = strip_commission(price.raw)
-    return RepriceOut(changed=changed, old_price=old, new_price=new, **answer)
+    return RepriceOut(changed=True, old_price=old, new_price=new, **answer)
 
 
 async def confirm_price(
@@ -624,15 +697,28 @@ async def confirm_price(
 ) -> BookingResultOut:
     """The customer accepted the price ``reprice_order`` showed — tell GTS.
 
-    The one write of the price step. GTS's sequence is check, then confirm;
-    the check is a pure question here, so GTS itself is the one to refuse a
-    confirmation it was not asked to check for (``502`` with its words). The
-    confirmation answers with a price, and that one is GTS's final word on
-    what ticketing debits — so it is the one stored and charged: it replaces
-    whatever the order held, and an open attempt for another amount is
-    abandoned. It normally equals what the check showed; when it does not,
-    the difference is an event and a warning, and the answer to this call is
-    what the customer sees before paying.
+    The one write of the price step. **It asks GTS the check first and only
+    sends ``reprice_confirm`` when that check says the price moved.** There
+    is nothing else GTS will accept: with an unmoved price it keeps no
+    repriced offer, and a confirmation sent anyway is refused with ``400803``
+    ("Срок действия предложения после перерасчёта истёк") — which, since
+    ``payment/`` waits for this step, left every ordinary order unpayable
+    behind a ``502`` (live 2026-08-25). The check is repeatable and changes
+    nothing there, so asking it again here costs a question and buys the one
+    fact this step turns on; it also puts a check immediately before the
+    ticketing GTS refuses without one.
+
+    When the price moved, the confirmation answers with it, and that one is
+    GTS's final word on what ticketing debits — so it is the one stored and
+    charged: it replaces whatever the order held, and an open attempt for
+    another amount is abandoned. It normally equals what the check showed;
+    when it does not, the difference is an event and a warning, and the
+    answer to this call is what the customer sees before paying.
+
+    An unmoved price — or a confirmation that quotes none — leaves the order
+    its own figure and the ``price_response`` it already had, and the
+    confirmation still counts: this is the ordinary case, and refusing it
+    would leave the customer unable to pay a price nobody disputes.
 
     GTS has repriced its record by now, so the order is **read back** and
     the answer is the order as it stands — status, deadline, ``order_data``
@@ -646,7 +732,12 @@ async def confirm_price(
     order = await _owned(session, customer_id, order_id)
     _require_payable(order)
     adapter = _adapter(order)
-    price = await adapter.confirm_price(client, order.gts_order_number)
+    checked = await adapter.reprice(client, order.gts_order_number)
+    price = (
+        await adapter.confirm_price(client, order.gts_order_number)
+        if _price_moved(_order_money(order), checked)
+        else None
+    )
     snapshot: OrderSnapshot | None
     try:
         snapshot = await adapter.retrieve(client, order.gts_order_number)
@@ -660,20 +751,24 @@ async def confirm_price(
         snapshot = None
 
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
-    _require_same_currency(order, price, step="reprice_confirm")
+    if price is not None:
+        _require_same_currency(order, price, step="reprice_confirm")
     if snapshot is not None and gts_order.is_released(snapshot.gts_status):
         apply_snapshot(order, snapshot)
         session.add_all(_released(order, snapshot))
         await session.commit()
         raise OfferExpired("The booking has expired at GTS — please search again")
-    changed = _take_price(session, order, open_attempt, price, event="price.repriced")
-    if changed:
-        logger.warning(
-            "gts_confirmed_other_price",
-            order_id=str(order.id),
-            gts_order_number=order.gts_order_number,
-            amount=f"{price.amount} {price.currency}",
+    if price is not None:
+        changed = _take_price(
+            session, order, open_attempt, price, event="price.repriced"
         )
+        if changed:
+            logger.warning(
+                "gts_confirmed_other_price",
+                order_id=str(order.id),
+                gts_order_number=order.gts_order_number,
+                amount=f"{price.amount} {price.currency}",
+            )
     # Confirmed **before** the read-back is applied, so the read refreshes
     # the record without touching the amount just confirmed.
     order.price_confirmed_at = utcnow()
