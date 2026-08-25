@@ -101,6 +101,14 @@ def strip_commission(value: Any) -> Any:
 
 # --- the order block ------------------------------------------------------------------
 
+#: Where each surface serves the receipt. Root-relative on purpose: the
+#: installation's own domain is a database setting, not something a schema
+#: knows (the rule ``storage.url`` follows for uploads). A customer answer
+#: carries the first, the support desk's answer the second — a staff token on
+#: the customer's path is a 403, and the other way round.
+RECEIPT_PATH: Final = "/api/v1/public/orders/{id}/receipt/"
+ADMIN_RECEIPT_PATH: Final = "/api/v1/admin/orders/{id}/receipt/"
+
 _MONEY_OR_NULL = (
     "Null only when GTS never reported a price for the booking — rare, and "
     "the order is still recorded."
@@ -161,22 +169,23 @@ class OrderOut(BaseModel):
     ticketed_at: datetime | None = Field(description="When GTS issued the ticket.")
     receipt_url: str | None = Field(
         examples=[
-            "https://api.globaltravel.space/v1/receipt/pattern/view/"
-            "?order_number=61453&product=flight"
+            "/api/v1/public/orders/5f0d87c1-9c58-4bff-8f95-6a1f61f4d1f7/receipt/"
         ],
         description=(
             "**Download the itinerary receipt here** — the travel document "
-            "the passenger shows at the airport. A whole link, straight to "
-            "GTS, which is what renders it: open it as it stands, in a "
-            "browser or a web view. No token of ours is involved and nothing "
-            "is fetched through this API.\n\n"
+            "the passenger shows at the airport, rendered by GTS. A path on "
+            "**this** API: fetch it with the customer's token like any other "
+            "call, and the answer is the file itself (`application/pdf`), "
+            "not the envelope — save it or show it. Root-relative, so "
+            "prefix it with the API's own base URL.\n\n"
+            "GTS renders the document but will not serve it to a browser: "
+            "its receipt page answers `401` without the agent session, so "
+            "this API fetches the bytes with its own and passes them "
+            "through.\n\n"
             "`null` until `status` is `ticketed` — before the ticket exists "
             "there is nothing to render, so this field is what a download "
-            "button waits for. Add `&passenger_index=0` (counted from zero, "
-            "in `order_data.passengers` order) for one traveller's copy. The "
-            "host is this installation's own GTS and differs between the "
-            "sandbox and production: read it here every time, never store or "
-            "hardcode it."
+            "button waits for. Add `?passenger_index=0` (counted from zero, "
+            "in `order_data.passengers` order) for one traveller's copy."
         ),
     )
     cancelled_at: datetime | None = Field(description="When the order was cancelled.")
@@ -677,8 +686,7 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
         "ticket_time_limit_at": "2026-08-20T06:53:12Z",
         "paid_at": None,
         "ticketed_at": None,
-        # Filled once the ticket is issued, with GTS's own link:
-        # ``…/v1/receipt/pattern/view/?order_number=61453&product=flight``.
+        # Filled once the ticket is issued — see ``TICKETED_EXAMPLE``.
         "receipt_url": None,
         "cancelled_at": None,
         "request_id": "6b4f3a1e-2c7d-4e8f-9a0b-1c2d3e4f5a6b",
@@ -732,8 +740,7 @@ TICKETED_EXAMPLE: Final[dict[str, Any]] = {
         "paid_at": "2026-08-20T06:12:41Z",
         "ticketed_at": "2026-08-20T06:13:05Z",
         "receipt_url": (
-            "https://api.globaltravel.space/v1/receipt/pattern/view/"
-            "?order_number=61453&product=flight"
+            "/api/v1/public/orders/5f0d87c1-9c58-4bff-8f95-6a1f61f4d1f7/receipt/"
         ),
     },
     "payment": {
@@ -798,6 +805,19 @@ class BookingResultOut(BaseModel):
             ticketing=TicketingOut.from_order(order),
             order_data=_order_data(order),
         )
+
+
+class ReceiptDocument(BaseModel):
+    """The receipt on its way out — bytes, not JSON.
+
+    Never part of the published schema: the route answers with the file
+    itself, so this only carries it from the service to the route together
+    with the two things the response needs to say about it.
+    """
+
+    content: bytes
+    content_type: str
+    filename: str
 
 
 # --- the support desk ----------------------------------------------------------------
@@ -1062,7 +1082,9 @@ class OrderAdminOut(BookingResultOut):
 
 
 __all__ = [
+    "ADMIN_RECEIPT_PATH",
     "PAYMENT_VIEW_STATUSES",
+    "RECEIPT_PATH",
     "TICKETED_EXAMPLE",
     "BookingResultOut",
     "OrderAdminListItemOut",
@@ -1081,6 +1103,7 @@ __all__ = [
     "PaymentResendIn",
     "PaymentStartIn",
     "PaymentViewStatus",
+    "ReceiptDocument",
     "RefundIn",
     "RepriceOut",
     "strip_commission",

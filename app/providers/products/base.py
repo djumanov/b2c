@@ -27,7 +27,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from app.providers.gts.base import GtsClient
+from app.providers.gts.base import GtsClient, GtsDocument
 
 
 class ProductCode(StrEnum):
@@ -235,24 +235,25 @@ class ProductAdapter(Protocol):
         """
         ...
 
-    def receipt_url(
+    async def receipt(
         self,
-        base_url: str,
+        client: GtsClient,
         order_number: int,
         *,
         passenger_index: int | None = None,
-    ) -> str:
-        """Where a **ticketed** order's travel document lives, at GTS.
+    ) -> GtsDocument:
+        """The travel document of a **ticketed** order, as GTS renders it.
 
         The flight vertical's is the itinerary receipt ("маршрутная
-        квитанция"); another vertical's will be its own paper. GTS renders
-        it, GTS serves it, and the customer's app fetches it — this only
-        spells the address, from ``base_url`` (the installation's active GTS,
-        a database setting) and the vertical's own path.
+        квитанция"); another vertical's will be its own paper. Whatever it
+        is, GTS lays it out and we hand it on: the bytes are never stored,
+        because GTS renders them from the order it holds and a copy of ours
+        would be the staler of the two the moment anything changed.
 
-        Nothing is called and nothing is stored. ``passenger_index``
-        (0-based) narrows the document to one traveller; without it it covers
-        everyone on the order.
+        ``passenger_index`` (0-based) narrows it to one traveller; without it
+        the document covers everyone on the order. Asking before the ticket
+        exists is the caller's mistake to prevent — GTS answers a refusal,
+        and that is an ``UpstreamError`` like any other.
         """
         ...
 

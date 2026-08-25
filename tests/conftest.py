@@ -331,6 +331,39 @@ def mock_gts_reprice_confirm(
     return _mock_gts_price_step("/v1/content/reprice_confirm/", data, error=error)
 
 
+#: A rendered receipt, as small as one can be and still be a PDF.
+RECEIPT_PDF = b"%PDF-1.4 itinerary receipt"
+
+
+def mock_gts_receipt(
+    content: bytes = RECEIPT_PDF,
+    *,
+    content_type: str = "application/pdf",
+    error: str | None = None,
+) -> Any:
+    """``GET /v1/receipt/pattern/view/`` — the file, or GTS's refusal.
+
+    A refusal arrives the way every GTS refusal does, and that is the point
+    of the mock: HTTP 200 with a JSON envelope where the document should
+    have been.
+    """
+    import respx
+
+    route = respx.get(f"{GTS}/v1/receipt/pattern/view/")
+    if error is not None:
+        return route.mock(
+            return_value=httpx.Response(
+                200,
+                json={"status": "error", "message": error, "code": -104, "data": None},
+            )
+        )
+    return route.mock(
+        return_value=httpx.Response(
+            200, content=content, headers={"content-type": content_type}
+        )
+    )
+
+
 def mock_gts_cancel(*, error: str | None = None) -> Any:
     """``POST /v1/content/cancel/``: the hold released, or GTS's refusal.
 

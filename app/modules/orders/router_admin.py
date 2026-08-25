@@ -7,12 +7,17 @@ each is a recorded, reversible bookkeeping step rather than money moving:
 ``ticketing/retry/`` asks GTS for the ticket again (after a deposit top-up,
 typically). Every action writes an ``order_events`` line with the staff id,
 and the audit middleware journals the HTTP call.
+
+``receipt/`` is a read like the two above it, and the customer's own route in
+everything but whose order may be asked for: GTS will not serve its receipt
+page to anyone without the agent session, so both surfaces fetch the document
+with ours. Support needs it for the customer who cannot reach their copy.
 """
 
 import uuid
 from typing import Annotated
 
-from fastapi import Depends, Query
+from fastapi import Depends, Query, Response
 
 from app.api.deps import CurrentStaff, PaginationDep, current_staff
 from app.api.envelope import Page, enveloped_router
@@ -23,6 +28,11 @@ from app.db.session import SessionDep
 from app.modules.orders import service
 from app.modules.orders.lifecycle import Stage
 from app.modules.orders.models import OrderStatus, PaymentStatus, TicketingStatus
+from app.modules.orders.receipt import (
+    RECEIPT_RESPONSES,
+    PassengerIndex,
+    receipt_response,
+)
 from app.modules.orders.schemas import (
     OrderAdminListItemOut,
     OrderAdminOut,
@@ -186,6 +196,34 @@ async def list_orders(
 )
 async def get_order(id: uuid.UUID, session: SessionDep) -> OrderAdminOut:
     return await service.get_order_admin(session, id)
+
+
+@router.get(
+    "/{id}/receipt/",
+    summary="Receipt — the order's itinerary receipt, for support",
+    description=(
+        "The same file the customer's own route serves, for any order rather "
+        "than one caller's: the itinerary receipt of a **ticketed** order, "
+        "rendered by GTS and fetched with this installation's agent session. "
+        "The answer is the file, not the envelope — fetch it with the staff "
+        "token and save what comes back.\n\n"
+        "`order.receipt_url` on the admin detail is this path. It is `null`, "
+        "and this route answers `409`, until GTS has issued the ticket. Add "
+        "`?passenger_index=0` for one traveller's copy. Reading only: nothing "
+        "is written and no `order_events` line is added."
+    ),
+    response_description="The receipt file, as GTS rendered it.",
+    response_class=Response,
+    responses=RECEIPT_RESPONSES,
+)
+async def download_receipt(
+    id: uuid.UUID,
+    session: SessionDep,
+    passenger_index: PassengerIndex = None,
+) -> Response:
+    return receipt_response(
+        await service.order_receipt_admin(session, id, passenger_index=passenger_index)
+    )
 
 
 @router.post(

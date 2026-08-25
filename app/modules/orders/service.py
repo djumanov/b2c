@@ -84,6 +84,8 @@ from app.modules.orders.models import (
     TicketingStatus,
 )
 from app.modules.orders.schemas import (
+    ADMIN_RECEIPT_PATH,
+    RECEIPT_PATH,
     BookingResultOut,
     OrderAdminListItemOut,
     OrderAdminOrderOut,
@@ -97,6 +99,7 @@ from app.modules.orders.schemas import (
     PaymentConfirmIn,
     PaymentResendIn,
     PaymentStartIn,
+    ReceiptDocument,
     RefundIn,
     RepriceOut,
     strip_commission,
@@ -196,21 +199,21 @@ async def _open_attempt(
     return row
 
 
-async def _receipt_url(session: AsyncSession, order: Order) -> str | None:
-    """GTS's own link to the order's receipt, or nothing to link to yet.
+def _receipt_url(order: Order, *, admin: bool = False) -> str | None:
+    """Where this answer's reader downloads the receipt, or nothing yet.
 
     Only a ticketed order has one: before that GTS has nothing to render, and
-    a link that answers with a refusal is worse than no link. The host is the
-    active credential's ``base_url`` — a database setting, read per answer, so
-    moving an installation to another GTS moves every link with it — and the
-    path is the vertical's (``ProductAdapter.receipt_url``). No account is
-    involved, nothing is decrypted and GTS is not called: this is a string,
-    and the customer's app is what fetches the document.
+    a link that answers with a refusal is worse than no link.
+
+    It is **our** path, not GTS's. GTS renders the document but will not hand
+    it to a browser — its receipt page answers ``401`` without the agent
+    session's cookies — so the route below fetches it with ours. Each surface
+    gets the path its own token opens.
     """
     if order.ticketing_status != TicketingStatus.TICKETED:
         return None
-    base_url = await integrations_service.gts_base_url(session)
-    return _adapter(order).receipt_url(base_url, order.gts_order_number)
+    template = ADMIN_RECEIPT_PATH if admin else RECEIPT_PATH
+    return template.format(id=order.id)
 
 
 async def _present(
@@ -224,7 +227,7 @@ async def _present(
         language=language,
         messages=messages,
         attempt=_view(attempt),
-        receipt_url=await _receipt_url(session, order),
+        receipt_url=_receipt_url(order),
     )
 
 
@@ -494,6 +497,97 @@ async def get_order(
 ) -> BookingResultOut:
     return await _present(
         session, await _owned(session, customer_id, order_id), language=language
+    )
+
+
+# --- the receipt -----------------------------------------------------------------
+
+#: What GTS may render a receipt as, and the extension the download is named
+#: with. Anything else is served as bytes to save rather than as something a
+#: browser will open — an installation we have not met must not be able to
+#: put a document of its choosing on this application's own origin.
+RECEIPT_TYPES: Final[dict[str, str]] = {
+    "application/pdf": "pdf",
+    "text/html": "html",
+}
+
+
+async def _fetch_receipt(
+    session: AsyncSession, order: Order, passenger_index: int | None
+) -> ReceiptDocument:
+    """The itinerary receipt of a ticketed order, fetched from GTS per request.
+
+    **Nothing is stored**, and that is the search rule applied to a file: GTS
+    renders the document from the order it holds, so the copy asked for now
+    is the only one guaranteed to say what the ticket says. A receipt kept in
+    our database would be a second truth, stale from the first change GTS
+    made to the booking.
+
+    Only once the ticket exists — the caller has already refused anything
+    else, in our own words, rather than letting GTS's refusal reach the
+    customer as a ``502``: ``ticketing_status`` knows the answer without
+    asking. Nothing here writes, reads GTS's order back or settles anything.
+    """
+    if order.ticketing_status != TicketingStatus.TICKETED:
+        raise Conflict("The ticket for this order has not been issued yet")
+    adapter = _adapter(order)
+    client = await integrations_service.gts_client(session)
+    document = await adapter.receipt(
+        client, order.gts_order_number, passenger_index=passenger_index
+    )
+    extension = RECEIPT_TYPES.get(document.content_type)
+    if extension is None:
+        # GTS rendered something we have not seen it render before. The bytes
+        # are still the customer's, so they are served — as a file to save.
+        logger.warning(
+            "gts_receipt_unexpected_type",
+            order_id=str(order.id),
+            content_type=document.content_type,
+        )
+    suffix = "" if passenger_index is None else f"-{passenger_index + 1}"
+    # The PNR is GTS's text and the filename ends up in a response header, so
+    # only the letters and digits of it travel.
+    name = "".join(char for char in (order.pnr or "") if char.isalnum()) or str(
+        order.gts_order_number
+    )
+    return ReceiptDocument(
+        content=document.content,
+        content_type=(
+            document.content_type if extension else "application/octet-stream"
+        ),
+        filename=f"receipt-{name}{suffix}.{extension or 'bin'}",
+    )
+
+
+async def order_receipt(
+    session: AsyncSession,
+    customer_id: uuid.UUID,
+    order_id: uuid.UUID,
+    *,
+    passenger_index: int | None = None,
+) -> ReceiptDocument:
+    """The customer downloading their own ticket's receipt.
+
+    ``passenger_index`` is GTS's own 0-based index into the order's
+    passengers; without it the document covers all of them.
+    """
+    order = await _owned(session, customer_id, order_id)
+    return await _fetch_receipt(session, order, passenger_index)
+
+
+async def order_receipt_admin(
+    session: AsyncSession,
+    order_id: uuid.UUID,
+    *,
+    passenger_index: int | None = None,
+) -> ReceiptDocument:
+    """The same document for the support desk — any order, no owner to match.
+
+    Staff answer a customer who cannot reach their own copy, so the only
+    difference from the customer's route is whose order may be asked for.
+    """
+    return await _fetch_receipt(
+        session, await _require(session, order_id), passenger_index
     )
 
 
@@ -1905,7 +1999,7 @@ async def _admin_view(session: AsyncSession, order: Order) -> OrderAdminOut:
         language=None,
         messages=messages,
         attempt=_view(latest),
-        receipt_url=await _receipt_url(session, order),
+        receipt_url=_receipt_url(order, admin=True),
     )
     return OrderAdminOut(
         **customer_view.model_dump(exclude={"order"}),
@@ -2172,6 +2266,8 @@ __all__ = [
     "list_orders_admin",
     "mark_refund",
     "message_catalogue",
+    "order_receipt",
+    "order_receipt_admin",
     "recheck_processing",
     "reprice_order",
     "resend_payment_otp",

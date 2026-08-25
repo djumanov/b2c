@@ -29,7 +29,6 @@ customer sees (PNR, price, route, the payment deadline) lives there.
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlencode
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
 from app.core.logging import get_logger
 from app.core.money import quantize
-from app.providers.gts.base import GtsClient, GtsTimeouts
+from app.providers.gts.base import GtsClient, GtsDocument, GtsTimeouts
 from app.providers.products import gts_order
 from app.providers.products.base import (
     SEARCH_IN_PROCESS,
@@ -53,8 +52,9 @@ logger = get_logger(__name__)
 #: IATA location code — city or airport.
 _IATA_PATTERN = r"^[A-Za-z]{3}$"
 
-#: Where GTS renders the itinerary receipt of a ticketed order (v1.4
-#: documentation, page 14). We never fetch it: the customer's app opens it.
+#: Where GTS renders the itinerary receipt (v1.4 documentation, page 14).
+#: **Not a link we hand out**: GTS answers it with a 401 unless the agent
+#: session's cookies come with it, so the document is fetched here, with ours.
 _RECEIPT_PATH = "/v1/receipt/pattern/view/"
 
 
@@ -554,28 +554,35 @@ class FlightAdapter:
             raise UpstreamError("the GTS ticketing answer had an unexpected shape")
         return _snapshot(order_number, order)
 
-    def receipt_url(
+    async def receipt(
         self,
-        base_url: str,
+        client: GtsClient,
         order_number: int,
         *,
         passenger_index: int | None = None,
-    ) -> str:
-        """The customer's own link to the itinerary receipt at GTS.
+    ) -> GtsDocument:
+        """``GET /v1/receipt/pattern/view/`` — the itinerary receipt, as a file.
 
-        ``{base_url}/v1/receipt/pattern/view/?order_number={n}&product=flight``
-        — the page GTS renders the receipt on. Absolute, because the app that
-        opens it holds nothing but the order answer, and the base is the
-        active credential's, so the sandbox and production each give out
-        their own and no host is written down in our code.
+        The only step whose answer is a file. ``product`` is GTS's own name
+        for the vertical and ``passenger_index`` is **0-based** (its
+        documentation says so twice); left out, the document covers every
+        passenger on the order.
 
-        A string, not a call: no session is spent here and the bytes never
-        pass through this application at all.
+        Nothing is read out of the bytes and nothing is added to them: what a
+        customer downloads is what GTS rendered, which is the point of asking
+        GTS for it rather than laying out a ticket of our own.
         """
-        params = {"order_number": str(order_number), "product": self.code.value}
+        params: dict[str, Any] = {
+            "order_number": order_number,
+            "product": self.code.value,
+        }
         if passenger_index is not None:
-            params["passenger_index"] = str(passenger_index)
-        return f"{base_url.rstrip('/')}{_RECEIPT_PATH}?{urlencode(params)}"
+            params["passenger_index"] = passenger_index
+        return await client.download(
+            _RECEIPT_PATH,
+            params=params,
+            timeout=GtsTimeouts.DEFAULT_SECONDS,
+        )
 
     async def cancel(self, client: GtsClient, order_number: int) -> None:
         """``POST /v1/content/cancel/`` — release the hold before ticketing.

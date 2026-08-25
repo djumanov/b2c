@@ -24,6 +24,7 @@ SCHEMAS: dict[str, Any] = SCHEMA["components"]["schemas"]
 DOCUMENTED: tuple[tuple[str, str], ...] = (
     ("/api/v1/public/orders/", "get"),
     ("/api/v1/public/orders/{id}/", "get"),
+    ("/api/v1/public/orders/{id}/receipt/", "get"),
     ("/api/v1/public/orders/{id}/reprice/", "post"),
     ("/api/v1/public/orders/{id}/reprice/confirm/", "post"),
     ("/api/v1/public/orders/{id}/payment/", "post"),
@@ -36,6 +37,7 @@ DOCUMENTED: tuple[tuple[str, str], ...] = (
     ("/api/v1/public/profile/cards/{id}/", "delete"),
     ("/api/v1/admin/orders/", "get"),
     ("/api/v1/admin/orders/{id}/", "get"),
+    ("/api/v1/admin/orders/{id}/receipt/", "get"),
     ("/api/v1/admin/orders/{id}/refund/", "post"),
     ("/api/v1/admin/orders/{id}/sync/", "post"),
     ("/api/v1/admin/orders/{id}/ticketing/retry/", "post"),
@@ -311,7 +313,7 @@ def test_the_status_vocabularies_are_enumerated() -> None:
 def test_the_receipt_link_says_where_it_points_and_when_it_appears() -> None:
     """A client developer must find the receipt without asking anyone."""
     field = SCHEMAS["OrderOut"]["properties"]["receipt_url"]
-    assert field["examples"][0].endswith("product=flight")
+    assert field["examples"][0].endswith("/receipt/")
     assert "ticketed" in field["description"]
     detail = PATHS["/api/v1/public/orders/{id}/"]["get"]
     assert "receipt_url" in detail["description"]
@@ -320,8 +322,24 @@ def test_the_receipt_link_says_where_it_points_and_when_it_appears() -> None:
     example = detail["responses"]["200"]["content"]["application/json"]["example"]
     assert example["meta"] is None
     assert example["data"]["order"]["status"] == "ticketed"
-    assert "/v1/receipt/pattern/view/" in example["data"]["order"]["receipt_url"]
+    assert example["data"]["order"]["receipt_url"].endswith("/receipt/")
     assert example["data"]["ticketing"]["tickets"]
+
+
+def test_both_receipt_routes_answer_with_a_file() -> None:
+    """The one success body the envelope leaves alone, on either surface."""
+    for path in (
+        "/api/v1/public/orders/{id}/receipt/",
+        "/api/v1/admin/orders/{id}/receipt/",
+    ):
+        operation = PATHS[path]["get"]
+        answer = operation["responses"]["200"]
+        # No ``application/json`` at all: this is not the envelope.
+        assert set(answer["content"]) == {"application/pdf", "text/html"}, path
+        assert {"409", "502", "504"} <= set(operation["responses"]), path
+        index = _parameters(path, "get")["passenger_index"]
+        assert index["in"] == "query"
+        assert _resolve(index["schema"])["minimum"] == 0, path
 
 
 def test_money_is_a_two_decimal_string() -> None:
