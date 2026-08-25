@@ -10,6 +10,7 @@ payment provider is the scripted ``FakeProvider``.
 
 import logging
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import UpstreamTimeout
+from app.db.mixins import utcnow
 from app.modules.customers.models import Customer
 from app.modules.orders import service
 from app.modules.orders.models import Order, OrderEvent, PaymentAttempt
@@ -770,6 +772,36 @@ async def test_confirm_finds_the_hold_released_and_cancels(
     assert order.price_confirmed_at is None
     assert order.price_response == gts_price(20.0)
     assert await _event_names(db_session, order) == ["order.cancelled"]
+
+
+@respx.mock
+async def test_confirm_finds_the_ticketing_deadline_gone_and_records_nothing(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """``BO`` past ``ticket_time_limit`` outranks the confirmation too.
+
+    GTS keeps the record and refuses the ticket; confirming a price it will
+    not ticket only walks the customer up to a payment that ends in a refund.
+    The order stays ``booked`` — GTS still has it, and only GTS cancels it.
+    """
+    mock_gts_signin()
+    gone = (utcnow() - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mock_gts_order(gts_order_body(status="BO", ticket_time_limit=gone))
+    mock_gts_reprice_check(NEW_PRICE)
+    mock_gts_reprice_confirm(NEW_PRICE)
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["code"] == "offer_expired"
+    await db_session.refresh(order)
+    assert order.status == "booked" and order.cancel_reason is None
+    assert order.price_confirmed_at is None
+    assert await _event_names(db_session, order) == []
 
 
 @respx.mock
