@@ -551,6 +551,8 @@ async def test_booking_writes_created_event_and_lifecycle_defaults(
         "ticketed_at": None,
         "tickets": [],
         "error": None,
+        # No ticket, no receipt to download yet.
+        "receipt_url": None,
     }
     assert data["payment"]["payment_id"] is None
 
