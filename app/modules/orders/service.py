@@ -5,12 +5,14 @@ confirmed the booking; it is the flow's only write and its own transaction.
 There is nothing here for a failed booking on purpose: no row is the record.
 
 Paying starts with the price: ``reprice_order`` asks GTS what the hold
-costs today and ``confirm_price`` accepts it — GTS's own lifecycle puts
-``reprice_check`` and ``reprice_confirm`` before ``ticketing`` and refuses
-a ticket without them. Then three calls — ``start_payment`` sends the
-cardholder a code, ``resend_payment_otp`` sends it again for the same
-attempt, ``confirm_payment`` charges with it — and every write between them
-follows one shape: **lock → re-read → validate → mutate → commit**. A network call
+costs today and hands the answer through untouched — a question, not a
+write — and ``confirm_price`` accepts it, which is when the order changes.
+GTS's own lifecycle puts ``reprice_check`` and ``reprice_confirm`` before
+``ticketing`` and refuses a ticket without them. Then three calls —
+``start_payment`` sends the cardholder a code, ``resend_payment_otp`` sends
+it again for the same attempt, ``confirm_payment`` charges with it — and
+every write between them follows one shape: **lock → re-read → validate →
+mutate → commit**. A network call
 sits either before the first lock (a pure read) or between two locks, never
 inside the transaction whose state it decides, so a slow provider cannot hold
 a row and a crashed worker cannot leave one half-written. The provider is
@@ -94,6 +96,7 @@ from app.modules.orders.schemas import (
     PaymentResendIn,
     PaymentStartIn,
     RefundIn,
+    strip_commission,
 )
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
@@ -346,12 +349,12 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
     an installation that sends minutes-remaining shrinks it on every read
     rather than extending it.
 
-    A **repriced order's amount is not overwritten**: once the price step
-    has run, ``price_response`` (``reprice_check``/``reprice_confirm``) is
-    GTS's later word on what ticketing debits, and the order record's own
-    ``price_info`` is the booking's. A read that disagrees is logged, not
-    believed — ``gts_response`` is still replaced whole (it is the record,
-    verbatim), and ``order_data`` shows the repriced figures over it.
+    A **confirmed price is not overwritten**: once ``reprice_confirm`` has
+    run, ``price_response`` is GTS's later word on what ticketing debits,
+    and the order record's own ``price_info`` is the booking's. A read that
+    disagrees is logged, not believed — ``gts_response`` is still replaced
+    whole (it is the record, verbatim), and ``order_data`` shows the
+    confirmed figures over it.
     """
     if snapshot.gts_status:
         order.gts_status = snapshot.gts_status
@@ -360,14 +363,14 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
     if snapshot.pnr:
         order.pnr = snapshot.pnr
     if snapshot.amount is not None and snapshot.currency:
-        if order.repriced_at is None:
+        if order.price_confirmed_at is None:
             order.amount = snapshot.amount
             order.currency = snapshot.currency
         elif (snapshot.amount, snapshot.currency) != (order.amount, order.currency):
             logger.warning(
-                "gts_price_differs_from_reprice",
+                "gts_price_differs_from_confirmed",
                 order_id=str(order.id),
-                repriced=f"{order.amount} {order.currency}",
+                confirmed=f"{order.amount} {order.currency}",
                 read=f"{snapshot.amount} {snapshot.currency}",
             )
     if snapshot.trip_type:
@@ -495,7 +498,7 @@ def _require_price_confirmed(order: Order) -> None:
 
 
 def _require_same_currency(order: Order, price: OrderPrice, *, step: str) -> None:
-    """A reprice answers in the order's currency, or it is not believed.
+    """A confirmation answers in the order's currency, or it is not believed.
 
     GTS's documentation draws ``reprice_check`` in UZS and
     ``reprice_confirm`` in USD for the same order. Misprint or not, a figure
@@ -542,13 +545,13 @@ def _take_price(
     *,
     event: str,
 ) -> bool:
-    """Write a price GTS answered with. ``True`` when it differs from the one held.
+    """Write the price GTS confirmed. ``True`` when it differs from the one held.
 
     The answer is kept whole (``price_response``: the breakdown the client
     shows) whatever the figure. A different price invalidates what the
-    customer saw: the confirmation is cleared, and an open attempt — a code
-    sent for the old amount — is abandoned so it can never confirm a charge
-    of a price nobody accepted.
+    customer was shown before: an open attempt — a code sent for the old
+    amount — is abandoned so it can never confirm a charge of a price nobody
+    accepted, and the event records the move.
     """
     order.price_response = dict(price.raw)
     before = (order.amount, order.currency)
@@ -567,48 +570,37 @@ def _take_price(
     )
     order.amount = price.amount
     order.currency = price.currency
-    order.price_confirmed_at = None
     if open_attempt is not None:
         open_attempt.status = AttemptStatus.ABANDONED
     return True
 
 
 async def reprice_order(
-    session: AsyncSession,
-    customer_id: uuid.UUID,
-    order_id: uuid.UUID,
-    *,
-    language: str | None = None,
-) -> BookingResultOut:
-    """Step 0 of paying: what the held order costs today, from GTS.
+    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> dict[str, Any]:
+    """Step 0 of paying: what the held order costs today — GTS's answer, as is.
 
-    GTS's own lifecycle puts ``reprice_check`` and ``reprice_confirm``
-    between booking and ticketing, and its live server refuses to ticket an
-    order that skipped them. The customer's app calls this before the
-    payment screen, shows the answer, and confirms it with
-    ``confirm_price`` — payment is refused until it has.
-
-    The GTS call comes before the lock, like every network call here. A
-    price other than the one held replaces it, clears the confirmation and
-    abandons an open attempt; the same price just stamps ``repriced_at``.
+    A question, not a write. GTS's own lifecycle puts ``reprice_check`` and
+    ``reprice_confirm`` between booking and ticketing, and its live server
+    refuses to ticket an order that skipped them; the customer's app asks
+    here, compares ``price_info`` with what it shows, and — once the customer
+    accepts — calls ``confirm_price``, which is the step that changes the
+    order. Nothing is stored or moved here, so the answer is the one GTS
+    gave (agent commission stripped, as everywhere on the customer surface):
+    checking again costs nothing and changes nothing. Somebody else's order
+    is a ``404``, like every read.
     """
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
-    _require_payable(order)
     price = await _adapter(order).reprice(client, order.gts_order_number)
-
-    order, open_attempt = await _guard_price_step(session, customer_id, order_id)
-    _require_same_currency(order, price, step="reprice_check")
-    changed = _take_price(session, order, open_attempt, price, event="price.repriced")
-    order.repriced_at = utcnow()
-    await session.commit()
     logger.info(
         "order_repriced",
         order_id=str(order.id),
         gts_order_number=order.gts_order_number,
-        changed=changed,
+        amount=f"{price.amount} {price.currency}",
     )
-    return await _present(session, order, language=language)
+    answer: dict[str, Any] = strip_commission(price.raw)
+    return answer
 
 
 async def confirm_price(
@@ -620,25 +612,27 @@ async def confirm_price(
 ) -> BookingResultOut:
     """The customer accepted the price ``reprice_order`` showed — tell GTS.
 
-    Refused without a prior check: GTS's sequence is check, then confirm.
-    The confirmation answers with a price too, and that one is GTS's final
-    word on what ticketing debits — so it is the one stored and charged. It
-    normally equals the check's; when it does not, the difference is written
-    as an event and the order is confirmed at GTS's figure, which is what the
-    answer to this call shows the customer.
+    The one write of the price step. GTS's sequence is check, then confirm;
+    the check is a pure question here, so GTS itself is the one to refuse a
+    confirmation it was not asked to check for (``502`` with its words). The
+    confirmation answers with a price, and that one is GTS's final word on
+    what ticketing debits — so it is the one stored and charged: it replaces
+    whatever the order held, and an open attempt for another amount is
+    abandoned. It normally equals what the check showed; when it does not,
+    the difference is an event and a warning, and the answer to this call is
+    what the customer sees before paying.
 
     GTS has repriced its record by now, so the order is **read back** and
     the answer is the order as it stands — status, deadline, ``order_data``
     — at the confirmed price. The read-back is best effort: the confirmation
     is the act that matters, and a read that fails is a warning, not a
     confirmation undone. A hold GTS has released since is the same
-    ``offer_expired`` the payment step would have found.
+    ``offer_expired`` the payment step would have found — and takes
+    precedence over the confirmation, which is then never recorded.
     """
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
     _require_payable(order)
-    if order.repriced_at is None:
-        raise Conflict("Check the price first — call reprice/ before confirming it")
     adapter = _adapter(order)
     price = await adapter.confirm_price(client, order.gts_order_number)
     snapshot: OrderSnapshot | None
@@ -654,15 +648,12 @@ async def confirm_price(
         snapshot = None
 
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
-    if order.repriced_at is None:
-        raise Conflict("Check the price first — call reprice/ before confirming it")
     _require_same_currency(order, price, step="reprice_confirm")
-    if snapshot is not None:
+    if snapshot is not None and gts_order.is_released(snapshot.gts_status):
         apply_snapshot(order, snapshot)
-        if gts_order.is_released(snapshot.gts_status):
-            session.add_all(_released(order, snapshot))
-            await session.commit()
-            raise OfferExpired("The booking has expired at GTS — please search again")
+        session.add_all(_released(order, snapshot))
+        await session.commit()
+        raise OfferExpired("The booking has expired at GTS — please search again")
     changed = _take_price(session, order, open_attempt, price, event="price.repriced")
     if changed:
         logger.warning(
@@ -671,7 +662,11 @@ async def confirm_price(
             gts_order_number=order.gts_order_number,
             amount=f"{price.amount} {price.currency}",
         )
+    # Confirmed **before** the read-back is applied, so the read refreshes
+    # the record without touching the amount just confirmed.
     order.price_confirmed_at = utcnow()
+    if snapshot is not None:
+        apply_snapshot(order, snapshot)
     session.add(
         lifecycle.event(
             order,

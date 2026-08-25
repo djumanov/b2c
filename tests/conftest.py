@@ -447,9 +447,9 @@ async def make_order(
 ) -> Any:
     """A booked, unpaid order a day before its deadline — the payment tests' start.
 
-    Its price is already checked and confirmed with GTS (the two steps the
-    customer's app takes before the payment screen); pass
-    ``price_confirmed_at=None`` for an order that has not been through them.
+    Its price is already confirmed with GTS (``reprice/confirm/``, the step
+    the customer's app takes before the payment screen); pass
+    ``price_confirmed_at=None`` for an order that has not been through it.
     """
     from datetime import timedelta
 
@@ -470,7 +470,6 @@ async def make_order(
         "currency": "UZS",
         "route_summary": "TAS-VKO",
         "ticket_time_limit_at": utcnow() + timedelta(days=1),
-        "repriced_at": utcnow(),
         "price_confirmed_at": utcnow(),
         "price_response": gts_price(20.0),
         "gts_response": {"order_number": ORDER_NUMBER},

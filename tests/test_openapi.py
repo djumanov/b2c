@@ -155,17 +155,19 @@ def test_every_error_is_the_envelope_and_never_fastapis_shape() -> None:
 
 
 def test_the_money_endpoints_list_the_errors_they_raise() -> None:
-    for path, expected in (
-        ("/api/v1/public/orders/{id}/reprice/", {"conflict"}),
-        # Confirm reads the order back, so it can find the hold released.
-        ("/api/v1/public/orders/{id}/reprice/confirm/", {"conflict", "offer_expired"}),
-    ):
-        price = PATHS[path]["post"]["responses"]
-        assert {"409", "502", "504"} <= set(price), path
-        codes = price["409"]["content"]["application/json"]["schema"]["properties"][
-            "errors"
-        ]["items"]["properties"]["code"]["enum"]
-        assert set(codes) == expected, path
+    # The check is a pure question: GTS's answer or GTS's failure, no 409 of ours.
+    check = PATHS["/api/v1/public/orders/{id}/reprice/"]["post"]["responses"]
+    assert {"502", "504"} <= set(check)
+    assert "409" not in check
+    # Confirm writes, and reads the order back, so it can find the hold released.
+    confirm_price = PATHS["/api/v1/public/orders/{id}/reprice/confirm/"]["post"][
+        "responses"
+    ]
+    assert {"409", "502", "504"} <= set(confirm_price)
+    codes = confirm_price["409"]["content"]["application/json"]["schema"]["properties"][
+        "errors"
+    ]["items"]["properties"]["code"]["enum"]
+    assert set(codes) == {"conflict", "offer_expired"}
 
     start = PATHS["/api/v1/public/orders/{id}/payment/"]["post"]["responses"]
     assert {"409", "502", "504"} <= set(start)
