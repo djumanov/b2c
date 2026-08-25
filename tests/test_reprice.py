@@ -25,6 +25,7 @@ from app.modules.orders import service
 from app.modules.orders.models import Order, OrderEvent, PaymentAttempt
 from app.providers.products.base import OrderSnapshot
 from tests.conftest import (
+    GTS,
     ORDER_NUMBER,
     FakeProvider,
     gts_order_body,
@@ -98,6 +99,23 @@ async def _attempts(session: AsyncSession, order: Order) -> list[PaymentAttempt]
         select(PaymentAttempt).where(PaymentAttempt.order_id == order.id)
     )
     return list(rows.all())
+
+
+def _mock_reprice_data(path: str, data: dict[str, Any] | None) -> Any:
+    """A ``success`` price step whose ``data`` is exactly this — ``null`` too,
+    which ``mock_gts_reprice_*`` cannot express (``None`` means "the default")."""
+    return respx.post(f"{GTS}{path}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "message": "",
+                "code": 200,
+                "data": data,
+                "errors": [],
+            },
+        )
+    )
 
 
 UZS_20 = {"amount": "20.00", "currency": "UZS"}
@@ -176,14 +194,57 @@ async def test_reprice_asks_gts_even_for_an_unconfirmed_or_paid_order(
 
 
 @respx.mock
+async def test_gts_verdict_outranks_the_figures(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """``price_changed`` is GTS's answer to the only question this step asks.
+
+    Live GTS quotes the provider's fare in the provider's currency — 294 EUR
+    for an order booked at 343.04 USD — and says ``price_changed: false`` in
+    the same breath, its own order record still reading 343.04 (2026-08-25).
+    Comparing the figures would announce a change that is not one and send
+    the customer to a confirmation GTS refuses; the verdict is believed
+    instead, and the quote is still handed through for the breakdown.
+    """
+    mock_gts_signin()
+    order = await make_order(
+        db_session, customer, amount=Decimal("343.04"), currency="USD"
+    )
+
+    mock_gts_reprice_check(gts_price(294.0, "EUR", changed=False))
+    unmoved = (await _reprice(client, order, customer_headers)).json()["data"]
+    usd = {"amount": "343.04", "currency": "USD"}
+    assert (unmoved["changed"], unmoved["old_price"], unmoved["new_price"]) == (
+        False,
+        usd,
+        usd,
+    )
+    assert unmoved["price_info"] == {"price": 294.0, "currency": "EUR", "fee_amount": 0}
+
+    # And the other way: GTS says it moved, so it moved — figures or not.
+    respx.reset()
+    mock_gts_signin()
+    mock_gts_reprice_check(gts_price(343.04, "USD", changed=True))
+    moved = (await _reprice(client, order, customer_headers)).json()["data"]
+    assert (moved["changed"], moved["new_price"]) == (True, usd)
+
+    await db_session.refresh(order)
+    assert str(order.amount) == "343.04" and order.price_confirmed_at is not None
+
+
+@respx.mock
 async def test_reprice_says_whether_the_price_moved(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
-    """``old_price`` is the order's own figure, ``new_price`` GTS's today, and
-    ``changed`` the comparison — amount **or** currency, or no price held."""
+    """With no verdict from GTS the figures are all there is: ``old_price`` is
+    the order's own, ``new_price`` GTS's today, and ``changed`` the comparison
+    — amount **or** currency, or no price held."""
     mock_gts_signin()
     order = await make_order(db_session, customer)
 
@@ -236,15 +297,62 @@ async def test_gts_refusal_is_502_with_its_words(
 
 
 @respx.mock
-async def test_an_answer_without_a_price_is_502(
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(
+            {"price_info": {"currency": "UZS"}, "price_details": []}, id="no-price"
+        ),
+        pytest.param({"price_details": []}, id="no-price-info"),
+        pytest.param({}, id="empty-data"),
+        pytest.param(None, id="null-data"),
+    ],
+)
+async def test_an_answer_without_a_price_means_the_price_did_not_change(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    answer: dict[str, Any] | None,
+) -> None:
+    """GTS quotes a figure only when it has a new one, so a priceless answer
+    is "unchanged", not a failure: the order's own price is today's price.
+
+    All four shapes of silence GTS could send read the same — ``data: null``
+    included, which is why the whole envelope is read and not just ``data``."""
+    mock_gts_signin()
+    _mock_reprice_data("/v1/content/reprice_check/", answer)
+    order = await make_order(db_session, customer)
+
+    response = await _reprice(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == {
+        "changed": False,
+        "old_price": UZS_20,
+        "new_price": UZS_20,
+        "price_info": {},
+        "price_details": [],
+    }
+    # Still a question: nothing was written.
+    await db_session.refresh(order)
+    assert str(order.amount) == "20.00"
+    assert order.price_response == gts_price(20.0)
+    assert await _event_names(db_session, order) == []
+
+
+@respx.mock
+async def test_no_price_on_either_side_is_502(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
+    """ "Unchanged" is an answer only when the order holds a price to stand on.
+    An order GTS never priced leaves the question genuinely unanswered."""
     mock_gts_signin()
-    mock_gts_reprice_check({"price_info": {"currency": "UZS"}, "price_details": []})
-    order = await make_order(db_session, customer)
+    _mock_reprice_data("/v1/content/reprice_check/", {})
+    order = await make_order(db_session, customer, amount=None, currency=None)
 
     response = await _reprice(client, order, customer_headers)
 
@@ -282,6 +390,7 @@ async def test_confirm_accepts_the_price_and_unlocks_payment(
 ) -> None:
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    check = mock_gts_reprice_check(NEW_PRICE)
     confirm = mock_gts_reprice_confirm(gts_price(20.0))
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
@@ -296,6 +405,9 @@ async def test_confirm_accepts_the_price_and_unlocks_payment(
     payment = response.json()["data"]["payment"]
     assert payment["amount"] == UZS_20
     assert payment["price_confirmed"] is True
+    # The check is asked first — it is what decides whether GTS is asked to
+    # confirm at all — and only then the confirmation itself.
+    assert check.call_count == 1
     assert confirm.call_count == 1
     assert confirm.calls.last.request.content == b'{"order_number":%d}' % ORDER_NUMBER
     assert await _events(db_session, order) == [("price.confirmed", UZS_20)]
@@ -310,6 +422,87 @@ async def test_confirm_accepts_the_price_and_unlocks_payment(
 
 
 @respx.mock
+@pytest.mark.parametrize(
+    "checked",
+    [
+        pytest.param(gts_price(294.0, "EUR", changed=False), id="verdict-false"),
+        pytest.param({}, id="no-price-quoted"),
+    ],
+)
+async def test_an_unmoved_price_is_confirmed_without_asking_gts_to_confirm(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+    checked: dict[str, Any],
+) -> None:
+    """The ordinary case, and the one that was a dead end.
+
+    GTS keeps no repriced offer for a price that did not move, and refuses a
+    confirmation sent anyway — ``400803``, "the offer's validity after the
+    recalculation has expired" (live 2026-08-25). Since ``payment/`` waits
+    for this step, that ``502`` left every ordinary order unpayable. So the
+    check decides: unmoved, GTS is not asked to confirm, and the price
+    nobody disputes is the confirmed one.
+    """
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    check = _mock_reprice_data("/v1/content/reprice_check/", checked)
+    confirm = mock_gts_reprice_confirm(error="Срок действия предложения истёк")
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    payment = response.json()["data"]["payment"]
+    assert payment["amount"] == UZS_20
+    assert payment["price_confirmed"] is True
+    assert check.call_count == 1
+    assert confirm.call_count == 0
+    await db_session.refresh(order)
+    assert str(order.amount) == "20.00"
+    assert order.price_confirmed_at is not None
+    # Nothing was quoted for this order, so the breakdown stays as it was.
+    assert order.price_response == gts_price(20.0)
+    assert await _events(db_session, order) == [("price.confirmed", UZS_20)]
+
+    started = await _start(
+        client, order, {**customer_headers, "Idempotency-Key": "after-silent-confirm"}
+    )
+    assert started.status_code == 200, started.text
+    (attempt,) = await _attempts(db_session, order)
+    assert str(attempt.amount) == "20.00"
+
+
+@respx.mock
+async def test_confirm_without_a_price_confirms_the_price_the_order_holds(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """A confirmation that quotes nothing is GTS saying the price never moved
+    after all: the confirmation counts, at the order's own price."""
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(NEW_PRICE)
+    confirm = _mock_reprice_data("/v1/content/reprice_confirm/", {})
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    response = await _confirm_price(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["payment"]["amount"] == UZS_20
+    assert confirm.call_count == 1
+    await db_session.refresh(order)
+    assert str(order.amount) == "20.00"
+    assert order.price_confirmed_at is not None
+    assert order.price_response == gts_price(20.0)
+    assert await _events(db_session, order) == [("price.confirmed", UZS_20)]
+
+
+@respx.mock
 async def test_confirm_stores_gts_final_price_and_shows_it_everywhere(
     client: httpx.AsyncClient,
     customer: Customer,
@@ -320,6 +513,7 @@ async def test_confirm_stores_gts_final_price_and_shows_it_everywhere(
     charged — and what the order, the payment block and ``order_data`` say."""
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(NEW_PRICE)
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
@@ -354,6 +548,7 @@ async def test_confirm_at_a_new_price_abandons_the_code_already_sent(
     """A code out for the old amount must never confirm a charge of the new one."""
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(NEW_PRICE)
     order = await make_order(db_session, customer)
     started = await _start(client, order, customer_headers)
@@ -387,6 +582,7 @@ async def test_confirm_while_a_charge_is_being_confirmed_is_409(
 ) -> None:
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(NEW_PRICE)
     order = await make_order(db_session, customer)
     started = await _start(client, order, customer_headers)
@@ -431,6 +627,7 @@ async def test_confirm_reads_the_order_back_and_keeps_the_confirmed_price_over_i
     price, even where the record's own ``price_info`` still says the booking's."""
     mock_gts_signin()
     read = mock_gts_order(gts_order_body())  # status BO, pnr, deadline, price 287500
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(gts_price(20.0))
     order = await make_order(
         db_session,
@@ -474,6 +671,7 @@ async def test_confirm_stands_when_the_read_back_fails(
     """The confirmation is the act; a read that fails is a warning, not an undo."""
     mock_gts_signin()
     mock_gts_order(None)
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(gts_price(20.0))
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
@@ -501,6 +699,7 @@ async def test_confirm_finds_the_hold_released_and_cancels(
     """A released hold outranks the confirmation, which is then never recorded."""
     mock_gts_signin()
     mock_gts_order(gts_order_body(status="CB"))
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(NEW_PRICE)
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
@@ -525,6 +724,7 @@ async def test_confirm_refused_by_gts_leaves_the_price_unconfirmed(
     db_session: AsyncSession,
 ) -> None:
     mock_gts_signin()
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(error="Цена изменилась")
     order = await make_order(db_session, customer, price_confirmed_at=None)
 
@@ -548,6 +748,7 @@ async def test_a_confirmation_in_another_currency_is_refused_and_nothing_changes
     figure in another currency is not a new price and must never be charged."""
     mock_gts_signin()
     mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(NEW_PRICE)
     mock_gts_reprice_confirm(gts_price(20.0, "USD"))
     order = await make_order(db_session, customer, price_confirmed_at=None)
 

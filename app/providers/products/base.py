@@ -113,13 +113,24 @@ class OrderPrice(BaseModel):
 
     GTS prices a held booking again before it will issue the ticket
     (``reprice_check`` → ``reprice_confirm`` → ``ticketing``, its documented
-    lifecycle); this is that price, read once behind the port. Unlike
-    ``OrderSnapshot.amount`` it is never optional — an answer without a price
-    is an unreadable answer, since the price is the whole point of asking.
+    lifecycle); this is that price, read once behind the port. The amount is
+    not optional here — a quoted price is a whole price or it is nothing.
+    "GTS quoted nothing" is said by returning no ``OrderPrice`` at all, and
+    means the price has not changed, not that the answer was unreadable.
     """
 
     amount: Decimal
     currency: str
+
+    #: GTS's **own** verdict on whether the price moved (``price_changed`` in
+    #: its answer), ``None`` when it did not say. It is the verdict, not the
+    #: figures, that decides: live GTS quotes the *provider's* fare in the
+    #: provider's currency (294 EUR against an order booked at 343.04 USD)
+    #: while saying ``price_changed: false``, and its own order record keeps
+    #: the booked price. Comparing the two figures would call that a change;
+    #: GTS says it is not one, and GTS is the one issuing the ticket.
+    changed: bool | None = None
+
     raw: dict[str, Any]
 
 
@@ -178,22 +189,38 @@ class ProductAdapter(Protocol):
         a deadline and a ticket. A GET, so safe to ask as often as needed."""
         ...
 
-    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice:
+    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice | None:
         """Ask GTS what the held order costs today (``reprice_check``).
 
         The first of the two price steps GTS requires between booking and
         ticketing. Repeatable: it changes nothing on GTS's side. Raises
         ``UpstreamError`` with GTS's words when the order cannot be priced
-        (released, unknown) and when the answer carries no price.
+        (released, unknown).
+
+        ``None`` means **the price did not change**: GTS quotes a figure only
+        when there is a new one, so an answer without a price is its way of
+        saying the order still costs what it costs. The caller answers with
+        the price it already holds. When a price does come back, read
+        ``OrderPrice.changed`` before believing it moved.
         """
         ...
 
-    async def confirm_price(self, client: GtsClient, order_number: int) -> OrderPrice:
+    async def confirm_price(
+        self, client: GtsClient, order_number: int
+    ) -> OrderPrice | None:
         """Accept today's price on GTS's side (``reprice_confirm``).
 
         The second price step — GTS's final word on what ticketing will
         debit, sent once the customer has seen the price ``reprice``
-        returned. The answer's price is authoritative over the check's.
+        returned. The answer's price is authoritative over the check's;
+        ``None`` is "unchanged" here too, and leaves the order's own price
+        standing as the confirmed one.
+
+        **Sent only after a check that said the price moved.** GTS keeps no
+        offer to confirm otherwise and refuses with ``400803`` ("the offer's
+        validity after the recalculation has expired"), which is why the
+        caller asks ``reprice`` first and skips this step when the answer is
+        "unchanged" (live 2026-08-25).
         """
         ...
 

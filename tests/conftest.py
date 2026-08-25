@@ -269,9 +269,17 @@ def mock_gts_order(
     )
 
 
-def gts_price(price: float = 287500.0, currency: str = "UZS") -> dict[str, Any]:
-    """``data`` of a reprice answer, as GTS's documentation draws it."""
-    return {
+def gts_price(
+    price: float = 287500.0, currency: str = "UZS", *, changed: bool | None = None
+) -> dict[str, Any]:
+    """``data`` of a reprice answer, as GTS's documentation draws it.
+
+    ``changed`` adds the ``price_changed`` verdict the live server sends
+    beside the figure — the field the price steps turn on. Left out by
+    default, which is the documentation's shape and an installation that
+    does not send it.
+    """
+    data: dict[str, Any] = {
         "price_info": {
             "price": price,
             "currency": currency,
@@ -280,6 +288,9 @@ def gts_price(price: float = 287500.0, currency: str = "UZS") -> dict[str, Any]:
         },
         "price_details": [],
     }
+    if changed is not None:
+        data["price_changed"] = changed
+    return data
 
 
 def _mock_gts_price_step(
