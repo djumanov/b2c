@@ -957,6 +957,89 @@
           "response": []
         },
         {
+          "name": "Pay — step 0: check today's price",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/reprice/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                "reprice"
+              ]
+            },
+            "description": "GTS reprice_check, handed through as is: data.price_info (price, currency, fee_amount) and price_details, commission fields removed. A question — nothing on the order changes. Compare price_info.price with what the customer sees; once they accept, run step 0b. GTS's test server prices at 0.00."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.price_info) console.log('today', body.data.price_info.price, body.data.price_info.currency);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay — step 0b: accept the price",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/reprice/confirm/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                "reprice",
+                "confirm"
+              ]
+            },
+            "description": "GTS reprice_confirm, then the order is read back from GTS. The confirmed price is stored and charged: order.amount, payment.amount and order_data.price_info all say it, payment.price_confirmed becomes true and step 1 is unlocked (409 before this). A hold GTS has released since is 409 offer_expired."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data) console.log('confirmed', JSON.stringify(body.data.payment.amount), '| price_confirmed', body.data.payment.price_confirmed);"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Pay — step 1",
           "request": {
             "method": "POST",
@@ -999,6 +1082,52 @@
                   "  pm.collectionVariables.set('payment_id', body.data.payment.payment_id);",
                   "  console.log('payment', body.data.payment.status, body.data.payment.phone_hint);",
                   "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay — resend the code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/public/orders/{{order_id}}/payment/resend/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "orders",
+                "{{order_id}}",
+                "payment",
+                "resend"
+              ]
+            },
+            "description": "Sends the same attempt's code again (payment_id from step 1). No new attempt, nothing charged. Demo does nothing (its code is fixed); Payme really re-texts. Under the same payment rate limit — that is the only cooldown.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_id\": \"{{payment_id}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.data) console.log('payment', body.data.payment.status, body.data.payment.phone_hint);"
                 ]
               }
             }
