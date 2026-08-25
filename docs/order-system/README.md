@@ -502,63 +502,31 @@ Chekka holatlar:
 Staff cancel'i yo'q — `lifecycle` unga ruxsat bersa ham, to'langan bronni bekor
 qilish refund savoli va u 4-bosqichda qo'lda hal qilinadi.
 
-## 4d. Marshrut kvitansiyasi — link orderning o'zida
+## 4d. Marshrut kvitansiyasi — faqat link
 
-Chipta chiqqach yo'lovchi o'zi bilan olib yuradigan hujjatni **GTS chizadi**
-(`GET /v1/receipt/pattern/view/?order_number={n}&product=flight`,
-`docs/gts-api-v1.4.pdf`, 14-bet). Mijoz ilovasi yoki sayt uni **o'zi** yuklab
-oladi, shuning uchun order javobi tayyor linkni olib yuradi:
+Chipta chiqqach yo'lovchi o'zi bilan olib yuradigan hujjatni **GTS chizadi va
+GTS beradi** (`GET /v1/receipt/pattern/view/?order_number={n}&product=flight`,
+`docs/gts-api-v1.4.pdf`, 14-bet). Bizda bu hujjat uchun **endpoint yo'q** va
+hech qachon bo'lmaydi: fayl bizning process'imizdan o'tmaydi. Order javobi
+faqat tayyor linkni olib yuradi:
 
 ```
-ticketing.receipt_url =
+order.receipt_url =
   {gts_credentials.base_url}/v1/receipt/pattern/view/?order_number={n}&product=flight
 ```
 
-- **To'liq URL**, chala yo'l emas: ilova order javobidan boshqa hech narsasiz
-  ocha oladi. Host — **bazadagi faol GTS credential'ining `base_url`** i
+- **To'liq URL** — ilova yoki sayt uni to'g'ridan-to'g'ri ochadi, bizning
+  token'imiz ham, chaqiruvimiz ham qatnashmaydi.
+- Host — **bazadagi faol GTS credential'ining `base_url`** i
   (`integrations.service.gts_base_url`, parol ochilmaydi), demak sandbox va
   prod har biri o'z linkini beradi va kodda hech qanday domen yozilmaydi
-  (PROJECT.md §7). Yo'lning o'zi vertikalniki —
-  `ProductAdapter.receipt_url()`, flight uchun yuqoridagi manzil.
-- **Faqat `ticketing_status = ticketed`.** Undan oldin chizadigan narsa yo'q,
-  shuning uchun `receipt_url = null` — tugma shu maydonni kutadi. Link
-  saqlanmaydi: har javobda qaytadan yig'iladi.
-- `&passenger_index=` — bitta yo'lovchi nusxasi; GTS **noldan** sanaydi,
-  ko'rsatilmasa hujjat butun order uchun. Ilova uni o'zi qo'shadi.
-- Admin javobida ham xuddi shu link chiqadi (`OrderAdminOut` mijoz shaklidan
-  meros oladi) — support GTS kabinetiga kirgan brauzerda ocha oladi.
-
-**Muhim:** GTS hujjati (5-bet) "token'ni **barcha** API metodlariga cookie
-bilan uzatish kerak" deydi. Agar `receipt/pattern/view/` sessiyasiz ochilmasa,
-link brauzerda ishlamaydi — o'shanda quyidagi marshrut ishlatiladi; u aynan
-shu hujjatni **bizning** sessiyamiz bilan olib beradi.
-
-### `GET /public/orders/{id}/receipt/` — o'sha hujjat, biz olib beramiz
-
-- **Saqlanmaydi** — na Postgres'da, na Redis'da, na diskda. GTS hujjatni
-  o'zida turgan orderdan chizadi: hozir so'ralgan nusxa — chiptaning hozirgi
-  holati, bizdagi nusxa esa GTS orderga tegishi bilan eskiradi. Qidiruv
-  natijalari qoidasi, faylga qo'llangani.
-- **Faqat `ticketing_status = ticketed`.** Undan oldin 409, GTS'ga umuman
-  borilmasdan — javobni o'z ustunimiz allaqachon biladi.
-- **Javob — fayl**, envelope emas: `api/envelope.py` JSON bo'lmagan javobni
-  o'ramaydi. GTS'ning `Content-Type` i o'z holicha, `Content-Disposition` da
-  `receipt-{PNR}.pdf` (PNR — GTS matni, shuning uchun faqat harf va raqamlari
-  o'tadi). Kutilmagan tur — WARNING `gts_receipt_unexpected_type`, fayl
-  `application/octet-stream` bo'lib saqlash uchun beriladi; brauzer uni
-  bizning origin'imizda ochmaydi (`nosniff` + `sandbox` CSP, `uploads`
-  marshrutidagi kelishuv).
-- `?passenger_index=` — linkdagi bilan bir xil, faqat query emas, bizning
-  parametrimiz (manfiy son — 422, GTS'ga borilmasdan).
-- GTS rad etsa yoki javob bermasa — 502/504, GTS matni `meta.upstream` da.
-  Hech narsa o'zgarmaydi: bu sof o'qish, sweep ham, `transition` ham yo'q.
-
-Portda bu `ProductAdapter.receipt()`, u esa `GtsClient.download()` ustida —
-GTS konverti to'xtamaydigan yagona chaqiruv, chunki muvaffaqiyat konvert emas,
-bayt. Rad javobi esa baribir JSON konvert bo'lib keladi (ko'pincha HTTP 200
-ostida), shuning uchun JSON kelsa u hujjat emas: `_translate` uni odatdagi
-`upstream_error` ga aylantiradi. Bo'sh javob ham xato — baytsiz kvitansiya
-kvitansiya emas.
+  (PROJECT.md §7). Yo'lning o'zi vertikalniki — `ProductAdapter.receipt_url()`.
+- **Faqat `ticketing_status = ticketed`**, aks holda `null` — tugma shu
+  maydonni kutadi. Link saqlanmaydi, har javobda qaytadan yig'iladi
+  (`orders/service.py::_receipt_url`).
+- `&passenger_index=` (noldan) — bitta yo'lovchi nusxasi; ilova o'zi qo'shadi.
+- Admin javobida ham xuddi shu link chiqadi — support GTS kabinetiga kirgan
+  brauzerda ocha oladi.
 
 ## 5. API
 
@@ -570,12 +538,13 @@ Javob shakli hamma joyda bir xil — `BookingResultOut`:
   "order": {
     "id": "…", "status": "booked", "message": "Bron qilindi. …", "cancel_reason": null,
     "gts_status": "BO", "gts_order_number": 61453, "pnr": "UBPLKW", "amount": {"amount": "287500.00", "currency": "UZS"},
-    "ticket_time_limit_at": "…", "paid_at": null, "ticketed_at": null, "cancelled_at": null, "...": "…"
+    "ticket_time_limit_at": "…", "paid_at": null, "ticketed_at": null, "cancelled_at": null,
+    "receipt_url": null,  // chipta chiqqach — GTS'dagi МК linki (§4d)
+    "...": "…"
   },
   "payment":   { "status": "pending", "amount": {…}, "pay_before": "…",
                  "payment_id": null, "provider": null, "card_last4": null, "phone_hint": null, "paid_at": null, "error": null },
-  "ticketing": { "status": "pending", "requested_at": null, "ticketed_at": null, "tickets": [], "error": null,
-                 "receipt_url": null },
+  "ticketing": { "status": "pending", "requested_at": null, "ticketed_at": null, "tickets": [], "error": null },
   "order_data": { "…GTS javobi, commission maydonlarisiz…" }
 }
 ```
@@ -592,10 +561,9 @@ qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 |---|---|---|---|
 | POST | `/public/{product}/booking/` | customer | 1 — **idempotent**: bir xil so'rov ikkinchi marta o'sha orderni **hozirgi holatida** qaytaradi; GTS xatosi claim'ni bo'shatadi, GTS timeout — **bo'shatmaydi** (60 s) |
 | GET | `/public/orders/` | customer | 1 — ro'yxat: `status` (§2, detail bilan bir xil), `routes`, yo'lovchi ismlari |
-| GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi |
+| GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi; chipta chiqqach `order.receipt_url` — GTS'dagi МК linki (§4d) |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — `{method, card_id \| card}`; kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint`; yoqilmagan `method` → 422 |
 | POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
-| GET | `/public/orders/{id}/receipt/` | customer | 3 — МК'ni **biz** olib beramiz (§4d): javob envelope emas, faylning o'zi; `?passenger_index=` (noldan); ticketing tugamagan order → 409. Odatda kerak emas — `ticketing.receipt_url` GTS'ning to'liq linki |
 | POST | `/public/orders/{id}/cancel/` | customer | 1 — body yo'q (§4c): avval `POST /v1/content/cancel/`, keyin `cancelled/customer`; allaqachon bekor qilingan order → 200 va GTS'ga borilmaydi; to'langan, ticketing'dagi yoki `confirming` urinishli order → 409 |
 | GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`, sabab uchun `cancel_reason`, `ticketing_error`, `updated_at`; filtrlar: `status` (§2 dagi oltita so'z — SQL `stage_of` ning o'zidan hosil qilinadi, `lifecycle.stage_filter`) va uchta xom ustun, birga ishlaydi; **support inbox = `status=ticketing_failed`** — ekrani "supportga murojaat qiling" deydigan har bir order, puli qaytgani emas; `ordering` — `created_at` yoki `updated_at` (`-updated_at` — eng so'nggi o'zgargan birinchi); `search` — PNR yoki GTS raqami |
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
@@ -626,11 +594,6 @@ status o'zgarishi va izoh).
 
 ## 7. Keyingi ishlar (bu to'rt bosqichdan tashqarida)
 
-- `GET /admin/orders/{id}/receipt/` — МК'ni staff token bilan yuklab olish.
-  Hozir admin javobidagi `ticketing.receipt_url` GTS'ning linki (brauzerda GTS
-  sessiyasi bo'lsa ochiladi), mijoz marshruti esa staff token bilan 403 beradi.
-  Kerak bo'lsa xizmat funksiyasi tayyor — `service.order_receipt()` dan egalik
-  tekshiruvini olib tashlagan varianti yetadi.
 - ~~`POST /public/orders/{id}/cancel/`~~ — §4c: mijoz to'lanmagan bronni avval
   GTS'da, keyin bizda bekor qiladi (`cancelled/customer`).
 - Email xabarnomalar (`ticket_waiting`, `ticketed`, `ticketing_failed`) —

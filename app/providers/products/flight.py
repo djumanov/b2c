@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
 from app.core.logging import get_logger
 from app.core.money import quantize
-from app.providers.gts.base import GtsClient, GtsDocument, GtsTimeouts
+from app.providers.gts.base import GtsClient, GtsTimeouts
 from app.providers.products import gts_order
 from app.providers.products.base import (
     SEARCH_IN_PROCESS,
@@ -53,9 +53,8 @@ logger = get_logger(__name__)
 #: IATA location code — city or airport.
 _IATA_PATTERN = r"^[A-Za-z]{3}$"
 
-#: Where GTS renders the itinerary receipt (v1.4 documentation, page 14). Used
-#: twice: to fetch the document with our session, and to spell the link the
-#: customer's app opens itself.
+#: Where GTS renders the itinerary receipt of a ticketed order (v1.4
+#: documentation, page 14). We never fetch it: the customer's app opens it.
 _RECEIPT_PATH = "/v1/receipt/pattern/view/"
 
 
@@ -555,13 +554,6 @@ class FlightAdapter:
             raise UpstreamError("the GTS ticketing answer had an unexpected shape")
         return _snapshot(order_number, order)
 
-    def _receipt_params(self, order_number: int, passenger_index: int | None) -> str:
-        """GTS's query for one receipt — the same one both ways of asking use."""
-        params = {"order_number": str(order_number), "product": self.code.value}
-        if passenger_index is not None:
-            params["passenger_index"] = str(passenger_index)
-        return urlencode(params)
-
     def receipt_url(
         self,
         base_url: str,
@@ -572,43 +564,18 @@ class FlightAdapter:
         """The customer's own link to the itinerary receipt at GTS.
 
         ``{base_url}/v1/receipt/pattern/view/?order_number={n}&product=flight``
-        — the page GTS renders the receipt on, absolute so an app can open it
-        with nothing but the order answer in hand. The base is the active
-        credential's, so the sandbox and the production installation each
-        give out their own link and neither is written down in our code.
+        — the page GTS renders the receipt on. Absolute, because the app that
+        opens it holds nothing but the order answer, and the base is the
+        active credential's, so the sandbox and production each give out
+        their own and no host is written down in our code.
+
+        A string, not a call: no session is spent here and the bytes never
+        pass through this application at all.
         """
-        query = self._receipt_params(order_number, passenger_index)
-        return f"{base_url.rstrip('/')}{_RECEIPT_PATH}?{query}"
-
-    async def receipt(
-        self,
-        client: GtsClient,
-        order_number: int,
-        *,
-        passenger_index: int | None = None,
-    ) -> GtsDocument:
-        """``GET /v1/receipt/pattern/view/`` — the same receipt, fetched by us.
-
-        The only step whose answer is a file. ``product`` is GTS's own name
-        for the vertical and ``passenger_index`` is **0-based** (its
-        documentation says so twice); left out, the document covers every
-        passenger on the order.
-
-        Nothing is read out of the bytes and nothing is added to them: what a
-        customer downloads is what GTS rendered, which is the point of asking
-        GTS for it rather than laying out a ticket of our own.
-        """
-        params: dict[str, Any] = {
-            "order_number": order_number,
-            "product": self.code.value,
-        }
+        params = {"order_number": str(order_number), "product": self.code.value}
         if passenger_index is not None:
-            params["passenger_index"] = passenger_index
-        return await client.download(
-            _RECEIPT_PATH,
-            params=params,
-            timeout=GtsTimeouts.DEFAULT_SECONDS,
-        )
+            params["passenger_index"] = str(passenger_index)
+        return f"{base_url.rstrip('/')}{_RECEIPT_PATH}?{urlencode(params)}"
 
     async def cancel(self, client: GtsClient, order_number: int) -> None:
         """``POST /v1/content/cancel/`` — release the hold before ticketing.

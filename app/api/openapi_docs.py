@@ -149,7 +149,9 @@ TAGS: Final[list[dict[str, Any]]] = [
             "ticket is requested from GTS in the same call. "
             '`GET …/{id}/` is what the "is my ticket ready?" screen polls; '
             "it never writes. `order.status` is one of six words and "
-            "`order.message` the sentence to show for it."
+            "`order.message` the sentence to show for it. Once the ticket is "
+            "issued, `order.receipt_url` is GTS's own link to the itinerary "
+            "receipt — open it directly to download the travel document."
         ),
     },
     {
