@@ -162,9 +162,11 @@ Qadamlar (`orders/service.py`):
 0. **Narx — `POST /public/orders/{id}/reprice/` va `POST
    /public/orders/{id}/reprice/confirm/`** (body yo'q). GTS'ning o'z
    hayot sikli (`docs/gts-api-v1.4.pdf`, 4-bet): `booking → reprice_check →
-   reprice_confirm → ticketing`; jonli server ikki narx qadamisiz ticketing'ni
-   rad etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24).
-   Ikkalasini **mijoz ilovasi** to'lov ekranidan oldin chaqiradi:
+   reprice_confirm → ticketing`; jonli server check'siz ticketing'ni rad
+   etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24), lekin
+   **confirm'ni faqat narx o'zgarganda qabul qiladi** (aks holda `400803`).
+   Shuning uchun **mijoz ilovasi** to'lov ekranidan oldin `reprice/`ni
+   chaqiradi va faqat `changed: true` bo'lsa `reprice/confirm/`ni:
    - `reprice/` → `POST /v1/content/reprice_check/ {order_number}`
      (`FlightAdapter.reprice`) — **sof so'rov, passthrough**: javob (`RepriceOut`)
      = `changed` (narx o'zgardimi), `old_price` (orderda saqlangan — mijoz
@@ -173,22 +175,30 @@ Qadamlar (`orders/service.py`):
      `price_details`) komissiya maydonlarisiz aynan. `changed` — **GTS'ning
      o'z hukmi**: javobdagi `price_changed`. GTS uni yubormasa (hujjatdagi
      shakl) summa/valyuta solishtiriladi (yoki orderda narx bo'lmasa
-     `true`). Bizda **hech narsa yozilmaydi** — `amount`, `price_confirmed`,
-     ochiq urinish o'zgarmaydi.
-     Mijoz ilovasi `changed: false` bo'lsa to'g'ridan-to'g'ri, `true` bo'lsa
-     yangi narxni ko'rsatib rozilik olib `reprice/confirm/`ni chaqiradi. Faqat
-     egasi (404), bizdan 409 yo'q; GTS rad etsa 502. Takrorlash bepul.
-   - `reprice/confirm/` → **avval `reprice_check`**, va faqat u "narx
-     o'zgardi" desa `POST /v1/content/reprice_confirm/ {order_number}`
-     (`FlightAdapter.confirm_price`) — narx qadamining **yagona yozuvi**.
-     Nega avval check: narx o'zgarmagan bo'lsa GTS'da tasdiqlaydigan qayta
-     narxlangan taklif qolmaydi va confirm `400803` bilan rad etiladi
-     ("Срок действия предложения после перерасчёта истёк", jonli
-     2026-08-25); `payment/` esa shu qadamni kutgani uchun **har bir oddiy
-     order 502 ortida to'lanmay qolardi**. Check takrorlanadigan va GTS'da
-     hech narsani o'zgartirmaydi, ustiga-ustak ticketing'dan oldin GTS talab
-     qiladigan check aynan shu yerda bo'ladi. Narx saqlangandan **farq
-     qilsa** → `amount/currency` yangilanadi,
+     `true`). Narx **hech qachon bu yerda o'zgarmaydi** — `amount`, ochiq
+     urinish tegilmaydi.
+     - `changed: false` → **narx shu qadamning o'zida yopiladi**
+       (`_settle_unmoved_price`): `price_confirmed_at = now`, event
+       `price.confirmed`, `payment/` ochiladi. Sababi — GTS o'zgarmagan narxni
+       confirm qilishni rad etadi (`400803`), ya'ni kutadigan ikkinchi qadam
+       yo'q; GTS'ning talabi esa faqat "ticketing'dan oldin check bo'lsin", u
+       hozir bajarildi. Faqat to'lash mumkin bo'lgan order uchun (to'langan,
+       ticketing'dagi yoki bekor qilingan orderga savol berish mumkin, lekin
+       u hech narsa yozmaydi).
+     - `changed: true` → hech narsa yozilmaydi; mijoz yangi narxni ko'rsatib
+       rozilik oladi va `reprice/confirm/`ni chaqiradi.
+
+     Faqat egasi (404), bizdan 409 yo'q; GTS rad etsa 502. Takrorlash bepul.
+   - `reprice/confirm/` → **narx o'zgargan holat uchun**. Avval yana
+     `reprice_check`, va faqat u "o'zgardi" desa `POST
+     /v1/content/reprice_confirm/ {order_number}`
+     (`FlightAdapter.confirm_price`). Nega avval check: narx o'zgarmagan
+     bo'lsa GTS'da tasdiqlaydigan qayta narxlangan taklif qolmaydi va confirm
+     `400803` bilan rad etiladi ("Срок действия предложения после перерасчёта
+     истёк", jonli 2026-08-25) — o'sha 502 `payment/`ni butunlay bloklab
+     qo'ygan edi. Narx o'zgarmagan bo'lsa bu chaqiruv **zararsiz, lekin
+     keraksiz**: confirm yuborilmaydi, order o'z narxida tasdiqlanadi.
+     Narx saqlangandan **farq qilsa** → `amount/currency` yangilanadi,
      event `price.repriced {from, to}`, ochiq `started` urinish → `abandoned`
      (eski summa uchun yuborilgan kod yangi summani tasdiqlay olmasligi
      kerak). So'ng **`GET /v1/orders/{n}/`** — GTS o'z yozuvini
@@ -218,12 +228,12 @@ Qadamlar (`orders/service.py`):
        bo'lib o'tadi (narx bermagan bo'lsa `{}`). Agar orderda ham narx
        bo'lmasa (`amount = NULL`) → 502 "carried no price": ikkala tomon ham
        raqam aytmadi, savol javobsiz qoldi.
-     - `reprice/confirm/` → GTS'ga confirm **yuborilmaydi** (u 400803 bilan
-       rad etadi), tasdiq **o'z kuchida**: `price_confirmed_at = now`,
-       `amount`/`price_response` tegilmaydi, `price.repriced` eventi yo'q,
-       ochiq urinish bekor qilinmaydi (summa o'zgarmadi), valyuta tekshiruvi
-       ham o'tkazilmaydi (tekshiradigan raqam yo'q). Rad etish mijozni umuman
-       to'lay olmaydigan qilib qo'yardi.
+     - `reprice/confirm/` (chaqirilsa) → GTS'ga confirm **yuborilmaydi** (u
+       400803 bilan rad etadi), tasdiq **o'z kuchida**:
+       `price_confirmed_at = now`, `amount`/`price_response` tegilmaydi,
+       `price.repriced` eventi yo'q, ochiq urinish bekor qilinmaydi (summa
+       o'zgarmadi), valyuta tekshiruvi ham o'tkazilmaydi (tekshiradigan raqam
+       yo'q). Lekin bu qadam endi shart emas — `reprice/`ning o'zi yopadi.
      - Jonli tekshirilgan zanjir (2026-08-25, order 4903): `search → offers →
        verify → booking (343.04 USD) → reprice (changed:false) →
        reprice/confirm (200) → payment → payment/confirm → ticketing` — GTS
@@ -244,7 +254,9 @@ Qadamlar (`orders/service.py`):
      ("Итоговая цена", 16-bet) `fee_amount`/`service_fee_amount`ni o'z ichiga
      oladimi — bron paytidagidek yakuniy deb olinadi.
    - **`payment/` `price_confirmed_at` bo'sh orderni 409 bilan rad etadi**
-     ("The price has not been confirmed") — qulfdan oldin ham, qulf ostida ham.
+     ("The price has not been checked with GTS") — qulfdan oldin ham, qulf
+     ostida ham. Ya'ni `reprice/` (va narx o'zgargan bo'lsa `reprice/confirm/`)
+     hech bo'lmasa bir marta chaqirilgan bo'lishi shart.
    - Ticketing (`§4b`) o'zgarmagan: narx qadamlari to'lovdan oldin bo'lib
      o'tgan, `ticket()` faqat `POST /v1/content/ticketing/` yuboradi.
 1. **`POST /public/orders/{id}/payment/`** — body `{method, card_id}` yoki
