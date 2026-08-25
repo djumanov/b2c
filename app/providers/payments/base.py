@@ -2,9 +2,9 @@
 
 Payme and Click (D7) charge a card the same way from where we stand: the
 number and expiry go to the provider, the provider texts the cardholder a
-code, and the charge happens when the code comes back. So the port has three
-calls — ``start``, ``confirm``, ``status`` — and every provider, the sandbox
-included, fits behind them.
+code, and the charge happens when the code comes back. So the port has four
+calls — ``start``, ``resend``, ``confirm``, ``status`` — and every provider,
+the sandbox included, fits behind them.
 
 **The contract that matters is about failure.** A provider answers a
 definitive "no" (wrong code, card declined, not enough money) as a
@@ -104,11 +104,12 @@ class PaymentOutcome:
 
 
 class PaymentDeclined(Exception):
-    """``start`` refused the card outright — a result, not an outage.
+    """``start`` or ``resend`` refused outright — a result, not an outage.
 
-    Raised by ``start`` only (``confirm`` answers with an outcome): the card
-    number is wrong, expired, or the provider will not take it. The attempt
-    is recorded as failed and the customer may try another card.
+    Raised by ``start`` and ``resend`` only (``confirm`` answers with an
+    outcome): the card number is wrong, expired, the provider will not take
+    it, or it will not send another code. The attempt is recorded as failed
+    and the customer may try again.
     """
 
 
@@ -123,6 +124,18 @@ class PaymentProvider(Protocol):
         Raises ``PaymentDeclined`` for a definitive refusal, ``UpstreamError``
         / ``UpstreamTimeout`` when the outcome is unknown. Nothing is charged
         at this step, so either kind of failure is safe to show and retry.
+        """
+        ...
+
+    async def resend(self, *, reference: str) -> PaymentStart:
+        """Send the cardholder the same attempt's code again — no new card, no charge.
+
+        Raises ``PaymentDeclined`` for a definitive refusal to send another
+        code, ``UpstreamError``/``UpstreamTimeout`` when the outcome is
+        unknown — the same failure shape ``start`` uses, because nothing has
+        been charged here either. A provider whose code is static or
+        deterministic (the demo, the sandbox) does nothing and simply
+        confirms the same ``reference``/``phone_hint`` still hold.
         """
         ...
 

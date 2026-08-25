@@ -12,6 +12,9 @@ Stateless like the sandbox: ``confirm`` answers locally and never loses an
 answer, so ``status`` — which exists for charges whose answer went missing —
 has nothing to look up and says ``pending``; the sweep's give-up window
 closes the theoretical leftovers. Nothing here logs a card or a code.
+
+``resend`` does nothing — the code is static, so there is nothing to send
+again; it just confirms the same ``phone_hint`` still stands.
 """
 
 import uuid
@@ -56,6 +59,11 @@ class DemoProvider:
             phone_hint="+99890***0000",
             raw={"demo": True, "order_ref": order_ref, "amount": str(amount.amount)},
         )
+
+    async def resend(self, *, reference: str) -> PaymentStart:
+        # Stateless and deterministic — see the module docstring. Nothing to
+        # send again; this only satisfies the port.
+        return PaymentStart(reference=reference, phone_hint="+99890***0000")
 
     async def confirm(self, *, reference: str, otp: str) -> PaymentOutcome:
         if otp == self._otp:

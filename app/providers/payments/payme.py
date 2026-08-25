@@ -11,6 +11,9 @@ JSON-RPC calls on Payme's (``POST {base}/api``):
     goes out. Then ``cards.create`` with ``save: false`` — the token lives for
     this one attempt (the saved-cards module keeps a PAN, not a Payme token) —
     and ``cards.get_verify_code``, which texts the cardholder.
+``resend``
+    ``cards.get_verify_code`` again, with the same token — no new receipt, no
+    new card. Same failure shape as ``start``'s call to it.
 ``confirm``
     ``cards.verify`` with the code, then ``receipts.pay`` with the token — the
     one call that moves money, sent at most once per attempt because the
@@ -384,6 +387,13 @@ class PaymeProvider:
             reference=_pack(token, receipt),
             phone_hint=phone,
             raw={"receipt": receipt, "card": masked, "wait": wait},
+        )
+
+    async def resend(self, *, reference: str) -> PaymentStart:
+        token, _receipt = _unpack(reference)
+        phone, wait = await self._send_code(token)
+        return PaymentStart(
+            reference=reference, phone_hint=phone, raw={"resend": True, "wait": wait}
         )
 
     async def confirm(self, *, reference: str, otp: str) -> PaymentOutcome:

@@ -1,4 +1,4 @@
-"""``POST /public/orders/{id}/payment/`` and ``payment/confirm/`` — charge once.
+"""``payment/``, ``payment/resend/`` and ``payment/confirm/`` — charge once.
 
 GTS is ``respx``; the provider is the scripted ``FakeProvider`` from
 ``conftest``, so every branch of the provider contract (paid, declined,
@@ -60,6 +60,10 @@ def _confirm_url(order: Order) -> str:
     return f"{ORDERS_URL}{order.id}/payment/confirm/"
 
 
+def _resend_url(order: Order) -> str:
+    return f"{ORDERS_URL}{order.id}/payment/resend/"
+
+
 async def _save_card(session: AsyncSession, customer: Customer) -> uuid.UUID:
     card = await payments_service.add_card(
         session,
@@ -116,6 +120,17 @@ async def _confirm(
     )
 
 
+async def _resend(
+    client: httpx.AsyncClient,
+    order: Order,
+    headers: dict[str, str],
+    payment_id: str,
+) -> httpx.Response:
+    return await client.post(
+        _resend_url(order), json={"payment_id": payment_id}, headers=headers
+    )
+
+
 # --- start ----------------------------------------------------------------------
 
 
@@ -150,8 +165,9 @@ async def test_start_with_saved_card_creates_started_attempt_and_phone_hint(
     # The reference is stored sealed, never as the provider spelled it.
     assert attempt.provider_reference not in (None, "ref-1")
     assert attempt.key_version == 1
+    # The confirmed price is charged — not the booking's own ``price_info``.
     assert fake_provider.calls == [
-        ("start", {"last4": "1111", "amount": "287500.00", "order_ref": str(order.id)})
+        ("start", {"last4": "1111", "amount": "20.00", "order_ref": str(order.id)})
     ]
     assert await _events(db_session, order) == ["payment.started"]
 
@@ -184,14 +200,15 @@ async def test_start_with_raw_card_never_stores_or_logs_the_number(
 
 
 @respx.mock
-async def test_start_refreshes_amount_and_deadline_from_gts(
+async def test_start_refreshes_the_order_from_gts_but_charges_the_confirmed_price(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
     fake_provider: FakeProvider,
 ) -> None:
-    """GTS's price is the one it will debit at ticketing, so it wins."""
+    """The read-back refreshes the hold; the price is the one GTS confirmed
+    at ``reprice/confirm/`` — its later word than the booking's ``price_info``."""
     mock_gts_signin()
     mock_gts_order(gts_order_body())
     order = await make_order(db_session, customer, amount=20, gts_response={})
@@ -200,11 +217,14 @@ async def test_start_refreshes_amount_and_deadline_from_gts(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["order"]["amount"] == {"amount": "287500.00", "currency": "UZS"}
-    assert data["payment"]["amount"] == {"amount": "287500.00", "currency": "UZS"}
+    assert data["order"]["amount"] == {"amount": "20.00", "currency": "UZS"}
+    assert data["payment"]["amount"] == {"amount": "20.00", "currency": "UZS"}
+    assert data["payment"]["price_confirmed"] is True
+    # ``order_data`` is the read-back, with the repriced figures over it.
     assert data["order_data"]["gds_pnr"] == "UBPLKW"
+    assert data["order_data"]["price_info"]["price"] == 20.0
     (attempt,) = await _attempts(db_session, order)
-    assert str(attempt.amount) == "287500.00"
+    assert str(attempt.amount) == "20.00"
 
 
 @respx.mock
@@ -763,6 +783,272 @@ async def test_confirm_without_start_is_409(
     assert response.status_code == 409
 
 
+# --- resend -----------------------------------------------------------------------
+
+
+@respx.mock
+async def test_resend_sends_a_fresh_code_and_keeps_the_attempt_open(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+
+    response = await _resend(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["payment"]["status"] == "awaiting_otp"
+    assert data["payment"]["payment_id"] == payment_id
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
+    assert fake_provider.calls[-1] == ("resend", {"reference": "ref-1"})
+    assert await _events(db_session, order) == ["payment.started", "payment.otp_resent"]
+
+    # The old code still confirms — resending never invalidates it.
+    paid = await _confirm(client, order, customer_headers, payment_id, "000000")
+    assert paid.status_code == 200
+    assert paid.json()["data"]["payment"]["status"] == "paid"
+
+
+@respx.mock
+async def test_resend_updates_the_phone_hint_when_the_provider_sends_a_new_one(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    from app.providers.payments.base import PaymentStart
+
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    fake_provider.resend_outcomes = [
+        PaymentStart(reference="ref-1", phone_hint="+99890***9999")
+    ]
+
+    response = await _resend(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["payment"]["phone_hint"] == "+99890***9999"
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.phone_hint == "+99890***9999"
+
+
+@respx.mock
+async def test_resend_while_confirming_is_409(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    fake_provider.confirm_outcomes = [UpstreamTimeout("lost")]
+    await _confirm(client, order, customer_headers, payment_id)
+
+    response = await _resend(
+        client, order, {**customer_headers, "Idempotency-Key": "k2"}, payment_id
+    )
+
+    assert response.status_code == 409
+    assert "being confirmed" in response.json()["errors"][0]["message"]
+    assert fake_provider.count("resend") == 0
+
+
+@respx.mock
+async def test_resend_wrong_payment_id_is_409(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    await _start(client, order, customer_headers)
+
+    response = await _resend(client, order, customer_headers, str(uuid.uuid4()))
+
+    assert response.status_code == 409
+    assert fake_provider.count("resend") == 0
+
+
+async def test_resend_without_start_is_409(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    order = await make_order(db_session, customer)
+    response = await _resend(client, order, customer_headers, str(uuid.uuid4()))
+    assert response.status_code == 409
+
+
+@respx.mock
+async def test_resend_after_a_second_start_is_409(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    first = await _start(client, order, customer_headers)
+    first_payment_id = first.json()["data"]["payment"]["payment_id"]
+    await _start(client, order, {**customer_headers, "Idempotency-Key": "k2"})
+
+    response = await _resend(client, order, customer_headers, first_payment_id)
+
+    assert response.status_code == 409
+    assert fake_provider.count("resend") == 0
+
+
+@respx.mock
+async def test_resend_when_provider_declines_is_200_failed_and_retryable(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    from app.providers.payments.base import PaymentDeclined
+
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    fake_provider.resend_outcomes = [PaymentDeclined("phone blocked")]
+
+    response = await _resend(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["payment"]["status"] == "failed"
+    assert data["payment"]["error"] == "phone blocked"
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "failed"
+
+    again = await _start(client, order, {**customer_headers, "Idempotency-Key": "k2"})
+    assert again.status_code == 200
+    assert again.json()["data"]["payment"]["status"] == "awaiting_otp"
+
+
+@respx.mock
+async def test_resend_timeout_leaves_attempt_open_and_old_code_still_works(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    fake_provider.resend_outcomes = [UpstreamTimeout("provider did not answer")]
+
+    response = await _resend(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 504
+    # Unlike a failed ``start``, an unknown resend leaves the attempt open —
+    # the code already sent may still be good.
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
+
+    paid = await _confirm(client, order, customer_headers, payment_id, "000000")
+    assert paid.status_code == 200
+    assert paid.json()["data"]["payment"]["status"] == "paid"
+
+
+@respx.mock
+async def test_resend_is_idempotent_and_sends_no_second_code(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+
+    first = await _resend(client, order, customer_headers, payment_id)
+    second = await _resend(client, order, customer_headers, payment_id)
+
+    assert first.status_code == second.status_code == 200
+    assert fake_provider.count("resend") == 1
+
+
+@respx.mock
+async def test_an_attempt_whose_method_is_gone_cannot_be_resent(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    from app.providers import payments as payment_providers
+
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    payme = mock_payme()
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+
+    # The panel switches the started method off (Payme on) mid-typing.
+    payment_providers.set_provider(None)
+    await _enable_payme(client, staff_headers)
+
+    stale = await _resend(client, order, customer_headers, payment_id)
+
+    assert stale.status_code == 409
+    assert "no longer enabled" in stale.json()["errors"][0]["message"]
+    assert payme.methods == []
+    assert fake_provider.count("resend") == 0
+    (abandoned,) = await _attempts(db_session, order)
+    assert abandoned.status == "abandoned"
+
+
+@respx.mock
+async def test_strangers_order_cannot_be_resent(
+    client: httpx.AsyncClient,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    stranger = await make_customer(db_session, "stranger@example.com")
+    order = await make_order(db_session, stranger)
+
+    response = await _resend(client, order, customer_headers, str(uuid.uuid4()))
+
+    assert response.status_code == 404
+    assert fake_provider.calls == []
+
+
 # --- the sweep: lost answers ---------------------------------------------------------
 
 
@@ -1048,6 +1334,9 @@ async def test_sandbox_codes() -> None:
     )
     assert started.reference.startswith("sbx-")
     assert PAN not in repr(started)
+    resent = await sandbox.resend(reference=started.reference)
+    assert resent.reference == started.reference
+    assert resent.phone_hint == "+99890***4567"
     assert (
         await sandbox.confirm(reference=started.reference, otp="000000")
     ).status == "paid"
@@ -1079,6 +1368,9 @@ async def test_demo_adapter_pays_on_the_configured_code_alone() -> None:
     assert started.reference.startswith("demo-")
     assert started.phone_hint == "+99890***0000"
     assert PAN not in repr(started)
+    resent = await demo.resend(reference=started.reference)
+    assert resent.reference == started.reference
+    assert resent.phone_hint == "+99890***0000"
     assert (
         await demo.confirm(reference=started.reference, otp="123456")
     ).status == "paid"
@@ -1206,7 +1498,7 @@ async def test_payme_charges_and_tickets_end_to_end(
     mock_gts_ticketing()
     payme = mock_payme()
     await _enable_payme(client, staff_headers)
-    order = await make_order(db_session, customer)
+    order = await make_order(db_session, customer, amount="287500.00")
 
     started = await _start(client, order, customer_headers, method="payme")
 
@@ -1257,6 +1549,40 @@ async def test_payme_charges_and_tickets_end_to_end(
         "ticketing.requested",
         "ticketing.ticketed",
     ]
+
+
+@respx.mock
+async def test_payme_resend_sends_the_code_again_through_the_real_call(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    staff_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    payme = mock_payme()
+    await _enable_payme(client, staff_headers)
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers, method="payme")
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+
+    response = await _resend(client, order, customer_headers, payment_id)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["payment"]["phone_hint"] == "99890*****31"
+    # No new receipt, no new card — the same token asked to send its code again.
+    assert payme.methods[3:] == ["cards.get_verify_code"]
+    assert payme.count("cards.get_verify_code") == 2
+    assert payme.params("cards.get_verify_code") == {"token": PAYME_TOKEN}
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
+    assert PAYME_TOKEN not in response.text
+
+    # The reference is untouched — the original code still confirms.
+    confirmed = await _confirm(client, order, customer_headers, payment_id, "666666")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["data"]["payment"]["status"] == "paid"
 
 
 @respx.mock

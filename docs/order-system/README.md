@@ -33,11 +33,22 @@ status=cancelled payment=pending                     → to'lanmasdan bekor bo'l
 ```
 
 Yordamchi ustunlar: `cancel_reason` (`customer` · `expired` · `staff`),
-`paid_at`, `ticketed_at`, `cancelled_at`, `ticketing_requested_at`
+`paid_at`, `ticketed_at`, `cancelled_at`, `repriced_at` (GTS narxni oxirgi
+marta qayta hisoblagan vaqt — `reprice_check`), `price_confirmed_at` (mijoz
+narxni qabul qilib GTS tasdiqlagan vaqt — `reprice_confirm`; to'lov shusiz
+rad etiladi), `price_response` (oxirgi reprice javobi — `price_info`,
+`price_details` — aynan o'zi), `ticketing_requested_at`
 (GTS'dan chipta so'ralgan vaqt), `gts_checked_at` (sweep oxirgi marta
 GTS'dan o'qigan vaqt), `ticketing_attempts` (so'rov necha marta yuborilgan),
 `ticketing_error` (GTS'ning xato matni). `gts_status` va `gts_response` —
-GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi.
+GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi. `amount` esa
+faqat **hali reprice qilinmagan** orderda o'qishdan yangilanadi: `repriced_at`
+bosilgach `price_response` — GTS'ning keyingi so'zi, order yozuvining o'z
+`price_info`si esa bron paytidagi narx; o'qish farq qilsa log'ga yoziladi
+(`gts_price_differs_from_reprice`), `amount` o'zgarmaydi. Mijozga
+`order_data` ham shu asosda ketadi: `gts_response` ustiga `price_response`dagi
+`price_info` (va bo'sh bo'lmasa `price_details`) qo'yiladi — `order.amount`,
+`payment.amount` va `order_data.price_info` hech qachon har xil narx aytmaydi.
 
 `failed` (payment) "oxirgi urinish muvaffaqiyatsiz" degani — yangi urinish
 ochilishi mumkin. Refund holatlarini **support qo'lda** belgilaydi; pul
@@ -132,7 +143,7 @@ tamg'a oladi. `seq` — bazaning o'z hisoblagichi (identity), yozilish tartibi;
 tarix `created_at, seq` bo'yicha o'qiladi, shuning uchun tartib hech qachon
 tasodifiy emas.
 
-## 4a. To'lov — `payment_attempts` va ikki qadam
+## 4a. To'lov — `payment_attempts` va uch qadam
 
 Provider bilan har suhbat — `payment_attempts` da bir qator: `order_id,
 customer_id, provider, status` (`started` · `confirming` · `paid` · `failed` ·
@@ -147,6 +158,57 @@ kod ustida nima bo'lishidan qat'i nazar.
 
 Qadamlar (`orders/service.py`):
 
+0. **Narx — `POST /public/orders/{id}/reprice/` va `POST
+   /public/orders/{id}/reprice/confirm/`** (body yo'q). GTS'ning o'z
+   hayot sikli (`docs/gts-api-v1.4.pdf`, 4-bet): `booking → reprice_check →
+   reprice_confirm → ticketing`; jonli server ikki narx qadamisiz ticketing'ni
+   rad etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24).
+   Ikkalasini **mijoz ilovasi** to'lov ekranidan oldin chaqiradi:
+   - `reprice/` → `POST /v1/content/reprice_check/ {order_number}` →
+     `data.price_info` (`FlightAdapter.reprice`). GTS chaqiruvi qulfdan
+     **oldin**. Qulf ostida: order payable (`_require_payable`), `confirming`
+     urinish bo'lsa 409. Javob har doim `price_response`ga aynan yoziladi.
+     Narx saqlangandan **farq qilsa** → `amount/currency`
+     yangilanadi, event `price.repriced {from, to}`, `price_confirmed_at`
+     tozalanadi, ochiq `started` urinish → `abandoned` (eski summa uchun
+     yuborilgan kod yangi summani tasdiqlay olmasligi kerak). Bir xil bo'lsa
+     faqat `repriced_at` bosiladi. Javob — order (`payment.amount`,
+     `order.amount`, `order_data.price_info` — bugungi narx,
+     `payment.price_confirmed`). Takrorlash mumkin. GET qilinmaydi: GTS o'z
+     yozuvini confirm'gacha qayta narxlamaydi.
+   - `reprice/confirm/` → `POST /v1/content/reprice_confirm/ {order_number}`
+     (`FlightAdapter.confirm_price`). `repriced_at` bo'sh bo'lsa → 409 (GTS
+     tartibi: avval check). So'ng **`GET /v1/orders/{n}/`** — GTS o'z yozuvini
+     qayta narxlab bo'ldi, order to'liq qayta o'qiladi (best-effort: o'qib
+     bo'lmasa WARNING `gts_read_after_confirm_failed`, tasdiq davom etadi).
+     Qulf ostida: `apply_snapshot` (status, muddat, `gts_response`; `amount`
+     emas — §1); GET `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
+     `offer_expired`** (`payment/` topadigan xuddi shu yo'l). GTS javobidagi
+     narx — **yakuniy** (ticketing shuni yechadi): check'dan farq qilsa ham shu
+     saqlanadi (`price.repriced` event + WARNING `gts_confirmed_other_price`),
+     keyin `price_confirmed_at = now`, event `price.confirmed {amount,
+     currency}`. Javob — order **to'liq yangilangan narx bilan**:
+     `payment.amount`, `order.amount`, `order_data.price_info/price_details`,
+     yangi `pay_before`; mijoz to'lov ekranida shuni ko'radi.
+   - GTS rad etsa (`status: error`) → 502, GTS matni `meta.upstream`da, hech
+     narsa yozilmaydi; narxsiz javob → 502 "carried no price". **Valyuta
+     orderning valyutasidan farq qilsa** (hujjat 12–13-betlarda check'ni `UZS`,
+     confirm'ni `USD` bilan chizadi — xato bosmami, yo'qmi, noma'lum) → 502
+     "answered in USD; this order is priced in UZS", ERROR
+     `gts_reprice_currency_mismatch`, **hech narsa yozilmaydi** — boshqa
+     valyutadagi raqam yangi narx emas, kartaga ham depozitga ham yetmasligi
+     kerak. Ikkalasi `RateLimit("payment")` ostida, idempotency kaliti yo'q
+     (takrorlanadigan).
+   - Hujjat aytmaydigan, jonli serverda tekshirilmagan ikki narsa: `price`
+     ("Итоговая цена", 16-bet) `fee_amount`/`service_fee_amount`ni o'z ichiga
+     oladimi — bron paytidagidek yakuniy deb olinadi; narx o'zgarmaganda
+     `reprice_confirm` `success` qaytaradimi — qaytarmasa 502 + `price_confirmed`
+     bo'sh, to'lov bloklanadi (xavfsiz, lekin oqim to'xtaydi; GTS'dan
+     so'raladi).
+   - **`payment/` `price_confirmed_at` bo'sh orderni 409 bilan rad etadi**
+     ("The price has not been confirmed") — qulfdan oldin ham, qulf ostida ham.
+   - Ticketing (`§4b`) o'zgarmagan: narx qadamlari to'lovdan oldin bo'lib
+     o'tgan, `ticket()` faqat `POST /v1/content/ticketing/` yuboradi.
 1. **`POST /public/orders/{id}/payment/`** — body `{method, card_id}` yoki
    `{method, card: {number, expire}}` (karta — aynan bittasi). `method` —
    **majburiy**, site-config `payment_methods` dagi `code` (masalan `payme`);
@@ -158,15 +220,34 @@ Qadamlar (`orders/service.py`):
    `last_used_at` bosiladi; rad etilgan karta saqlanmaydi; allaqachon bor
    karta — xato emas, o'sha qator ishlatiladi; `card_id` bilan `save` → 422. Tartib: provider va GTS client
    **qulfdan oldin** olinadi (ular sessiyani commit qiladi); `GET
-   /v1/orders/{n}/` — bron tirikmi, narx qancha (GTS narxi bizning narxdan
-   ustun); GTS `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
+   /v1/orders/{n}/` — bron tirikmi (narx `price_response`dan — §1; o'qish
+   `amount`ni faqat hali reprice qilinmagan orderda yangilaydi); GTS
+   `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
    `offer_expired`**. Qulf ostida: tekshiruvlar, eski `started` urinish →
    `abandoned`, yangi `started` qatori (**claim**, provider'dan oldin),
    commit. So'ng `provider.start()` → reference (shifrlab) va `phone_hint`
    yoziladi. Provider rad etsa (`PaymentDeclined`) → urinish `failed`,
    `payment_status=failed`, javob 200 (`payment.status=failed`, `error`);
    provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
-2. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
+2. **`POST /public/orders/{id}/payment/resend/`** — body `{payment_id}`. Xuddi
+   shu ochiq urinishga (`payment_id` mos kelishi shart) kodni **qayta**
+   yuboradi — yangi karta ro'yxatga olinmaydi, yangi urinish ochilmaydi, pul
+   yechilmaydi. Provider urinishning o'z `provider` kodi bo'yicha topiladi
+   (`provider_for_attempt`), xuddi confirm kabi qulfdan **oldin** — resolve
+   commit qiladi. Qulf ostida: urinish ochiq va `payment_id` mos; `confirming`
+   bo'lsa → 409 (kod chiqib bo'lgan bo'lishi mumkin, qayta yuborilmaydi);
+   method panel tomonidan o'chirilgan bo'lsa → xuddi confirm bilan bir xil
+   `abandoned` + 409. Payme uchun `cards.get_verify_code` yana chaqiriladi
+   (`start`dagi xuddi shu yordamchi — yangi chek yoki karta yo'q); Demo va
+   Sandbox — no-op, chunki ularning kodi statik/deterministik va qayta
+   yuborishga hojat yo'q. Provider rad etsa (`PaymentDeclined`) → urinish
+   `failed`, javob 200 (`start`dagi bilan bir xil qoida); provider javob
+   bermasa (`UpstreamError`/`UpstreamTimeout`) → urinish **o'zgarishsiz
+   qoladi** (`start`dan farqli — eski kod hali ham ishlashi mumkin) va
+   502/504 qaytadi. Alohida "kutish" holati yo'q — yagona cheklov
+   `RateLimit("payment")` (daqiqasiga 10 so'rov, `payment/` va
+   `payment/confirm/` bilan bir xil).
+3. **`POST /public/orders/{id}/payment/confirm/`** — body `{payment_id, otp}`.
    Provider urinishning o'z `provider` kodi bo'yicha topiladi
    (`provider_for_attempt`), qulfdan **oldin** — resolve commit qiladi. Qulf
    ostida: urinish ochiq va `payment_id` mos; `confirming` bo'lsa — provider
@@ -199,7 +280,8 @@ sandbox'ni chiqaradi), aks holda 502. Urinishni yakunlash tomonida
 `provider_for_attempt(code)` — urinish qatoridagi kod bo'yicha; topilmasa
 `None`, chaqiruvchi o'zi hal qiladi. Sandbox kodlari: `000000` paid ·
 `111111` declined · `222222` timeout (noma'lum) · `333333` pending ·
-boshqasi — noto'g'ri kod.
+boshqasi — noto'g'ri kod. Sandbox'da ham `resend` — no-op (kodlar
+deterministik, qayta yuborishga hojat yo'q).
 
 **Payme** (`providers/payments/payme.py`, Subscribe API, JSON-RPC
 `POST {base}/api`). Merchant — loyiha egasi, Payme Business kassasi bilan;
@@ -208,6 +290,7 @@ mijoz ilovadan chiqmaydi. Port qadamlari Payme metodlariga shunday tushadi:
 | Port | Payme | Izoh |
 |---|---|---|
 | `start` | `receipts.create` (tiyin, `account: {account_field: order.id}`, ixtiyoriy `detail`) → `cards.create {save: false}` → `cards.get_verify_code` | chek **birinchi**: karta tegilmasdan va SMS ketmasdan `merchant_id:key` tekshiriladi. Token bitta urinish uchun — saqlangan karta bizda PAN (shifrlangan), Payme tokeni emas. `reference` = `{v, token, receipt}` JSON (orders shifrlab saqlaydi); `phone_hint` = Payme'ning masklangan raqami |
+| `resend` | `cards.get_verify_code` (yana, xuddi shu token bilan) | faqat kodni qayta yuboradi — yangi chek yoki karta yo'q; `reference` o'zgarmaydi. Rad javobi (`sent:false` yoki biznes xato) `start`dagidek `PaymentDeclined` |
 | `confirm` | `cards.verify {token, code}` → `receipts.pay {id, token}` | `receipts.pay` urinish boshiga **bir marta** (`confirming` commit'i kafolatlaydi). Chek holati 4/5 → `paid`; 50 → `failed`; boshqasi → `pending` |
 | `status` | `receipts.check {id}` | yo'qolgan `receipts.pay` javobi uchun |
 | `probe` | `receipts.get_all` (oxirgi 24 soat, `count: 1`) | panel "test" tugmasi; pul ko'chirmaydi |
@@ -220,9 +303,11 @@ Sandbox'dan farqi: `DEBUG`ga bog'liq emas, panelda xuddi Payme kabi yoqiladi
 va boshqa providerlar bilan yonma-yon site-config ro'yxatida chiqadi.
 Bitta sozlama (`fields`): `otp` — to'laydigan yagona statik kod, default
 `123456`, panelda ochiq ko'rinadi (sir emas — operator namoyishda o'qiydi).
-`start` har qanday kartani oladi, hech narsa yechmaydi; `confirm` da kod mos
-→ `paid`, aks holda `failed` "wrong code"; `status` → `pending` (stateless);
-`probe` doim ok. To'lovdan keyin ticketing odatdagidek GTS'ga boradi (demo
+`start` har qanday kartani oladi, hech narsa yechmaydi; `resend` — no-op:
+kod statik bo'lgani uchun hech narsa qilinmaydi, xuddi shu `phone_hint`
+qaytariladi; `confirm` da kod mos → `paid`, aks holda `failed` "wrong code";
+`status` → `pending` (stateless); `probe` doim ok. To'lovdan keyin ticketing
+odatdagidek GTS'ga boradi (demo
 server GTS test bilan). Kod kengaytmasi migratsiya bilan:
 `payment_providers.code` CHECK'iga `demo` qo'shildi
 (`20260824_1500_payment_provider_demo_code.py`); qatorni birinchi o'qish
@@ -387,7 +472,8 @@ status o'zgarishi va izoh).
   va `FIELDS` jadvallariga bir qator (Payme namuna).
 - Provider refund API (`refund()` porti) — hozir support provider kabinetida
   qaytaradi va `refund/` bilan belgilaydi.
-- `reprice_check` — ticketing o'zi reprice qiladimi, GTS bilan aniqlash kerak.
+- ~~`reprice_check`~~ — §4a 0-qadam: `reprice/` + `reprice/confirm/`, mijoz
+  ilovasi to'lovdan oldin chaqiradi; `payment/` tasdiqlanmagan narxni rad etadi.
 - ~~Contract test sweep~~ — `tests/test_openapi.py` (trailing slash, envelope,
   xato shakllari, ikki token sxemasi, har endpoint tavsifi); CLAUDE.md jadvali
   tozalandi.

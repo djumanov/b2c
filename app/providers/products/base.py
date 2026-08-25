@@ -108,6 +108,21 @@ class BookedOrder(OrderSnapshot):
     offer_id: str
 
 
+class OrderPrice(BaseModel):
+    """What ``reprice`` and ``confirm_price`` answer: the order's price today.
+
+    GTS prices a held booking again before it will issue the ticket
+    (``reprice_check`` → ``reprice_confirm`` → ``ticketing``, its documented
+    lifecycle); this is that price, read once behind the port. Unlike
+    ``OrderSnapshot.amount`` it is never optional — an answer without a price
+    is an unreadable answer, since the price is the whole point of asking.
+    """
+
+    amount: Decimal
+    currency: str
+    raw: dict[str, Any]
+
+
 @runtime_checkable
 class ProductAdapter(Protocol):
     """What every vertical implements.
@@ -163,6 +178,25 @@ class ProductAdapter(Protocol):
         a deadline and a ticket. A GET, so safe to ask as often as needed."""
         ...
 
+    async def reprice(self, client: GtsClient, order_number: int) -> OrderPrice:
+        """Ask GTS what the held order costs today (``reprice_check``).
+
+        The first of the two price steps GTS requires between booking and
+        ticketing. Repeatable: it changes nothing on GTS's side. Raises
+        ``UpstreamError`` with GTS's words when the order cannot be priced
+        (released, unknown) and when the answer carries no price.
+        """
+        ...
+
+    async def confirm_price(self, client: GtsClient, order_number: int) -> OrderPrice:
+        """Accept today's price on GTS's side (``reprice_confirm``).
+
+        The second price step — GTS's final word on what ticketing will
+        debit, sent once the customer has seen the price ``reprice``
+        returned. The answer's price is authoritative over the check's.
+        """
+        ...
+
     async def ticket(self, client: GtsClient, order_number: int) -> OrderSnapshot:
         """Ask GTS to issue the ticket, charging the agent's deposit.
 
@@ -201,6 +235,7 @@ __all__ = [
     "SEARCH_IN_PROCESS",
     "BookedOrder",
     "FlowStep",
+    "OrderPrice",
     "OrderSnapshot",
     "ProductAdapter",
     "ProductCode",

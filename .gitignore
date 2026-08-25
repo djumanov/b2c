@@ -27,3 +27,6 @@ celerybeat-schedule*
 # OS / editors
 .DS_Store
 *.swp
+
+# GTS partner documentation — confidential, kept locally only
+docs/*.pdf

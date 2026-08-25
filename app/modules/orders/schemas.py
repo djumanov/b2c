@@ -17,7 +17,9 @@ A booking answers — and ``GET /public/orders/{id}/`` repeats — four blocks:
   baggage. The client reads display detail here, exactly as it already reads
   GTS's shapes throughout the search flow. Commission and cost fields are
   stripped on the way out — agent economics are not the customer's business —
-  while the stored copy keeps them.
+  while the stored copy keeps them. Once the price step has run, its
+  ``price_info``/``price_details`` are the repriced ones (``price_response``),
+  the same figures ``order.amount`` and ``payment.amount`` show.
 
 The list (``GET /public/orders/``) is a fifth shape, and it takes GTS's
 ``routes`` with it: an order card shows the airline, the flight number, the
@@ -55,6 +57,31 @@ def _money(order: Order) -> Money | None:
     if order.amount is None or order.currency is None:
         return None
     return Money(amount=order.amount, currency=order.currency)
+
+
+def _order_data(order: Order) -> dict[str, Any]:
+    """GTS's order for the client, with the repriced figures where there are any.
+
+    ``gts_response`` is the order record, and its ``price_info`` is the
+    booking's. Once the price step has run, ``price_response`` is GTS's later
+    word: its ``price_info`` — and ``price_details``, when it carries any —
+    replace the record's, so the client never reads a fare that ``amount``
+    has moved on from. Stripped of agent economics on the way out, as ever.
+    """
+    data: dict[str, Any] = order.gts_response
+    repriced = order.price_response
+    if isinstance(repriced, dict):
+        overlay: dict[str, Any] = {}
+        info = repriced.get("price_info")
+        if isinstance(info, dict):
+            overlay["price_info"] = info
+        details = repriced.get("price_details")
+        if isinstance(details, list) and details:
+            overlay["price_details"] = details
+        if overlay:
+            data = {**data, **overlay}
+    stripped: dict[str, Any] = _strip_commission(data)
+    return stripped
 
 
 def _strip_commission(value: Any) -> Any:
@@ -342,6 +369,21 @@ class PaymentConfirmIn(BaseModel):
     )
 
 
+class PaymentResendIn(BaseModel):
+    """Resend: the same open attempt to speak to again — nothing else changes."""
+
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [{"payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f"}]
+        },
+    }
+
+    payment_id: uuid.UUID = Field(
+        description="`payment.payment_id` from the step-1 (or a later resend's) answer."
+    )
+
+
 # --- the payment block ---------------------------------------------------------------
 
 #: ``PaymentOut.status`` — the order's ``payment_status`` plus three readings
@@ -402,6 +444,13 @@ class PaymentOut(BaseModel):
         )
     )
     amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
+    price_confirmed: bool = Field(
+        description=(
+            "`true` once `reprice/confirm/` accepted `amount` with GTS — "
+            "step 1 of payment refuses until then. A later `reprice/` that "
+            "finds a different price sets it back to `false`."
+        )
+    )
     pay_before: datetime | None = Field(
         description="Pay before this moment or GTS releases the seat."
     )
@@ -447,6 +496,7 @@ class PaymentOut(BaseModel):
         return cls(
             status=cast(PaymentViewStatus, status),
             amount=_money(order),
+            price_confirmed=order.price_confirmed_at is not None,
             pay_before=order.ticket_time_limit_at,
             payment_id=attempt.id if attempt else None,
             provider=attempt.provider if attempt else None,
@@ -531,6 +581,7 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
     "payment": {
         "status": "awaiting_otp",
         "amount": {"amount": "287500.00", "currency": "UZS"},
+        "price_confirmed": True,
         "pay_before": "2026-08-20T06:53:12Z",
         "payment_id": "9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
         "provider": "payme",
@@ -575,8 +626,10 @@ class BookingResultOut(BaseModel):
         description=(
             "GTS's order nearly verbatim — routes with segments, passengers "
             "with documents, fares, baggage — the same shapes as the search "
-            "flow, with agent commission fields removed. Read display detail "
-            "here; never key logic on it."
+            "flow, with agent commission fields removed. Once `reprice/` has "
+            "run, `price_info` and `price_details` are the repriced figures — "
+            "the same price `order.amount` and `payment.amount` show. Read "
+            "display detail here; never key logic on it."
         )
     )
 
@@ -596,7 +649,7 @@ class BookingResultOut(BaseModel):
             order=OrderOut.from_order(order, language=language, messages=messages),
             payment=PaymentOut.from_order(order, attempt),
             ticketing=TicketingOut.from_order(order),
-            order_data=_strip_commission(order.gts_response),
+            order_data=_order_data(order),
         )
 
 
@@ -877,6 +930,7 @@ __all__ = [
     "PaymentAttemptView",
     "PaymentConfirmIn",
     "PaymentOut",
+    "PaymentResendIn",
     "PaymentStartIn",
     "PaymentViewStatus",
     "RefundIn",
