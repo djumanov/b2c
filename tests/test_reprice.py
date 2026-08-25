@@ -129,6 +129,9 @@ async def test_reprice_hands_gts_answer_through_and_changes_nothing(
 
     assert response.status_code == 200, response.text
     assert response.json()["data"] == {
+        "changed": True,
+        "old_price": UZS_20,
+        "new_price": UZS_300000,
         "price_info": {"price": 300000.0, "currency": "UZS", "fee_amount": 0},
         "price_details": [],
     }
@@ -170,6 +173,49 @@ async def test_reprice_asks_gts_even_for_an_unconfirmed_or_paid_order(
     assert check.call_count == 2
     await db_session.refresh(fresh)
     assert fresh.price_confirmed_at is None
+
+
+@respx.mock
+async def test_reprice_says_whether_the_price_moved(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """``old_price`` is the order's own figure, ``new_price`` GTS's today, and
+    ``changed`` the comparison — amount **or** currency, or no price held."""
+    mock_gts_signin()
+    order = await make_order(db_session, customer)
+
+    mock_gts_reprice_check(gts_price(20.0))
+    same = (await _reprice(client, order, customer_headers)).json()["data"]
+    assert (same["changed"], same["old_price"], same["new_price"]) == (
+        False,
+        UZS_20,
+        UZS_20,
+    )
+
+    respx.reset()
+    mock_gts_signin()
+    mock_gts_reprice_check(gts_price(20.0, "USD"))
+    other_currency = (await _reprice(client, order, customer_headers)).json()["data"]
+    assert other_currency["changed"] is True
+    assert other_currency["new_price"] == {"amount": "20.00", "currency": "USD"}
+    assert other_currency["price_info"]["currency"] == "USD"
+
+    respx.reset()
+    mock_gts_signin()
+    mock_gts_reprice_check(gts_price(20.0))
+    unpriced = await make_order(db_session, customer, amount=None, currency=None)
+    no_price_held = (await _reprice(client, unpriced, customer_headers)).json()["data"]
+    assert no_price_held["changed"] is True
+    assert no_price_held["old_price"] is None
+    assert no_price_held["new_price"] == UZS_20
+    # Still a question: nothing was written for any of the three.
+    await db_session.refresh(order)
+    assert str(order.amount) == "20.00" and order.currency == "UZS"
+    await db_session.refresh(unpriced)
+    assert unpriced.amount is None
 
 
 @respx.mock

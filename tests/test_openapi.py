@@ -254,6 +254,7 @@ def test_every_documented_operation_explains_itself() -> None:
         "PaymentStartIn",
         "PaymentConfirmIn",
         "PaymentResendIn",
+        "RepriceOut",
         "CardOut",
         "CardCreateIn",
         "CardIn",

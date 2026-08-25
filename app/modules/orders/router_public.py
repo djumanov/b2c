@@ -28,7 +28,6 @@ Swagger: what to send, what comes back, what to do next.
 """
 
 import uuid
-from typing import Any
 
 from fastapi import Depends
 
@@ -52,6 +51,7 @@ from app.modules.orders.schemas import (
     PaymentConfirmIn,
     PaymentResendIn,
     PaymentStartIn,
+    RepriceOut,
 )
 
 router = enveloped_router(
@@ -120,20 +120,23 @@ async def get_order(
     summary="Pay — step 0: check today's price",
     description=(
         "Asks GTS what the held order costs right now (`reprice_check`) and "
-        "hands its answer through **as is** — `data` is GTS's `data`: "
-        "`price_info` (`price`, `currency`, `fee_amount`, …) and "
+        "answers with the verdict and GTS's data as is: `changed` — did the "
+        "price move; `old_price` — what the order holds, the price the "
+        "customer has been looking at; `new_price` — GTS's price today; then "
+        "GTS's own `price_info` (`price`, `currency`, `fee_amount`, …) and "
         "`price_details`, with agent commission fields removed. A question, "
         "not a write: nothing on the order changes, `payment.amount` and "
         "`payment.price_confirmed` stay what they were, no code is voided.\n\n"
-        "Compare `price_info.price` with what the customer is looking at; "
-        "once they accept, call `reprice/confirm/` — that is the step that "
-        "updates the order and unlocks `payment/`. GTS requires both before "
-        "it will issue a ticket. Repeatable at no cost.\n\n"
+        "`changed: false` — confirm straight away. `changed: true` — show "
+        "`new_price` (and `old_price`) and ask; once the customer accepts, "
+        "call `reprice/confirm/` — that is the step that updates the order "
+        "and unlocks `payment/`. GTS requires both before it will issue a "
+        "ticket. Repeatable at no cost.\n\n"
         "Nothing is charged here. Under the `payment` rate limit."
     ),
     response_description=(
-        "GTS's `reprice_check` answer: `price_info` and `price_details`, "
-        "commission fields removed."
+        "`changed`, `old_price`, `new_price`, and GTS's `reprice_check` answer "
+        "(`price_info`, `price_details`) with commission fields removed."
     ),
     responses=error_responses(
         ErrorCode.UPSTREAM_ERROR,
@@ -148,7 +151,7 @@ async def get_order(
 )
 async def reprice_order(
     id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
-) -> dict[str, Any]:
+) -> RepriceOut:
     return await service.reprice_order(session, customer.id, id)
 
 

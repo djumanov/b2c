@@ -96,6 +96,7 @@ from app.modules.orders.schemas import (
     PaymentResendIn,
     PaymentStartIn,
     RefundIn,
+    RepriceOut,
     strip_commission,
 )
 from app.modules.payments import service as payments_service
@@ -577,30 +578,41 @@ def _take_price(
 
 async def reprice_order(
     session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
-) -> dict[str, Any]:
-    """Step 0 of paying: what the held order costs today — GTS's answer, as is.
+) -> RepriceOut:
+    """Step 0 of paying: what the held order costs today — GTS's answer, as is,
+    with the one comparison the client would otherwise make itself.
 
     A question, not a write. GTS's own lifecycle puts ``reprice_check`` and
     ``reprice_confirm`` between booking and ticketing, and its live server
     refuses to ticket an order that skipped them; the customer's app asks
-    here, compares ``price_info`` with what it shows, and — once the customer
-    accepts — calls ``confirm_price``, which is the step that changes the
-    order. Nothing is stored or moved here, so the answer is the one GTS
-    gave (agent commission stripped, as everywhere on the customer surface):
+    here, reads ``changed`` / ``old_price`` / ``new_price``, and — once the
+    customer accepts — calls ``confirm_price``, which is the step that
+    changes the order. ``old_price`` is the order's own figure (what the
+    customer has been shown); ``new_price`` is GTS's today. Nothing is
+    stored or moved here, so the rest of the answer is the one GTS gave
+    (agent commission stripped, as everywhere on the customer surface):
     checking again costs nothing and changes nothing. Somebody else's order
     is a ``404``, like every read.
     """
     client = await integrations_service.gts_client(session)
     order = await _owned(session, customer_id, order_id)
     price = await _adapter(order).reprice(client, order.gts_order_number)
+    old = (
+        Money(amount=order.amount, currency=order.currency)
+        if order.amount is not None and order.currency is not None
+        else None
+    )
+    new = Money(amount=price.amount, currency=price.currency)
+    changed = old is None or (old.amount, old.currency) != (new.amount, new.currency)
     logger.info(
         "order_repriced",
         order_id=str(order.id),
         gts_order_number=order.gts_order_number,
         amount=f"{price.amount} {price.currency}",
+        changed=changed,
     )
     answer: dict[str, Any] = strip_commission(price.raw)
-    return answer
+    return RepriceOut(changed=changed, old_price=old, new_price=new, **answer)
 
 
 async def confirm_price(
