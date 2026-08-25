@@ -24,6 +24,10 @@ call. Every failure releases the key — nothing is charged at ``start`` or
 ``resend``, and ``confirm`` answers a lost provider call with the order
 rather than an error, so there is no outcome a kept claim would guard.
 
+``cancel/`` is the way out of the same stretch: while the order is unpaid the
+customer can hand the seat back, and GTS is told before our own record moves,
+because GTS is the one holding it.
+
 The ``description`` on each route is written for the developer reading
 Swagger: what to send, what comes back, what to do next.
 """
@@ -439,6 +443,63 @@ async def resend_payment_otp(
         raise
     await idempotency.store({"order_id": str(id)})
     return result
+
+
+@router.post(
+    "/{id}/cancel/",
+    summary="Cancel — give the seat back before paying",
+    description=(
+        "Releases a booking the customer no longer wants, **before any "
+        "money and before any ticket**. GTS is told first — it is the one "
+        "holding the seat — and the order is then recorded as `cancelled` "
+        "with `cancel_reason: customer`.\n\n"
+        "Allowed while the order is `booked` and unpaid: a failed payment "
+        "attempt does not stand in the way, a charge being confirmed right "
+        "now does (`409` — wait for it to settle). Once the ticket is paid "
+        "for there is nothing to cancel here; that is a refund, and support "
+        "handles it.\n\n"
+        "**Safe to repeat.** An order that is already cancelled answers "
+        "`200` with the order as it stands and GTS is not called again, so "
+        "a retried tap or a lost answer costs nothing. No "
+        "`Idempotency-Key` needed.\n\n"
+        "The answer is the full order: `order.status` is `cancelled`, "
+        "`order.cancel_reason` is `customer`, `payment.status` is "
+        "`cancelled`, and `order.message` is the sentence to show. To fly "
+        "after all, search again — this booking is gone."
+    ),
+    response_description=(
+        "The order, now `cancelled`, with `cancel_reason: customer` and the "
+        "message for that status."
+    ),
+    responses=error_responses(
+        ErrorCode.CONFLICT,
+        ErrorCode.UPSTREAM_ERROR,
+        ErrorCode.UPSTREAM_TIMEOUT,
+        conflict=(
+            "There is nothing to release: the order is paid, being refunded "
+            "or already being ticketed — or a charge for it is being "
+            "confirmed right now, in which case try again once it settles."
+        ),
+        upstream_error=(
+            "GTS refused to release the booking and still shows it held; "
+            "its words are in `meta.upstream`. Nothing was changed."
+        ),
+        upstream_timeout=(
+            "GTS did not answer and the booking still shows as held. "
+            "Nothing was changed; read the order back and try again."
+        ),
+    ),
+    dependencies=[Depends(RateLimit("payment"))],
+)
+async def cancel_order(
+    id: uuid.UUID,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    language: LanguageDep,
+) -> BookingResultOut:
+    return await service.cancel_order(
+        session, customer.id, id, language=language.requested
+    )
 
 
 __all__ = ["router"]

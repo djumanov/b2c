@@ -331,6 +331,48 @@ def mock_gts_reprice_confirm(
     return _mock_gts_price_step("/v1/content/reprice_confirm/", data, error=error)
 
 
+def mock_gts_cancel(*, error: str | None = None) -> Any:
+    """``POST /v1/content/cancel/``: the hold released, or GTS's refusal.
+
+    The success body is the documented one — the order two wrappers deep
+    under ``data.order``, carrying a ``cancel_booking_date`` and **no
+    status**. Nothing reads it: the cancel step learns what GTS now holds
+    from ``GET /v1/orders/{n}/``, which is what makes it indifferent to
+    which of GTS's three envelope shapes arrives.
+    """
+    import respx
+
+    if error is not None:
+        body: dict[str, Any] = {
+            "status": "error",
+            "message": error,
+            "code": -104,
+            "data": None,
+            "errors": [],
+        }
+    else:
+        body = {
+            "status": "success",
+            "message": "Все ок.",
+            "code": 0,
+            "data": {
+                "status": "success",
+                "code": 100,
+                "order_number": ORDER_NUMBER,
+                "message": "Order canceled!",
+                "order": {
+                    "order_number": ORDER_NUMBER,
+                    "cancel_booking_date": "2026-08-25T10:19:37Z",
+                    "ticket_date": None,
+                },
+            },
+            "errors": [],
+        }
+    return respx.post(f"{GTS}/v1/content/cancel/").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+
+
 # --- a fake Payme: one URL, answered per JSON-RPC method -----------------------------
 
 PAYME_URL = "https://checkout.test.paycom.uz/api"
