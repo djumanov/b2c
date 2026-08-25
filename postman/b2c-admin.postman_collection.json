@@ -982,7 +982,7 @@
                 "reprice"
               ]
             },
-            "description": "GTS reprice_check, handed through as is: data.price_info (price, currency, fee_amount) and price_details, commission fields removed. A question — nothing on the order changes. Compare price_info.price with what the customer sees; once they accept, run step 0b. GTS's test server prices at 0.00."
+            "description": "GTS reprice_check with the verdict: changed (did the price move), old_price (what the order holds — the price the customer has been shown), new_price (GTS's price today), then GTS's data as is — price_info (price, currency, fee_amount) and price_details, commission fields removed. A question — nothing on the order changes. changed:false → run step 0b; changed:true → show new_price, then step 0b once the customer accepts. GTS's test server prices at 0.00."
           },
           "event": [
             {
@@ -991,7 +991,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const body = pm.response.json();",
-                  "if (body.data && body.data.price_info) console.log('today', body.data.price_info.price, body.data.price_info.currency);"
+                  "if (body.data) console.log('changed', body.data.changed, '| old', JSON.stringify(body.data.old_price), '| new', JSON.stringify(body.data.new_price));"
                 ]
               }
             }

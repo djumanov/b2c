@@ -384,6 +384,66 @@ class PaymentResendIn(BaseModel):
     )
 
 
+class RepriceOut(BaseModel):
+    """Step 0's answer: GTS's ``reprice_check`` data as it came, plus the verdict.
+
+    ``old_price`` is what the order holds — the price the customer has been
+    looking at (the booking's, or the last confirmed one); ``new_price`` is
+    what GTS says today; ``changed`` compares the two so no client has to.
+    Everything else is GTS's ``data`` handed through (``price_info``,
+    ``price_details`` and whatever GTS adds), agent commission stripped.
+    Nothing here is stored: the order changes only at ``reprice/confirm/``.
+    """
+
+    model_config = {
+        "extra": "allow",
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "changed": True,
+                    "old_price": {"amount": "287500.00", "currency": "UZS"},
+                    "new_price": {"amount": "301200.00", "currency": "UZS"},
+                    "price_info": {
+                        "price": 301200.0,
+                        "currency": "UZS",
+                        "fee_amount": 0,
+                    },
+                    "price_details": [],
+                }
+            ]
+        },
+    }
+
+    changed: bool = Field(
+        description=(
+            "`true` when `new_price` differs from `old_price` in amount or "
+            "currency (or the order held no price) — show the new price and "
+            "ask the customer before `reprice/confirm/`. `false`: same price, "
+            "confirm straight away."
+        )
+    )
+    old_price: Money | None = Field(
+        description=(
+            "The price the order holds now — what the customer has been shown: "
+            "the booking's, or the last one confirmed. Null only when GTS "
+            "never reported a price for the booking."
+        )
+    )
+    new_price: Money = Field(
+        description="What GTS says the order costs today — `price_info` as `Money`."
+    )
+    price_info: dict[str, Any] = Field(
+        description=(
+            "GTS's `price_info` verbatim (`price`, `currency`, `fee_amount`, …), "
+            "commission fields removed."
+        )
+    )
+    price_details: list[Any] = Field(
+        default_factory=list,
+        description="GTS's per-passenger breakdown verbatim, when it sends one.",
+    )
+
+
 # --- the payment block ---------------------------------------------------------------
 
 #: ``PaymentOut.status`` — the order's ``payment_status`` plus three readings
@@ -934,6 +994,7 @@ __all__ = [
     "PaymentStartIn",
     "PaymentViewStatus",
     "RefundIn",
+    "RepriceOut",
     "strip_commission",
     "TicketOut",
     "TicketingOut",

@@ -166,13 +166,16 @@ Qadamlar (`orders/service.py`):
    rad etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24).
    Ikkalasini **mijoz ilovasi** to'lov ekranidan oldin chaqiradi:
    - `reprice/` → `POST /v1/content/reprice_check/ {order_number}`
-     (`FlightAdapter.reprice`) — **sof so'rov, passthrough**: GTS'ning `data`si
-     (`price_info`, `price_details`) komissiya maydonlarisiz aynan qaytariladi,
-     bizda **hech narsa yozilmaydi** — `amount`, `price_confirmed`, ochiq
-     urinish o'zgarmaydi. Mijoz ilovasi `price_info.price`ni ko'rsatilgan narx
-     bilan solishtiradi (narx o'zgarganmi — shuni bilish uchun), mijoz rozi
-     bo'lsa `reprice/confirm/`ni chaqiradi. Faqat egasi (404), bizdan 409 yo'q;
-     GTS rad etsa 502. Takrorlash bepul.
+     (`FlightAdapter.reprice`) — **sof so'rov, passthrough**: javob (`RepriceOut`)
+     = `changed` (narx o'zgardimi), `old_price` (orderda saqlangan — mijoz
+     ko'rib turgan narx: bron narxi yoki oxirgi tasdiqlangani), `new_price`
+     (GTS'ning bugungi narxi) + GTS'ning `data`si (`price_info`,
+     `price_details`) komissiya maydonlarisiz aynan. `changed` = summa yoki
+     valyuta farq qilsa (yoki orderda narx bo'lmasa). Bizda **hech narsa
+     yozilmaydi** — `amount`, `price_confirmed`, ochiq urinish o'zgarmaydi.
+     Mijoz ilovasi `changed: false` bo'lsa to'g'ridan-to'g'ri, `true` bo'lsa
+     yangi narxni ko'rsatib rozilik olib `reprice/confirm/`ni chaqiradi. Faqat
+     egasi (404), bizdan 409 yo'q; GTS rad etsa 502. Takrorlash bepul.
    - `reprice/confirm/` → `POST /v1/content/reprice_confirm/ {order_number}`
      (`FlightAdapter.confirm_price`) — narx qadamining **yagona yozuvi**. GTS
      tartibi (avval check) GTS'ning o'zida: check'siz confirm'ni u rad etsa →
