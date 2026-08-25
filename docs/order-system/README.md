@@ -33,19 +33,20 @@ status=cancelled payment=pending                     → to'lanmasdan bekor bo'l
 ```
 
 Yordamchi ustunlar: `cancel_reason` (`customer` · `expired` · `staff`),
-`paid_at`, `ticketed_at`, `cancelled_at`, `repriced_at` (GTS narxni oxirgi
-marta qayta hisoblagan vaqt — `reprice_check`), `price_confirmed_at` (mijoz
+`paid_at`, `ticketed_at`, `cancelled_at`, `price_confirmed_at` (mijoz
 narxni qabul qilib GTS tasdiqlagan vaqt — `reprice_confirm`; to'lov shusiz
-rad etiladi), `price_response` (oxirgi reprice javobi — `price_info`,
-`price_details` — aynan o'zi), `ticketing_requested_at`
+rad etiladi; `reprice_check` iz qoldirmaydi), `price_response` (oxirgi
+`reprice_confirm` javobi — `price_info`, `price_details` — aynan o'zi),
+`ticketing_requested_at`
 (GTS'dan chipta so'ralgan vaqt), `gts_checked_at` (sweep oxirgi marta
 GTS'dan o'qigan vaqt), `ticketing_attempts` (so'rov necha marta yuborilgan),
 `ticketing_error` (GTS'ning xato matni). `gts_status` va `gts_response` —
 GTS'ning o'z kodi va to'liq javobi, har o'qishda yangilanadi. `amount` esa
-faqat **hali reprice qilinmagan** orderda o'qishdan yangilanadi: `repriced_at`
-bosilgach `price_response` — GTS'ning keyingi so'zi, order yozuvining o'z
-`price_info`si esa bron paytidagi narx; o'qish farq qilsa log'ga yoziladi
-(`gts_price_differs_from_reprice`), `amount` o'zgarmaydi. Mijozga
+faqat **narxi hali tasdiqlanmagan** orderda o'qishdan yangilanadi:
+`price_confirmed_at` bosilgach `price_response` — GTS'ning keyingi so'zi,
+order yozuvining o'z `price_info`si esa bron paytidagi narx; o'qish farq
+qilsa log'ga yoziladi (`gts_price_differs_from_confirmed`), `amount`
+o'zgarmaydi. Mijozga
 `order_data` ham shu asosda ketadi: `gts_response` ustiga `price_response`dagi
 `price_info` (va bo'sh bo'lmasa `price_details`) qo'yiladi — `order.amount`,
 `payment.amount` va `order_data.price_info` hech qachon har xil narx aytmaydi.
@@ -164,35 +165,35 @@ Qadamlar (`orders/service.py`):
    reprice_confirm → ticketing`; jonli server ikki narx qadamisiz ticketing'ni
    rad etadi ("Перед выпиской билета выполните reprice_check", 2026-08-24).
    Ikkalasini **mijoz ilovasi** to'lov ekranidan oldin chaqiradi:
-   - `reprice/` → `POST /v1/content/reprice_check/ {order_number}` →
-     `data.price_info` (`FlightAdapter.reprice`). GTS chaqiruvi qulfdan
-     **oldin**. Qulf ostida: order payable (`_require_payable`), `confirming`
-     urinish bo'lsa 409. Javob har doim `price_response`ga aynan yoziladi.
-     Narx saqlangandan **farq qilsa** → `amount/currency`
-     yangilanadi, event `price.repriced {from, to}`, `price_confirmed_at`
-     tozalanadi, ochiq `started` urinish → `abandoned` (eski summa uchun
-     yuborilgan kod yangi summani tasdiqlay olmasligi kerak). Bir xil bo'lsa
-     faqat `repriced_at` bosiladi. Javob — order (`payment.amount`,
-     `order.amount`, `order_data.price_info` — bugungi narx,
-     `payment.price_confirmed`). Takrorlash mumkin. GET qilinmaydi: GTS o'z
-     yozuvini confirm'gacha qayta narxlamaydi.
+   - `reprice/` → `POST /v1/content/reprice_check/ {order_number}`
+     (`FlightAdapter.reprice`) — **sof so'rov, passthrough**: GTS'ning `data`si
+     (`price_info`, `price_details`) komissiya maydonlarisiz aynan qaytariladi,
+     bizda **hech narsa yozilmaydi** — `amount`, `price_confirmed`, ochiq
+     urinish o'zgarmaydi. Mijoz ilovasi `price_info.price`ni ko'rsatilgan narx
+     bilan solishtiradi (narx o'zgarganmi — shuni bilish uchun), mijoz rozi
+     bo'lsa `reprice/confirm/`ni chaqiradi. Faqat egasi (404), bizdan 409 yo'q;
+     GTS rad etsa 502. Takrorlash bepul.
    - `reprice/confirm/` → `POST /v1/content/reprice_confirm/ {order_number}`
-     (`FlightAdapter.confirm_price`). `repriced_at` bo'sh bo'lsa → 409 (GTS
-     tartibi: avval check). So'ng **`GET /v1/orders/{n}/`** — GTS o'z yozuvini
+     (`FlightAdapter.confirm_price`) — narx qadamining **yagona yozuvi**. GTS
+     tartibi (avval check) GTS'ning o'zida: check'siz confirm'ni u rad etsa →
+     502. Narx saqlangandan **farq qilsa** → `amount/currency` yangilanadi,
+     event `price.repriced {from, to}`, ochiq `started` urinish → `abandoned`
+     (eski summa uchun yuborilgan kod yangi summani tasdiqlay olmasligi
+     kerak). So'ng **`GET /v1/orders/{n}/`** — GTS o'z yozuvini
      qayta narxlab bo'ldi, order to'liq qayta o'qiladi (best-effort: o'qib
      bo'lmasa WARNING `gts_read_after_confirm_failed`, tasdiq davom etadi).
-     Qulf ostida: `apply_snapshot` (status, muddat, `gts_response`; `amount`
-     emas — §1); GET `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
-     `offer_expired`** (`payment/` topadigan xuddi shu yo'l). GTS javobidagi
-     narx — **yakuniy** (ticketing shuni yechadi): check'dan farq qilsa ham shu
-     saqlanadi (`price.repriced` event + WARNING `gts_confirmed_other_price`),
-     keyin `price_confirmed_at = now`, event `price.confirmed {amount,
-     currency}`. Javob — order **to'liq yangilangan narx bilan**:
+     Qulf ostida, tartib: GET `CB/VO/STATUS_VOID` desa → `cancelled/expired`
+     + **409 `offer_expired`** (`payment/` topadigan xuddi shu yo'l; tasdiq
+     yozilmaydi); aks holda narx yoziladi, `price_confirmed_at = now`, **keyin**
+     `apply_snapshot` (status, muddat, `gts_response`; `amount` emas — §1).
+     GTS javobidagi narx — **yakuniy** (ticketing shuni yechadi): check'dan
+     farq qilsa ham shu saqlanadi (WARNING `gts_confirmed_other_price`),
+     event `price.confirmed {amount, currency}`. Javob — order **to'liq yangilangan narx bilan**:
      `payment.amount`, `order.amount`, `order_data.price_info/price_details`,
      yangi `pay_before`; mijoz to'lov ekranida shuni ko'radi.
    - GTS rad etsa (`status: error`) → 502, GTS matni `meta.upstream`da, hech
-     narsa yozilmaydi; narxsiz javob → 502 "carried no price". **Valyuta
-     orderning valyutasidan farq qilsa** (hujjat 12–13-betlarda check'ni `UZS`,
+     narsa yozilmaydi; narxsiz javob → 502 "carried no price". **Confirm'da
+     valyuta orderning valyutasidan farq qilsa** (hujjat 12–13-betlarda check'ni `UZS`,
      confirm'ni `USD` bilan chizadi — xato bosmami, yo'qmi, noma'lum) → 502
      "answered in USD; this order is priced in UZS", ERROR
      `gts_reprice_currency_mismatch`, **hech narsa yozilmaydi** — boshqa
@@ -221,7 +222,7 @@ Qadamlar (`orders/service.py`):
    karta — xato emas, o'sha qator ishlatiladi; `card_id` bilan `save` → 422. Tartib: provider va GTS client
    **qulfdan oldin** olinadi (ular sessiyani commit qiladi); `GET
    /v1/orders/{n}/` — bron tirikmi (narx `price_response`dan — §1; o'qish
-   `amount`ni faqat hali reprice qilinmagan orderda yangilaydi); GTS
+   `amount`ni faqat narxi tasdiqlanmagan orderda yangilaydi); GTS
    `CB/VO/STATUS_VOID` desa → `cancelled/expired` + **409
    `offer_expired`**. Qulf ostida: tekshiruvlar, eski `started` urinish →
    `abandoned`, yangi `started` qatori (**claim**, provider'dan oldin),

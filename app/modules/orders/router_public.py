@@ -28,6 +28,7 @@ Swagger: what to send, what comes back, what to do next.
 """
 
 import uuid
+from typing import Any
 
 from fastapi import Depends
 
@@ -119,50 +120,36 @@ async def get_order(
     summary="Pay — step 0: check today's price",
     description=(
         "Asks GTS what the held order costs right now (`reprice_check`) and "
-        "answers with the order — `payment.amount`, `order.amount` and "
-        "`order_data.price_info` / `price_details` are that price. GTS "
-        "requires this and `reprice/confirm/` before it will issue a "
-        "ticket, so `payment/` refuses an order whose price is not "
-        "confirmed (`payment.price_confirmed`).\n\n"
-        "Show `payment.amount` to the customer. If it differs from what was "
-        "shown at booking, `payment.price_confirmed` is `false` again and "
-        "any code already sent for the old amount is void — call "
-        "`reprice/confirm/` once the customer accepts, then start the "
-        "payment. Repeatable: checking changes nothing on GTS's side.\n\n"
+        "hands its answer through **as is** — `data` is GTS's `data`: "
+        "`price_info` (`price`, `currency`, `fee_amount`, …) and "
+        "`price_details`, with agent commission fields removed. A question, "
+        "not a write: nothing on the order changes, `payment.amount` and "
+        "`payment.price_confirmed` stay what they were, no code is voided.\n\n"
+        "Compare `price_info.price` with what the customer is looking at; "
+        "once they accept, call `reprice/confirm/` — that is the step that "
+        "updates the order and unlocks `payment/`. GTS requires both before "
+        "it will issue a ticket. Repeatable at no cost.\n\n"
         "Nothing is charged here. Under the `payment` rate limit."
     ),
     response_description=(
-        "The order with today's price in `payment.amount` and "
-        "`payment.price_confirmed` saying whether it still needs confirming."
+        "GTS's `reprice_check` answer: `price_info` and `price_details`, "
+        "commission fields removed."
     ),
     responses=error_responses(
-        ErrorCode.CONFLICT,
         ErrorCode.UPSTREAM_ERROR,
         ErrorCode.UPSTREAM_TIMEOUT,
-        conflict=(
-            "The order is not payable (cancelled, already paid, being "
-            "refunded or ticketed), or a charge for it is being confirmed "
-            "right now."
-        ),
         upstream_error=(
-            "GTS could not price the order — released, unknown, an answer "
-            "without a price, or a price in another currency than the "
-            "order's (refused, nothing changed); GTS's words are in "
-            "`meta.upstream`."
+            "GTS could not price the order — released, unknown, or an answer "
+            "without a price; GTS's words are in `meta.upstream`."
         ),
         upstream_timeout="GTS did not answer.",
     ),
     dependencies=[Depends(RateLimit("payment"))],
 )
 async def reprice_order(
-    id: uuid.UUID,
-    customer: CurrentCustomer,
-    session: SessionDep,
-    language: LanguageDep,
-) -> BookingResultOut:
-    return await service.reprice_order(
-        session, customer.id, id, language=language.requested
-    )
+    id: uuid.UUID, customer: CurrentCustomer, session: SessionDep
+) -> dict[str, Any]:
+    return await service.reprice_order(session, customer.id, id)
 
 
 @router.post(
@@ -171,16 +158,18 @@ async def reprice_order(
     description=(
         "The customer accepted the price `reprice/` showed: tells GTS so "
         "(`reprice_confirm`), reads the order back from GTS and unlocks "
-        "`payment/`. Refused (`409`) before `reprice/` has been called for "
-        "this order.\n\n"
+        "`payment/`. This is the step that **writes** — `reprice/` only "
+        "asks. GTS's own sequence is check, then confirm; a confirmation it "
+        "was not asked to check for is GTS's to refuse (`502`).\n\n"
         "GTS answers with the price it confirmed, and that is the one "
-        "stored and charged. The answer is the order as it now stands, "
-        "everything at that price — `payment.amount`, `order.amount`, "
-        "`order_data.price_info` / `price_details` — plus a fresh "
-        "`pay_before` and `order_data`. Show `payment.amount` on the "
-        "payment screen; it is what the customer pays and what GTS will "
-        "debit at ticketing. `payment.price_confirmed` is now `true`. "
-        "Repeatable."
+        "stored and charged — it replaces whatever the order held, and a "
+        "code already sent for another amount is void. The answer is the "
+        "order as it now stands, everything at that price — "
+        "`payment.amount`, `order.amount`, `order_data.price_info` / "
+        "`price_details` — plus a fresh `pay_before` and `order_data`. Show "
+        "`payment.amount` on the payment screen; it is what the customer "
+        "pays and what GTS will debit at ticketing. `payment.price_confirmed` "
+        "is now `true`. Repeatable."
     ),
     response_description=(
         "The order, re-read from GTS, with the confirmed price in "
@@ -193,8 +182,9 @@ async def reprice_order(
         ErrorCode.UPSTREAM_ERROR,
         ErrorCode.UPSTREAM_TIMEOUT,
         conflict=(
-            "`reprice/` has not been called yet, the order is not payable, "
-            "or a charge for it is being confirmed right now."
+            "The order is not payable (cancelled, already paid, being "
+            "refunded or ticketed), or a charge for it is being confirmed "
+            "right now."
         ),
         offer_expired=(
             "GTS confirmed the price but the read-back shows it has released "

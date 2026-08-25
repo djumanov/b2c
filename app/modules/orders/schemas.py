@@ -17,8 +17,8 @@ A booking answers — and ``GET /public/orders/{id}/`` repeats — four blocks:
   baggage. The client reads display detail here, exactly as it already reads
   GTS's shapes throughout the search flow. Commission and cost fields are
   stripped on the way out — agent economics are not the customer's business —
-  while the stored copy keeps them. Once the price step has run, its
-  ``price_info``/``price_details`` are the repriced ones (``price_response``),
+  while the stored copy keeps them. Once ``reprice/confirm/`` has run, its
+  ``price_info``/``price_details`` are the confirmed ones (``price_response``),
   the same figures ``order.amount`` and ``payment.amount`` show.
 
 The list (``GET /public/orders/``) is a fifth shape, and it takes GTS's
@@ -63,8 +63,8 @@ def _order_data(order: Order) -> dict[str, Any]:
     """GTS's order for the client, with the repriced figures where there are any.
 
     ``gts_response`` is the order record, and its ``price_info`` is the
-    booking's. Once the price step has run, ``price_response`` is GTS's later
-    word: its ``price_info`` — and ``price_details``, when it carries any —
+    booking's. Once ``reprice_confirm`` has run, ``price_response`` is GTS's
+    later word: its ``price_info`` — and ``price_details``, when it carries any —
     replace the record's, so the client never reads a fare that ``amount``
     has moved on from. Stripped of agent economics on the way out, as ever.
     """
@@ -80,22 +80,22 @@ def _order_data(order: Order) -> dict[str, Any]:
             overlay["price_details"] = details
         if overlay:
             data = {**data, **overlay}
-    stripped: dict[str, Any] = _strip_commission(data)
+    stripped: dict[str, Any] = strip_commission(data)
     return stripped
 
 
-def _strip_commission(value: Any) -> Any:
+def strip_commission(value: Any) -> Any:
     """Drop agent-economics keys, recursively, wherever GTS put them."""
     if isinstance(value, dict):
         return {
-            key: _strip_commission(item)
+            key: strip_commission(item)
             for key, item in value.items()
             if not (
                 isinstance(key, str) and ("commission" in key or key == "cost_price")
             )
         }
     if isinstance(value, list):
-        return [_strip_commission(item) for item in value]
+        return [strip_commission(item) for item in value]
     return value
 
 
@@ -255,7 +255,7 @@ class OrderListItemOut(BaseModel):
             ticket_time_limit_at=order.ticket_time_limit_at,
             created_at=order.created_at,
             routes=[
-                _strip_commission(route)
+                strip_commission(route)
                 for route in gts_order.routes(order.gts_response)
             ],
             passengers=[
@@ -446,9 +446,9 @@ class PaymentOut(BaseModel):
     amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
     price_confirmed: bool = Field(
         description=(
-            "`true` once `reprice/confirm/` accepted `amount` with GTS — "
-            "step 1 of payment refuses until then. A later `reprice/` that "
-            "finds a different price sets it back to `false`."
+            "`true` once `reprice/confirm/` accepted the price with GTS — "
+            "step 1 of payment refuses until then. `reprice/` alone never "
+            "changes it: checking is a question, confirming is the write."
         )
     )
     pay_before: datetime | None = Field(
@@ -626,9 +626,9 @@ class BookingResultOut(BaseModel):
         description=(
             "GTS's order nearly verbatim — routes with segments, passengers "
             "with documents, fares, baggage — the same shapes as the search "
-            "flow, with agent commission fields removed. Once `reprice/` has "
-            "run, `price_info` and `price_details` are the repriced figures — "
-            "the same price `order.amount` and `payment.amount` show. Read "
+            "flow, with agent commission fields removed. Once `reprice/confirm/` "
+            "has run, `price_info` and `price_details` are the confirmed figures "
+            "— the same price `order.amount` and `payment.amount` show. Read "
             "display detail here; never key logic on it."
         )
     )
@@ -934,6 +934,7 @@ __all__ = [
     "PaymentStartIn",
     "PaymentViewStatus",
     "RefundIn",
+    "strip_commission",
     "TicketOut",
     "TicketingOut",
 ]

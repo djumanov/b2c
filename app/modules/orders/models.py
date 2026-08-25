@@ -168,20 +168,17 @@ class Order(Entity):
     ticketed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    # --- the price, checked and confirmed before payment ---------------------
-    #: When GTS last priced the held order again (``reprice_check``). NULL
-    #: until the customer's app asks; the confirm step refuses without it.
-    repriced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: When the customer accepted ``amount`` and GTS confirmed it
+    # --- the price, confirmed with GTS before payment ------------------------
+    #: When the customer accepted the price and GTS confirmed it
     #: (``reprice_confirm``) — what ticketing will debit. Payment refuses
-    #: without it; a later reprice that finds another price clears it.
+    #: without it. ``reprice_check`` leaves no mark: it is a question the
+    #: customer's app asks, answered straight from GTS.
     price_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: The last reprice answer (``data`` of ``reprice_check`` /
-    #: ``reprice_confirm``: ``price_info``, ``price_details``), verbatim. GTS's
-    #: **later** word on the price than the order record's own ``price_info``
-    #: in ``gts_response`` — ``amount``/``currency`` are its typed reading,
-    #: and ``order_data`` shows its figures over the record's. NULL until the
-    #: price step has run.
+    #: The last ``reprice_confirm`` answer (``data``: ``price_info``,
+    #: ``price_details``), verbatim. GTS's **later** word on the price than
+    #: the order record's own ``price_info`` in ``gts_response`` —
+    #: ``amount``/``currency`` are its typed reading, and ``order_data``
+    #: shows its figures over the record's. NULL until confirmed.
     price_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     # --- ticketing bookkeeping -----------------------------------------------
