@@ -159,6 +159,26 @@ class OrderOut(BaseModel):
     )
     paid_at: datetime | None = Field(description="When the charge landed.")
     ticketed_at: datetime | None = Field(description="When GTS issued the ticket.")
+    receipt_url: str | None = Field(
+        examples=[
+            "https://api.globaltravel.space/v1/receipt/pattern/view/"
+            "?order_number=61453&product=flight"
+        ],
+        description=(
+            "**Download the itinerary receipt here** — the travel document "
+            "the passenger shows at the airport. A whole link, straight to "
+            "GTS, which is what renders it: open it as it stands, in a "
+            "browser or a web view. No token of ours is involved and nothing "
+            "is fetched through this API.\n\n"
+            "`null` until `status` is `ticketed` — before the ticket exists "
+            "there is nothing to render, so this field is what a download "
+            "button waits for. Add `&passenger_index=0` (counted from zero, "
+            "in `order_data.passengers` order) for one traveller's copy. The "
+            "host is this installation's own GTS and differs between the "
+            "sandbox and production: read it here every time, never store or "
+            "hardcode it."
+        ),
+    )
     cancelled_at: datetime | None = Field(description="When the order was cancelled.")
     request_id: str = Field(
         description="The search this booking came from (provenance only)."
@@ -173,6 +193,7 @@ class OrderOut(BaseModel):
         *,
         language: str | None,
         messages: MessageCatalogue,
+        receipt_url: str | None = None,
     ) -> "OrderOut":
         # Assembled by hand rather than ``from_attributes`` because ``amount``
         # is two columns composed into one ``Money``.
@@ -193,6 +214,10 @@ class OrderOut(BaseModel):
             ticket_time_limit_at=order.ticket_time_limit_at,
             paid_at=order.paid_at,
             ticketed_at=order.ticketed_at,
+            # Passed in, not built here: the link is GTS's, and where GTS
+            # lives is a database setting the vertical spells (the orders
+            # service reads both and hands the result over).
+            receipt_url=receipt_url,
             cancelled_at=order.cancelled_at,
             request_id=order.request_id,
             offer_id=order.offer_id,
@@ -614,37 +639,13 @@ class TicketingOut(BaseModel):
         description="Issued ticket numbers by passenger; empty until `ticketed`."
     )
     error: str | None = Field(description="GTS's reason when `status` is `failed`.")
-    receipt_url: str | None = Field(
-        description=(
-            "The itinerary receipt — the travel document the passenger shows "
-            "at the airport. A **whole link**, straight to GTS, which is the "
-            "one that renders it: open or download it as it stands, no token "
-            "of ours involved. Add `&passenger_index=0` (counted from zero) "
-            "for a single traveller's copy.\n\n"
-            "Set only once `status` is `ticketed` — `null` before that, "
-            "because there is nothing to render yet, so this field is what "
-            "the download button waits for. The host is this installation's "
-            "own GTS, so it differs between the sandbox and production; "
-            "never store or hardcode it, read it here each time.\n\n"
-            "`GET /public/orders/{id}/receipt/` serves the same document "
-            "through this API instead, for a client that would rather not "
-            "call GTS itself."
-        )
-    )
 
     @classmethod
-    def from_order(
-        cls, order: Order, *, receipt_url: str | None = None
-    ) -> "TicketingOut":
-        ticketing = TicketingStatus(order.ticketing_status)
+    def from_order(cls, order: Order) -> "TicketingOut":
         return cls(
-            status=ticketing,
+            status=TicketingStatus(order.ticketing_status),
             requested_at=order.ticketing_requested_at,
             ticketed_at=order.ticketed_at,
-            # Passed in rather than built here: the link is GTS's, and where
-            # GTS lives is a database setting the vertical spells (the orders
-            # service reads both and hands the result over).
-            receipt_url=receipt_url,
             tickets=[
                 TicketOut.model_validate(ticket)
                 for ticket in gts_order.tickets(order.gts_response)
@@ -676,6 +677,9 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
         "ticket_time_limit_at": "2026-08-20T06:53:12Z",
         "paid_at": None,
         "ticketed_at": None,
+        # Filled once the ticket is issued, with GTS's own link:
+        # ``…/v1/receipt/pattern/view/?order_number=61453&product=flight``.
+        "receipt_url": None,
         "cancelled_at": None,
         "request_id": "6b4f3a1e-2c7d-4e8f-9a0b-1c2d3e4f5a6b",
         "offer_id": "1f2e3d4c-5b6a-4978-8d9c-0e1f2a3b4c5d",
@@ -699,7 +703,6 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
         "ticketed_at": None,
         "tickets": [],
         "error": None,
-        "receipt_url": None,
     },
     "order_data": {
         "order_number": 61453,
@@ -751,24 +754,13 @@ class BookingResultOut(BaseModel):
         # the columns' reading and says the same on the list and here.
         return cls(
             product=order.product,
-            order=OrderOut.from_order(order, language=language, messages=messages),
+            order=OrderOut.from_order(
+                order, language=language, messages=messages, receipt_url=receipt_url
+            ),
             payment=PaymentOut.from_order(order, attempt),
-            ticketing=TicketingOut.from_order(order, receipt_url=receipt_url),
+            ticketing=TicketingOut.from_order(order),
             order_data=_order_data(order),
         )
-
-
-class ReceiptDocument(BaseModel):
-    """The receipt on its way out — bytes, not JSON.
-
-    Never part of the published schema: the route answers with the file
-    itself, so this only carries it from the service to the route together
-    with the two things the response needs to say about it.
-    """
-
-    content: bytes
-    content_type: str
-    filename: str
 
 
 # --- the support desk ----------------------------------------------------------------
@@ -1051,7 +1043,6 @@ __all__ = [
     "PaymentResendIn",
     "PaymentStartIn",
     "PaymentViewStatus",
-    "ReceiptDocument",
     "RefundIn",
     "RepriceOut",
     "strip_commission",

@@ -31,8 +31,6 @@ is never retried on an error that arrives *after* GTS accepted the call.
 
 The GTS envelope stops here, exactly as in ``static.py``: callers get the
 ``data`` object and every upstream disappointment becomes a typed ``AppError``.
-``download`` is the one call with no envelope to stop — a rendered document
-comes back as bytes — and it recognises a refusal by the JSON it is written in.
 """
 
 import asyncio
@@ -45,7 +43,7 @@ from app.api.errors import UpstreamError, UpstreamTimeout
 from app.core.logging import REQUEST_ID_HEADER, get_logger, request_id_var
 from app.db.redis import get_redis
 from app.modules.integrations.service import ActiveGtsCredential
-from app.providers.gts.base import GtsClient, GtsDocument, GtsTimeouts
+from app.providers.gts.base import GtsClient, GtsTimeouts
 
 logger = get_logger(__name__)
 
@@ -217,39 +215,6 @@ class GtsHttpClient:
             "POST", path, params=None, json=json, timeout=timeout, envelope=True
         )
 
-    async def download(
-        self,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        timeout: float | None,
-    ) -> GtsDocument:
-        """The bytes of a document GTS renders — see ``GtsClient.download``.
-
-        The one call whose success is *not* JSON, which is exactly how a
-        failure is told apart from an answer here: GTS reports a refusal in
-        its envelope, under HTTP 200 as readily as under a 4xx, so a JSON
-        body is handed to ``_translate`` and never to the caller. Should the
-        envelope claim success while holding data where a file was asked for,
-        that is still not a document and still a ``502``.
-        """
-        response = await self._send(
-            "GET", path, params=params, json=None, timeout=timeout
-        )
-        content_type = response.headers.get("content-type", "")
-        media_type = content_type.split(";")[0].strip().lower()
-        if response.status_code != httpx.codes.OK or media_type == "application/json":
-            _translate(path, response)
-            logger.warning("gts_document_is_data", path=path)
-            raise UpstreamError("GTS answered with data where a document was asked for")
-        if not response.content:
-            logger.warning("gts_document_empty", path=path)
-            raise UpstreamError("GTS returned an empty document")
-        return GtsDocument(
-            content=response.content,
-            content_type=media_type or "application/octet-stream",
-        )
-
     async def _request(
         self,
         method: str,
@@ -260,25 +225,6 @@ class GtsHttpClient:
         timeout: float | None,
         envelope: bool = False,
     ) -> dict[str, Any]:
-        response = await self._send(
-            method, path, params=params, json=json, timeout=timeout
-        )
-        return _translate(path, response, envelope=envelope)
-
-    async def _send(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None,
-        json: dict[str, Any] | None,
-        timeout: float | None,
-    ) -> httpx.Response:
-        """The call itself — the session, the retry, the network.
-
-        Separate from what the answer *means*, because that differs: most
-        calls carry an envelope, one carries a file.
-        """
         for attempt in (1, 2):
             # The manager hands back the ready ``esession=…; token=…`` pair.
             headers = {"Cookie": await self._session.token()}
@@ -315,7 +261,7 @@ class GtsHttpClient:
                 )
                 await self._session.invalidate()
                 continue
-            return response
+            return _translate(path, response, envelope=envelope)
         raise AssertionError("unreachable")  # pragma: no cover
 
 

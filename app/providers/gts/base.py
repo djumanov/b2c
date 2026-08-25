@@ -25,7 +25,6 @@ boundary's, and it belongs to the module that owns the states —
   a second booking. Only idempotent ``GET``s retry — twice, with backoff.
 """
 
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 
@@ -34,21 +33,6 @@ class GtsTimeouts:
 
     SEARCH_SECONDS: float = 40.0
     DEFAULT_SECONDS: float = 15.0
-
-
-@dataclass(frozen=True, slots=True)
-class GtsDocument:
-    """A file GTS renders — the one answer that is not an envelope.
-
-    The itinerary receipt of a ticketed order is a document, not data: GTS
-    lays it out itself and hands back the bytes. There is nothing to
-    translate, so both halves travel as they arrived — the bytes, and GTS's
-    own ``Content-Type`` for them. What a surface is willing to serve is the
-    surface's decision, not the boundary's.
-    """
-
-    content: bytes
-    content_type: str
 
 
 class GtsSession(Protocol):
@@ -105,19 +89,5 @@ class GtsClient(Protocol):
         """
         ...
 
-    async def download(
-        self, path: str, *, params: dict[str, Any] | None = None, timeout: float | None
-    ) -> GtsDocument:
-        """A ``GET`` whose answer is a **document**, not an envelope.
 
-        Nothing is parsed and nothing is unwrapped; the bytes are the answer.
-        A refusal still arrives GTS's way — a JSON envelope, as often as not
-        under HTTP 200 — so the implementation looks for one before it
-        believes it holds a file, and raises from the same catalogue as every
-        other call. An empty body is a failure too: a receipt of no bytes is
-        not a receipt.
-        """
-        ...
-
-
-__all__ = ["GtsClient", "GtsDocument", "GtsSession", "GtsTimeouts"]
+__all__ = ["GtsClient", "GtsSession", "GtsTimeouts"]

@@ -27,7 +27,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from app.providers.gts.base import GtsClient, GtsDocument
+from app.providers.gts.base import GtsClient
 
 
 class ProductCode(StrEnum):
@@ -242,39 +242,17 @@ class ProductAdapter(Protocol):
         *,
         passenger_index: int | None = None,
     ) -> str:
-        """The **whole** link to the document, at GTS's own installation.
-
-        Handed to the customer's app so it can fetch the receipt itself,
-        which is why it is absolute: ``base_url`` is this installation's GTS
-        (the active credential's, a database setting — never a constant in
-        our code), and the rest is the vertical's to spell.
-
-        No call is made and no session is spent: this is a string. Whether
-        GTS serves it to a caller holding no agent session is GTS's rule, not
-        ours; ``receipt`` fetches the same document *with* our session for
-        clients that would rather we did.
-        """
-        ...
-
-    async def receipt(
-        self,
-        client: GtsClient,
-        order_number: int,
-        *,
-        passenger_index: int | None = None,
-    ) -> GtsDocument:
-        """The travel document of a **ticketed** order, as GTS renders it.
+        """Where a **ticketed** order's travel document lives, at GTS.
 
         The flight vertical's is the itinerary receipt ("маршрутная
-        квитанция"); another vertical's will be its own paper. Whatever it
-        is, GTS lays it out and we hand it on: the bytes are never stored,
-        because GTS renders them from the order it holds and a copy of ours
-        would be the staler of the two the moment anything changed.
+        квитанция"); another vertical's will be its own paper. GTS renders
+        it, GTS serves it, and the customer's app fetches it — this only
+        spells the address, from ``base_url`` (the installation's active GTS,
+        a database setting) and the vertical's own path.
 
-        ``passenger_index`` (0-based) narrows it to one traveller; without it
-        the document covers everyone on the order. Asking before the ticket
-        exists is the caller's mistake to prevent — GTS answers a refusal,
-        and that is an ``UpstreamError`` like any other.
+        Nothing is called and nothing is stored. ``passenger_index``
+        (0-based) narrows the document to one traveller; without it it covers
+        everyone on the order.
         """
         ...
 
