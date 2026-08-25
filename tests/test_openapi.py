@@ -313,7 +313,15 @@ def test_the_receipt_link_says_where_it_points_and_when_it_appears() -> None:
     field = SCHEMAS["OrderOut"]["properties"]["receipt_url"]
     assert field["examples"][0].endswith("product=flight")
     assert "ticketed" in field["description"]
-    assert "receipt_url" in PATHS["/api/v1/public/orders/{id}/"]["get"]["description"]
+    detail = PATHS["/api/v1/public/orders/{id}/"]["get"]
+    assert "receipt_url" in detail["description"]
+    # And the body a developer reads is a ticketed order, so the link is a
+    # link there and not the ``null`` a booked example can only show.
+    example = detail["responses"]["200"]["content"]["application/json"]["example"]
+    assert example["meta"] is None
+    assert example["data"]["order"]["status"] == "ticketed"
+    assert "/v1/receipt/pattern/view/" in example["data"]["order"]["receipt_url"]
+    assert example["data"]["ticketing"]["tickets"]
 
 
 def test_money_is_a_two_decimal_string() -> None:

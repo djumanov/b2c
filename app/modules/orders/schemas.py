@@ -715,6 +715,43 @@ _BOOKING_EXAMPLE: Final[dict[str, Any]] = {
 }
 
 
+#: The same order once GTS has issued the ticket — the state a client
+#: developer is looking for when the question is "where do I get the
+#: receipt?". Written out rather than derived, because the whole point is to
+#: show the fields a booked order can only leave ``null``: the link, the
+#: ticket numbers, and the stamps beside them. ``GET /public/orders/{id}/``
+#: publishes it (``router_public``), where a null survives Swagger's
+#: generation — a model-level example is stripped of them.
+TICKETED_EXAMPLE: Final[dict[str, Any]] = {
+    **_BOOKING_EXAMPLE,
+    "order": {
+        **_BOOKING_EXAMPLE["order"],
+        "status": "ticketed",
+        "message": "Chiptangiz tayyor. Yaxshi safar!",
+        "gts_status": "TI",
+        "paid_at": "2026-08-20T06:12:41Z",
+        "ticketed_at": "2026-08-20T06:13:05Z",
+        "receipt_url": (
+            "https://api.globaltravel.space/v1/receipt/pattern/view/"
+            "?order_number=61453&product=flight"
+        ),
+    },
+    "payment": {
+        **_BOOKING_EXAMPLE["payment"],
+        "status": "paid",
+        "paid_at": "2026-08-20T06:12:41Z",
+    },
+    "ticketing": {
+        "status": "ticketed",
+        "requested_at": "2026-08-20T06:12:42Z",
+        "ticketed_at": "2026-08-20T06:13:05Z",
+        "tickets": [{"passenger": "AZIMJON YUSUFOV", "ticket_number": "7653081297644"}],
+        "error": None,
+    },
+    "order_data": {**_BOOKING_EXAMPLE["order_data"], "status": "TI"},
+}
+
+
 class BookingResultOut(BaseModel):
     """The booking answer, the order detail and both payment answers — one shape.
 
@@ -1026,6 +1063,7 @@ class OrderAdminOut(BookingResultOut):
 
 __all__ = [
     "PAYMENT_VIEW_STATUSES",
+    "TICKETED_EXAMPLE",
     "BookingResultOut",
     "OrderAdminListItemOut",
     "OrderAdminOrderOut",
