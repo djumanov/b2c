@@ -11,8 +11,9 @@ endpoint, and the sweep — not the read — is what asks GTS; two polls racing 
 sweep must not be able to move an order twice.
 
 Paying begins with the price — ``reprice/`` asks GTS what the hold costs
-today, ``reprice/confirm/`` accepts it; ``payment/`` refuses until it has
-been — and is then three ``POST``s on the order — ``payment/`` sends the
+today and settles it there and then if nothing moved, ``reprice/confirm/``
+accepts a price that did; ``payment/`` refuses until one of the two has —
+and is then three ``POST``s on the order — ``payment/`` sends the
 code, ``payment/resend/`` sends it again for the same attempt,
 ``payment/confirm/`` charges with it — all under the tight ``payment`` rate
 limit, the three payment steps idempotent: a repeat answers with the order
@@ -124,9 +125,9 @@ async def get_order(
         "price move; `old_price` — what the order holds, the price the "
         "customer has been looking at; `new_price` — GTS's price today; then "
         "GTS's own `price_info` (`price`, `currency`, `fee_amount`, …) and "
-        "`price_details`, with agent commission fields removed. A question, "
-        "not a write: nothing on the order changes, `payment.amount` and "
-        "`payment.price_confirmed` stay what they were, no code is voided.\n\n"
+        "`price_details`, with agent commission fields removed. The price itself "
+        "is never moved here: `payment.amount` stays what it was and no code "
+        "already sent is voided.\n\n"
         "**Read `changed` and the two prices, not `price_info`.** `changed` "
         "is GTS's own verdict, and when it says the price did not move "
         "`new_price` equals `old_price` whatever `price_info` holds: GTS "
@@ -135,11 +136,14 @@ async def get_order(
         "currency — 294 EUR against an order booked at 343.04 USD, its own "
         "record still reading 343.04. That figure is passed through for the "
         "breakdown; it is not what this order costs.\n\n"
-        "`changed: false` — confirm straight away. `changed: true` — show "
-        "`new_price` (and `old_price`) and ask; once the customer accepts, "
-        "call `reprice/confirm/` — that is the step that updates the order "
-        "and unlocks `payment/`. GTS requires both before it will issue a "
-        "ticket. Repeatable at no cost.\n\n"
+        "**`changed: false` — go straight to `payment/`.** There is nothing "
+        "to confirm and GTS refuses to confirm it: this call is the whole "
+        "price step, and it leaves `payment.price_confirmed = true`.\n\n"
+        "**`changed: true` — show `new_price` (and `old_price`) and ask.** "
+        "Once the customer accepts, call `reprice/confirm/`: that is the "
+        "step that updates the order and unlocks `payment/`.\n\n"
+        "GTS wants a check before it will issue a ticket, so this call is "
+        "never skipped. Repeatable at no cost.\n\n"
         "Nothing is charged here. Under the `payment` rate limit."
     ),
     response_description=(
@@ -168,14 +172,14 @@ async def reprice_order(
     "/{id}/reprice/confirm/",
     summary="Pay — step 0b: accept the price",
     description=(
-        "The customer accepted the price `reprice/` showed: confirms it with "
-        "GTS, reads the order back and unlocks `payment/`. This is the step "
-        "that **writes** — `reprice/` only asks.\n\n"
-        "It re-checks the price with GTS first and sends `reprice_confirm` "
-        "only if that check says the price moved: with an unmoved price GTS "
-        "keeps nothing to confirm and refuses the call, so there is nothing "
-        "to send and the order's own price is the confirmed one. Either way "
-        "the confirmation counts and `payment/` opens.\n\n"
+        "The customer accepted the **new** price `reprice/` showed: confirms "
+        "it with GTS, reads the order back and unlocks `payment/`.\n\n"
+        "Only needed when `reprice/` answered `changed: true`. A price that "
+        "did not move is already settled by `reprice/` itself — GTS keeps "
+        "nothing to confirm for one and refuses the call — so calling this "
+        "then is harmless but pointless: it re-checks with GTS, finds "
+        "nothing moved, sends no confirmation and answers the order as it "
+        "stands.\n\n"
         "When the price did move, GTS answers with the price it confirmed, "
         "and that is the one stored and charged — it replaces whatever the "
         "order held, and a code already sent for another amount is void. "
@@ -230,8 +234,9 @@ async def confirm_price(
     "/{id}/payment/",
     summary="Pay — step 1: choose the card, receive the code",
     description=(
-        "Starts a payment for a `booked`, unpaid order whose price is "
-        "confirmed (`reprice/` then `reprice/confirm/`; otherwise `409`). "
+        "Starts a payment for a `booked`, unpaid order whose price has been "
+        "settled with GTS — `reprice/`, plus `reprice/confirm/` when it "
+        "said the price moved; otherwise `409`. "
         "Send `method` — a "
         "`code` from site-config `payment_methods` (the methods this "
         "installation has switched on; anything else is a `422` naming "

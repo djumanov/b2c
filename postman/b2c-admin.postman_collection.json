@@ -982,7 +982,7 @@
                 "reprice"
               ]
             },
-            "description": "GTS reprice_check with the verdict: changed (GTS's own price_changed), old_price (what the order holds — the price the customer has been shown), new_price (what it costs today), then GTS's data as is — price_info and price_details, commission fields removed. A question — nothing on the order changes. changed:false → run step 0b; changed:true → show new_price, then step 0b once the customer accepts. Show new_price, not price_info: with changed:false GTS's quote is the provider's own fare, in the provider's currency (294 EUR against an order booked at 343.04 USD), or missing altogether."
+            "description": "GTS reprice_check with the verdict: changed (GTS's own price_changed), old_price (what the order holds — the price the customer has been shown), new_price (what it costs today), then GTS's data as is — price_info and price_details, commission fields removed. The price never moves here. changed:false → the step is done, go straight to step 1: GTS refuses to confirm a price that did not move, so this call settles it (payment.price_confirmed becomes true). changed:true → show new_price, then step 0b once the customer accepts. Show new_price, not price_info: with changed:false GTS's quote is the provider's own fare, in the provider's currency (294 EUR against an order booked at 343.04 USD), or missing altogether."
           },
           "event": [
             {
@@ -1024,7 +1024,7 @@
                 "confirm"
               ]
             },
-            "description": "Re-checks the price with GTS and sends reprice_confirm only if that check says it moved — with an unmoved price GTS keeps nothing to confirm and refuses the call, so the order's own price is the confirmed one. Then the order is read back from GTS. The confirmed price is stored and charged: order.amount, payment.amount and order_data.price_info all say it, payment.price_confirmed becomes true and step 1 is unlocked (409 before this). A hold GTS has released since is 409 offer_expired."
+            "description": "Only for changed:true from step 0 — a price that did not move is already settled there, and GTS refuses to confirm one (400803). Re-checks with GTS and sends reprice_confirm only if that check says the price moved. Then the order is read back from GTS. The confirmed price is stored and charged: order.amount, payment.amount and order_data.price_info all say it, payment.price_confirmed becomes true and step 1 is unlocked (409 before this). A hold GTS has released since is 409 offer_expired."
           },
           "event": [
             {

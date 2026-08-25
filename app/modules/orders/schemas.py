@@ -524,9 +524,10 @@ class PaymentOut(BaseModel):
     amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
     price_confirmed: bool = Field(
         description=(
-            "`true` once `reprice/confirm/` accepted the price with GTS — "
-            "step 1 of payment refuses until then. `reprice/` alone never "
-            "changes it: checking is a question, confirming is the write."
+            "`true` once the price is settled with GTS — step 1 of payment "
+            "refuses until then. `reprice/` alone settles a price that did "
+            "not move (GTS refuses to confirm one that did not); a price "
+            "that moved is settled by `reprice/confirm/`."
         )
     )
     pay_before: datetime | None = Field(

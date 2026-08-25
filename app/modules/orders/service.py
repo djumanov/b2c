@@ -5,10 +5,12 @@ confirmed the booking; it is the flow's only write and its own transaction.
 There is nothing here for a failed booking on purpose: no row is the record.
 
 Paying starts with the price: ``reprice_order`` asks GTS what the hold
-costs today and hands the answer through untouched — a question, not a
-write — and ``confirm_price`` accepts it, which is when the order changes.
+costs today and hands the answer through untouched, and ``confirm_price``
+accepts a price that moved, which is when the order changes. A price that
+did **not** move is settled by the question itself — GTS refuses to confirm
+one — so that is the one thing the question writes.
 GTS's own lifecycle puts ``reprice_check`` and ``reprice_confirm`` before
-``ticketing`` and refuses a ticket without them. Then three calls —
+``ticketing`` and refuses a ticket without the check. Then three calls —
 ``start_payment`` sends the cardholder a code, ``resend_payment_otp`` sends
 it again for the same attempt, ``confirm_payment`` charges with it — and
 every write between them follows one shape: **lock → re-read → validate →
@@ -490,11 +492,16 @@ def _require_payable(order: Order) -> None:
 
 
 def _require_price_confirmed(order: Order) -> None:
-    """Money moves only for a price the customer has seen and GTS has confirmed."""
+    """Money moves only for a price settled with GTS — checked, and accepted
+    where there was something to accept.
+
+    ``reprice/`` settles it on its own when GTS says the price stands; only a
+    price that moved needs ``reprice/confirm/`` as well.
+    """
     if order.price_confirmed_at is None:
         raise Conflict(
-            "The price has not been confirmed — call reprice/ and "
-            "reprice/confirm/ before paying"
+            "The price has not been checked with GTS — call reprice/ (and "
+            "reprice/confirm/ if it says the price moved) before paying"
         )
 
 
@@ -639,23 +646,72 @@ def _price_unchanged(
     return RepriceOut(changed=False, old_price=old, new_price=old, **(answer or {}))
 
 
+async def _settle_unmoved_price(
+    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
+) -> None:
+    """A check that says the price stands is the whole price step: record it.
+
+    There is no second step to take. GTS keeps nothing to confirm for a price
+    that did not move and refuses ``reprice_confirm`` outright (``400803``,
+    live 2026-08-25), so waiting for that call before ``payment/`` would wait
+    for one GTS will not accept — while its own lifecycle asks only that a
+    ``reprice_check`` ran before the ticket. That check just ran, at the
+    price the customer is looking at.
+
+    Only for an order that could still be paid: the question is free to ask
+    about a paid, ticketing or cancelled order (``_require_payable`` is what
+    says which), and it writes nothing for those. The amount is untouched —
+    nothing moved — so no open attempt is disturbed either.
+    """
+    order = await _owned_locked(session, customer_id, order_id)
+    try:
+        _require_payable(order)
+    except Conflict:
+        return
+    if order.price_confirmed_at is not None:  # settled while we asked GTS
+        return
+    order.price_confirmed_at = utcnow()
+    session.add(
+        lifecycle.event(
+            order,
+            event="price.confirmed",
+            actor=lifecycle.CUSTOMER,
+            data=_price_data(order.amount, order.currency),
+        )
+    )
+    await session.commit()
+    logger.info(
+        "order_price_confirmed",
+        order_id=str(order.id),
+        gts_order_number=order.gts_order_number,
+        amount=f"{order.amount} {order.currency}",
+        step="reprice_check",
+    )
+
+
 async def reprice_order(
     session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
 ) -> RepriceOut:
     """Step 0 of paying: what the held order costs today — GTS's answer, as is,
     with the one comparison the client would otherwise make itself.
 
-    A question, not a write. GTS's own lifecycle puts ``reprice_check`` and
-    ``reprice_confirm`` between booking and ticketing, and its live server
-    refuses to ticket an order that skipped them; the customer's app asks
-    here, reads ``changed`` / ``old_price`` / ``new_price``, and — once the
-    customer accepts — calls ``confirm_price``, which is the step that
-    changes the order. ``old_price`` is the order's own figure (what the
-    customer has been shown); ``new_price`` is GTS's today. Nothing is
-    stored or moved here, so the rest of the answer is the one GTS gave
-    (agent commission stripped, as everywhere on the customer surface):
-    checking again costs nothing and changes nothing. Somebody else's order
-    is a ``404``, like every read.
+    GTS's own lifecycle puts ``reprice_check`` and ``reprice_confirm`` between
+    booking and ticketing, and its live server refuses to ticket an order that
+    skipped the check; the customer's app asks here, reads ``changed`` /
+    ``old_price`` / ``new_price``, and — when the price moved and the customer
+    accepts — calls ``confirm_price``. ``old_price`` is the order's own figure
+    (what the customer has been shown); ``new_price`` is GTS's today. The
+    price itself is never moved here: the answer is GTS's own (agent
+    commission stripped, as everywhere on the customer surface), and asking
+    again costs nothing. Somebody else's order is a ``404``, like every read.
+
+    **A price that did not move is settled by this call alone**
+    (``_settle_unmoved_price``): GTS refuses ``reprice_confirm`` when there is
+    nothing to confirm, so requiring that step would require a call GTS will
+    not take. The order is marked price-confirmed here and ``payment/`` opens
+    — the one thing this endpoint writes, and only for an order that could
+    still be paid. A price that moved is untouched: it is ``reprice/confirm/``
+    that accepts it.
 
     **GTS's own verdict decides**, not our comparison. Its check sends
     ``price_changed`` and, when that is ``false``, a figure that is the
@@ -672,20 +728,28 @@ async def reprice_order(
     order = await _owned(session, customer_id, order_id)
     price = await _adapter(order).reprice(client, order.gts_order_number)
     old = _order_money(order)
-    if price is None:
-        return _price_unchanged(order, old)
-    if not _price_moved(old, price):
-        return _price_unchanged(order, old, strip_commission(price.raw))
-    new = Money(amount=price.amount, currency=price.currency)
-    logger.info(
-        "order_repriced",
-        order_id=str(order.id),
-        gts_order_number=order.gts_order_number,
-        amount=f"{price.amount} {price.currency}",
-        changed=True,
+    if price is not None and _price_moved(old, price):
+        logger.info(
+            "order_repriced",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            amount=f"{price.amount} {price.currency}",
+            changed=True,
+        )
+        return RepriceOut(
+            changed=True,
+            old_price=old,
+            new_price=Money(amount=price.amount, currency=price.currency),
+            **strip_commission(price.raw),
+        )
+    # The price stands. Built first: it raises, before anything is written,
+    # when neither side named a figure at all.
+    answer = _price_unchanged(
+        order, old, strip_commission(price.raw) if price is not None else None
     )
-    answer: dict[str, Any] = strip_commission(price.raw)
-    return RepriceOut(changed=True, old_price=old, new_price=new, **answer)
+    if order.price_confirmed_at is None:
+        await _settle_unmoved_price(session, customer_id, order_id)
+    return answer
 
 
 async def confirm_price(

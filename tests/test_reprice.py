@@ -178,11 +178,17 @@ async def test_reprice_asks_gts_even_for_an_unconfirmed_or_paid_order(
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
-    """Nothing of ours gates a question; GTS answers or refuses on its own."""
+    """Nothing of ours gates a question; GTS answers or refuses on its own.
+
+    What the answer settles depends on the order: an unmoved price is the
+    settled price for one still waiting to be paid, and nothing at all for a
+    paid one — there is no payment left for it to open."""
     mock_gts_signin()
     check = mock_gts_reprice_check(gts_price(20.0))
     fresh = await make_order(db_session, customer, price_confirmed_at=None)
-    paid = await make_order(db_session, customer, payment_status="paid")
+    paid = await make_order(
+        db_session, customer, payment_status="paid", price_confirmed_at=None
+    )
 
     for order in (fresh, paid):
         response = await _reprice(client, order, customer_headers)
@@ -190,7 +196,11 @@ async def test_reprice_asks_gts_even_for_an_unconfirmed_or_paid_order(
         assert response.json()["data"]["price_info"]["price"] == 20.0
     assert check.call_count == 2
     await db_session.refresh(fresh)
-    assert fresh.price_confirmed_at is None
+    assert fresh.price_confirmed_at is not None
+    assert await _events(db_session, fresh) == [("price.confirmed", UZS_20)]
+    await db_session.refresh(paid)
+    assert paid.price_confirmed_at is None
+    assert await _event_names(db_session, paid) == []
 
 
 @respx.mock
@@ -342,6 +352,52 @@ async def test_an_answer_without_a_price_means_the_price_did_not_change(
 
 
 @respx.mock
+async def test_an_unmoved_price_opens_payment_without_the_confirm_step(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """The check **is** the price step when nothing moved.
+
+    GTS keeps nothing to confirm for a price that did not move and refuses
+    ``reprice_confirm`` outright, so ``payment/`` cannot wait for that call.
+    It waits for the price to be settled with GTS, and ``reprice/`` settles
+    it: one question, then the payment screen.
+    """
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_reprice_check(gts_price(294.0, "EUR", changed=False))
+    confirm = mock_gts_reprice_confirm(error="Срок действия предложения истёк")
+    order = await make_order(db_session, customer, price_confirmed_at=None)
+
+    refused = await _start(client, order, customer_headers)
+    assert refused.status_code == 409
+    assert "not been checked with GTS" in refused.json()["errors"][0]["message"]
+
+    answer = await _reprice(client, order, customer_headers)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["data"]["changed"] is False
+
+    started = await _start(
+        client, order, {**customer_headers, "Idempotency-Key": "after-the-check"}
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["data"]["payment"]["status"] == "awaiting_otp"
+    assert started.json()["data"]["payment"]["amount"] == UZS_20
+    # GTS was never asked to confirm — it would have refused.
+    assert confirm.call_count == 0
+    await db_session.refresh(order)
+    assert order.price_confirmed_at is not None
+    assert str(order.amount) == "20.00"
+    assert await _event_names(db_session, order) == [
+        "price.confirmed",
+        "payment.started",
+    ]
+
+
+@respx.mock
 async def test_no_price_on_either_side_is_502(
     client: httpx.AsyncClient,
     customer: Customer,
@@ -396,7 +452,7 @@ async def test_confirm_accepts_the_price_and_unlocks_payment(
 
     refused = await _start(client, order, customer_headers)
     assert refused.status_code == 409
-    assert "not been confirmed" in refused.json()["errors"][0]["message"]
+    assert "not been checked with GTS" in refused.json()["errors"][0]["message"]
     assert fake_provider.calls == []
 
     response = await _confirm_price(client, order, customer_headers)
