@@ -150,8 +150,11 @@ TAGS: Final[list[dict[str, Any]]] = [
             '`GET …/{id}/` is what the "is my ticket ready?" screen polls; '
             "it never writes. `order.status` is one of six words and "
             "`order.message` the sentence to show for it. Once the ticket is "
-            "issued, `order.receipt_url` is GTS's own link to the itinerary "
-            "receipt — open it directly to download the travel document."
+            "issued, `order.receipt_url` points at `GET …/{id}/receipt/`, "
+            "which answers with the itinerary receipt itself — the file, not "
+            "the envelope. GTS renders that document but will not serve it "
+            "to a browser, so this API fetches it with the agent session and "
+            "passes the bytes through."
         ),
     },
     {

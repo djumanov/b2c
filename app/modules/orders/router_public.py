@@ -24,9 +24,12 @@ call. Every failure releases the key — nothing is charged at ``start`` or
 ``resend``, and ``confirm`` answers a lost provider call with the order
 rather than an error, so there is no outcome a kept claim would guard.
 
-Once the ticket exists the order answer carries ``order.receipt_url`` — GTS's
-own link to the itinerary receipt. The document is never fetched through this
-API: GTS renders it and the customer's app opens the link.
+``receipt/`` is the end of the road: once the ticket exists GTS will render
+the itinerary receipt, but it will not serve it to a customer — its receipt
+page wants the agent session's cookies and answers ``401`` without them. So
+the bytes are fetched here, with ours, and handed on; ``order.receipt_url``
+points at this route, and this is the one answer on the router that is a file
+rather than the envelope.
 
 ``cancel/`` is the way out of the same stretch: while the order is unpaid the
 customer can hand the seat back, and GTS is told before our own record moves,
@@ -38,7 +41,7 @@ Swagger: what to send, what comes back, what to do next.
 
 import uuid
 
-from fastapi import Depends
+from fastapi import Depends, Response
 
 from app.api.deps import (
     CurrentCustomer,
@@ -54,6 +57,11 @@ from app.api.listing import ListQuery, list_query_dep
 from app.api.openapi import error_responses
 from app.db.session import SessionDep
 from app.modules.orders import service
+from app.modules.orders.receipt import (
+    RECEIPT_RESPONSES,
+    PassengerIndex,
+    receipt_response,
+)
 from app.modules.orders.schemas import (
     TICKETED_EXAMPLE,
     BookingResultOut,
@@ -108,10 +116,10 @@ async def list_orders(
         "The order as it stands: `order.status` and `order.message` for the "
         "screen, `payment` for the payment step, `ticketing` for the ticket, "
         "`order_data` for display detail. Once the ticket is issued, "
-        "**`order.receipt_url`** is the link to the itinerary receipt: it "
-        "points at GTS, which renders the document, and is opened directly "
-        "— add `&passenger_index=0` for one traveller's copy. It is `null` "
-        "while there is no ticket. **Never writes** — poll it freely "
+        "**`order.receipt_url`** is where the itinerary receipt is "
+        "downloaded — `GET …/{id}/receipt/` on this API, fetched with the "
+        "same token, answering with the file itself; `null` while there is "
+        "no ticket. **Never writes** — poll it freely "
         "while `order.status` is `ticket_waiting` or `payment.status` is "
         "`processing`; the background sweep settles those and this read "
         "reflects it. Another customer's order is a `404`, not a `403`."
@@ -147,6 +155,53 @@ async def get_order(
 ) -> BookingResultOut:
     return await service.get_order(
         session, customer.id, id, language=language.requested
+    )
+
+
+@router.get(
+    "/{id}/receipt/",
+    summary="Receipt — download the ticket's itinerary receipt",
+    description=(
+        "The itinerary receipt of a **ticketed** order, exactly as GTS "
+        "renders it — the document the passenger travels with. The answer is "
+        "the file itself (a PDF), **not the envelope**: fetch it with the "
+        "customer's token like any other call and save or display what comes "
+        "back. `Content-Type` says what it is and `Content-Disposition` "
+        "carries a filename.\n\n"
+        "```js\n"
+        "const r = await fetch(order.receipt_url, "
+        "{headers: {Authorization: `Bearer ${token}`}});\n"
+        "const blob = await r.blob();\n"
+        "```\n\n"
+        "`order.receipt_url` on the order answer is this path, and it is "
+        "`null` until the ticket exists — that is the flag to show the "
+        "download button on. Asking earlier is a `409`: an order still being "
+        "ticketed has no receipt to render.\n\n"
+        "GTS renders the document but will not serve it to a browser — its "
+        "receipt page answers `401` without the agent session — so this API "
+        "fetches it with its own and passes the bytes through.\n\n"
+        "Add `?passenger_index=0` for a single traveller's copy; without it "
+        "the document covers everyone on the order.\n\n"
+        "Nothing is stored on our side: every call renders the receipt at "
+        "GTS, so what the customer downloads is always the current one. Safe "
+        "to repeat, and it changes nothing."
+    ),
+    response_description=(
+        "The receipt file, with GTS's own content type and a filename."
+    ),
+    response_class=Response,
+    responses=RECEIPT_RESPONSES,
+)
+async def download_receipt(
+    id: uuid.UUID,
+    customer: CurrentCustomer,
+    session: SessionDep,
+    passenger_index: PassengerIndex = None,
+) -> Response:
+    return receipt_response(
+        await service.order_receipt(
+            session, customer.id, id, passenger_index=passenger_index
+        )
     )
 
 
