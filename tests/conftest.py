@@ -602,10 +602,19 @@ def gts_ticketed_order(**overrides: Any) -> dict[str, Any]:
 
 
 def mock_gts_ticketing(
-    order: dict[str, Any] | None = None, *, error: str | None = None
+    order: dict[str, Any] | None = None,
+    *,
+    error: str | None = None,
+    nested: bool = True,
 ) -> Any:
-    """``POST /v1/content/ticketing/``: the order under ``order`` (not ``data``),
-    or GTS's refusal — HTTP 200, ``status: "error"``, the reason in ``message``."""
+    """``POST /v1/content/ticketing/``, or GTS's refusal — HTTP 200,
+    ``status: "error"``, the reason in ``message``.
+
+    The default is the shape the **live** server answers with: the order
+    under ``data.order``, two wrappers deep (orders 4904 and 4905,
+    2026-08-25). ``nested=False`` is the collection's flatter
+    ``order``, still read by installations that send it.
+    """
     import respx
 
     if error is not None:
@@ -616,11 +625,9 @@ def mock_gts_ticketing(
             "data": None,
         }
     else:
-        body = {
-            "status": "success",
-            "code": 100,
-            "order": order if order is not None else gts_ticketed_order(),
-        }
+        found = order if order is not None else gts_ticketed_order()
+        body = {"status": "success", "code": 100}
+        body["data" if nested else "order"] = {"order": found} if nested else found
     return respx.post(f"{GTS}/v1/content/ticketing/").mock(
         return_value=httpx.Response(200, json=body)
     )

@@ -122,6 +122,32 @@ async def test_paid_confirm_tickets_inline_ti(
 
 
 @respx.mock
+async def test_ticketing_answer_flat_under_order_is_read_too(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """The collection's shallower answer — the order straight under ``order``.
+
+    Live GTS wraps it twice (``data.order``); an installation that wraps it
+    once must still be read, and reading the wrapper instead of the order
+    left orders 4904 and 4905 waiting on a ticket GTS had started.
+    """
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_ticketing(nested=False)
+    order = await make_order(db_session, customer)
+
+    data = await _pay(client, order, customer_headers)
+
+    assert data["ticketing"]["status"] == "ticketed"
+    assert data["order"]["gts_status"] == "TI"
+    assert data["order_data"]["passengers"][0]["ticket_number"] == TICKET
+
+
+@respx.mock
 async def test_answer_pw_stays_processing_with_wait_message(
     client: httpx.AsyncClient,
     customer: Customer,

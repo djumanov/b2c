@@ -67,21 +67,39 @@ def is_deposit_empty(message: str | None) -> bool:
     return any(phrase in text for phrase in _DEPOSIT_PHRASES)
 
 
-def order_body(envelope: dict[str, Any]) -> dict[str, Any] | None:
-    """The order inside a GTS envelope — wherever this endpoint put it.
+#: How many wrappers are peeled before we stop looking. Live ``ticketing``
+#: uses two; nothing has ever used three.
+_MAX_NESTING: Final = 3
 
-    ``ticketing`` and ``cancel`` nest it under ``order``, ``booking`` and the
-    reads under ``data``, and older installations answer with the order flat
-    at the top. Looked for in that order; a flat answer counts only when it
-    carries an ``order_number``, so the envelope's own ``status: "success"``
-    is never mistaken for an order's status.
+
+def order_body(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """The order inside a GTS envelope — however deep this endpoint buried it.
+
+    ``cancel`` nests it under ``order``, ``booking`` and the reads under
+    ``data``, older installations answer with it flat at the top — and live
+    ``ticketing`` nests it under **both**: ``data.order`` (orders 4904 and
+    4905, 2026-08-25). So the wrappers are peeled one by one rather than
+    stripped once, and ``order_number`` says we have arrived: every GTS order
+    carries it and no envelope does, so the envelope's own
+    ``status: "success"`` is never mistaken for an order's status.
+
+    Handing back a wrapper is worse than handing back nothing. It has no
+    ``status``, so the ticketing step read an empty one, wrote the wrapper
+    over the order's own body — emptying its routes and passengers — and sat
+    half an hour waiting for a ticket GTS had already started issuing.
+    ``None`` reaches the caller as the ``502`` it is.
     """
-    for key in ("order", "data"):
-        found = envelope.get(key)
-        if isinstance(found, dict):
-            return found
-    if "order_number" in envelope:
-        return envelope
+    body = envelope
+    for _ in range(_MAX_NESTING):
+        if "order_number" in body:
+            return body
+        nested = next(
+            (body[key] for key in ("order", "data") if isinstance(body.get(key), dict)),
+            None,
+        )
+        if nested is None:
+            return None
+        body = nested
     return None
 
 
