@@ -131,10 +131,18 @@ TAGS: Final[list[dict[str, Any]]] = [
     {
         "name": "orders",
         "description": (
-            "The customer's bookings and the two-step payment. "
-            "`POST …/payment/` registers the card with the chosen `method` "
-            "(a `code` from site-config `payment_methods`) and sends the "
-            "cardholder a code (`payment.status = awaiting_otp`); "
+            "The customer's bookings, the price step and the payment. "
+            "GTS prices a held booking again before it will ticket it, so "
+            "paying starts with the price: `POST …/reprice/` asks GTS what "
+            "the order costs today and hands its answer through as is — a "
+            "question, nothing changes; `POST …/reprice/confirm/` is the "
+            "customer accepting it — GTS confirms, the order is re-read and "
+            "everything (`order.amount`, `payment.amount`, `order_data`) "
+            "now says the confirmed price. Then `POST …/payment/` registers "
+            "the card with the chosen `method` (a `code` from site-config "
+            "`payment_methods`) and sends the cardholder a code "
+            "(`payment.status = awaiting_otp`) — refused until the price is "
+            "confirmed; `POST …/payment/resend/` sends the same code again; "
             "`POST …/payment/confirm/` charges with it, and on `paid` the "
             "ticket is requested from GTS in the same call. "
             '`GET …/{id}/` is what the "is my ticket ready?" screen polls; '
