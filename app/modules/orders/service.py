@@ -535,6 +535,17 @@ async def _fetch_receipt(
     document = await adapter.receipt(
         client, order.gts_order_number, passenger_index=passenger_index
     )
+    if document is None:
+        # GTS has the ticket and has drawn no paper for it yet — its own
+        # answer, not a failure of ours, and not the customer's fault either.
+        # A ``409`` says "not now"; the sentence says whose "not now" it is.
+        logger.warning(
+            "gts_receipt_absent",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            passenger_index=passenger_index,
+        )
+        raise Conflict("GTS has not made the receipt for this order available yet")
     extension = RECEIPT_TYPES.get(document.content_type)
     if extension is None:
         # GTS rendered something we have not seen it render before. The bytes

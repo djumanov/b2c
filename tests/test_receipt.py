@@ -181,7 +181,55 @@ async def test_a_document_we_have_not_met_is_served_as_bytes_to_save(
     )
 
 
+@respx.mock
+async def test_the_content_type_gts_puts_on_it_is_not_believed(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """Live GTS labels every answer `application/json`, documents included.
+
+    Reading the label instead of the bytes turned a rendered receipt into a
+    parse failure and a `502` (2026-08-25). The first bytes decide.
+    """
+    mock_gts_signin()
+    mock_gts_receipt(b"<html><body>Marshrut kvitansiyasi</body></html>")
+    order = await _ticketed(db_session, customer)
+
+    response = await _download(client, order, customer_headers)
+
+    assert response.status_code == 200, response.text
+    # Starlette appends the charset to a text type; the type is ours.
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="receipt-UBPLKW.html"'
+    )
+
+
 # --- when there is nothing to download ------------------------------------------
+
+
+@respx.mock
+async def test_gts_having_drawn_nothing_is_not_our_failure(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+) -> None:
+    """`None` in the body is GTS saying it has no such document (live shape).
+
+    A `502` would blame the connection for an answer that arrived intact, so
+    it is a `409`: the ticket is ours, the paper is not drawn *yet*.
+    """
+    mock_gts_signin()
+    mock_gts_receipt(b"None")
+    order = await _ticketed(db_session, customer)
+
+    response = await _download(client, order, customer_headers)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["errors"][0]["code"] == "conflict"
 
 
 @respx.mock

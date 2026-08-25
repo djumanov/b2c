@@ -107,15 +107,20 @@ class GtsClient(Protocol):
 
     async def download(
         self, path: str, *, params: dict[str, Any] | None = None, timeout: float | None
-    ) -> GtsDocument:
+    ) -> GtsDocument | None:
         """A ``GET`` whose answer is a **document**, not an envelope.
 
-        Nothing is parsed and nothing is unwrapped; the bytes are the answer.
-        A refusal still arrives GTS's way — a JSON envelope, as often as not
-        under HTTP 200 — so the implementation looks for one before it
-        believes it holds a file, and raises from the same catalogue as every
-        other call. An empty body is a failure too: a receipt of no bytes is
-        not a receipt.
+        Nothing is parsed and nothing is unwrapped; the bytes are the answer,
+        and what they are is read off the bytes — GTS marks every answer
+        ``application/json``, its documents included, so its ``Content-Type``
+        settles nothing.
+
+        ``None`` means **GTS has no such document**, which it says by
+        rendering Python's ``None`` into the body. It is not a failure and
+        the caller is the one who can explain it — the same arrangement as
+        ``reprice`` answering with no price. A refusal *is* a failure and
+        raises from the catalogue like every other call, as does an empty
+        body: a receipt of no bytes is not a receipt.
         """
         ...
 

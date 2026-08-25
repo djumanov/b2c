@@ -63,6 +63,19 @@ _LOCK_TTL_SECONDS: Final = 20
 _WAIT_DEADLINE_SECONDS: Final = 30.0
 _POLL_INTERVAL_SECONDS: Final = 0.2
 
+#: How GTS says a document does not exist: Python's ``None`` rendered into
+#: the response body, under ``content-type: application/json`` (live, 2026-08-25).
+#: ``null`` is the same answer spelled properly, should it ever arrive.
+_NO_DOCUMENT: Final = frozenset({b"None", b"null", b'"None"'})
+
+#: What a document's first bytes say it is. GTS labels everything
+#: ``application/json``, so its ``Content-Type`` is no help; these two cover
+#: what a receipt can be, and anything else is bytes to save.
+_MAGIC: Final[tuple[tuple[bytes, str], ...]] = (
+    (b"%PDF-", "application/pdf"),
+    (b"<", "text/html"),
+)
+
 #: The statuses that mean "your session is gone", not "your request is bad".
 #: Django answers 401 or 403 depending on middleware, so both are treated as
 #: session death; the log line keeps the real one for tuning against live GTS.
@@ -223,32 +236,42 @@ class GtsHttpClient:
         *,
         params: dict[str, Any] | None = None,
         timeout: float | None,
-    ) -> GtsDocument:
+    ) -> GtsDocument | None:
         """The bytes of a document GTS renders — see ``GtsClient.download``.
 
-        The one call whose success is *not* JSON, which is exactly how a
-        failure is told apart from an answer here: GTS reports a refusal in
-        its envelope, under HTTP 200 as readily as under a 4xx, so a JSON
-        body is handed to ``_translate`` and never to the caller. Should the
-        envelope claim success while holding data where a file was asked for,
-        that is still not a document and still a ``502``.
+        **The answer is read, not its label.** GTS serves its documents from
+        the same DRF stack as its data and marks every one of them
+        ``application/json``, including the ones that are not (live, orders
+        4903 and 4905, 2026-08-25: ``content-type: application/json`` over a
+        four-byte body reading ``None``). Believing the header turned a
+        rendered receipt into a parse failure, so the first bytes decide what
+        this is, and the type served on is sniffed from them.
+
+        Three things can come back. A **document** — anything that is not
+        JSON — is returned as one. GTS's word for *"there is nothing here"*
+        is Python's ``None`` rendered into the body, and that is ``None``
+        here too: not a failure, and the caller's to explain. A **JSON
+        envelope** is data where a file was asked for: a refusal raises with
+        GTS's own words through ``_translate``, and an envelope that reports
+        success but carries no file is "nothing here" as well.
         """
         response = await self._send(
             "GET", path, params=params, json=None, timeout=timeout
         )
-        content_type = response.headers.get("content-type", "")
-        media_type = content_type.split(";")[0].strip().lower()
-        if response.status_code != httpx.codes.OK or media_type == "application/json":
-            _translate(path, response)
-            logger.warning("gts_document_is_data", path=path)
-            raise UpstreamError("GTS answered with data where a document was asked for")
-        if not response.content:
+        if response.status_code != httpx.codes.OK:
+            _translate(path, response)  # raises: a document never 4xx/5xx
+        body = response.content.strip()
+        if body in _NO_DOCUMENT:
+            logger.info("gts_document_absent", path=path)
+            return None
+        if not body:
             logger.warning("gts_document_empty", path=path)
             raise UpstreamError("GTS returned an empty document")
-        return GtsDocument(
-            content=response.content,
-            content_type=media_type or "application/octet-stream",
-        )
+        if body[:1] in b"{[":
+            _translate(path, response)  # raises on GTS's own refusal
+            logger.warning("gts_document_is_data", path=path)
+            return None
+        return GtsDocument(content=response.content, content_type=_media_type(body))
 
     async def _request(
         self,
@@ -317,6 +340,14 @@ class GtsHttpClient:
                 continue
             return response
         raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _media_type(body: bytes) -> str:
+    """What the bytes are, since the header will not say."""
+    for magic, media_type in _MAGIC:
+        if body.startswith(magic):
+            return media_type
+    return "application/octet-stream"
 
 
 def client_for(credential: ActiveGtsCredential) -> GtsClient:
