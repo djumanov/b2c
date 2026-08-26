@@ -16,7 +16,7 @@ import respx
 from app.api.errors import UpstreamError, UpstreamTimeout
 from app.core.logging import request_id_var
 from app.core.money import Money
-from app.providers.payments.base import CardDetails, PaymentDeclined
+from app.providers.payments.base import CardDetails, OtpRejected, PaymentDeclined
 from app.providers.payments.payme import (
     FIELDS,
     PAYME_PRODUCTION_URL,
@@ -289,33 +289,28 @@ async def test_confirm_verifies_then_pays_once() -> None:
 
 
 @respx.mock
-async def test_confirm_wrong_code_is_failed_and_nothing_is_paid() -> None:
+async def test_confirm_wrong_code_is_rejected_and_nothing_is_paid() -> None:
+    """``cards.verify`` refusing is not a verdict on the payment: it happens
+    before ``receipts.pay``, so the attempt is left for another code."""
     payme = mock_payme({"cards.verify": RpcError(-31103, "Неверный код подтверждения")})
 
-    outcome = await _provider().confirm(reference=_reference(), otp="000000")
+    with pytest.raises(OtpRejected, match="Неверный код подтверждения"):
+        await _provider().confirm(reference=_reference(), otp="000000")
 
-    assert outcome.status == "failed"
-    assert outcome.error == "Неверный код подтверждения"
-    assert outcome.raw["error"] == {
-        "code": -31103,
-        "message": "Неверный код подтверждения",
-    }
     assert payme.count("receipts.pay") == 0
 
 
 @respx.mock
-async def test_confirm_system_error_at_verify_is_failed_with_a_neutral_sentence() -> (
+async def test_confirm_system_error_at_verify_is_rejected_with_a_neutral_sentence() -> (
     None
 ):
-    """Nothing is charged by ``cards.verify``, so the attempt may end; Payme's
-    system wording is not for a customer to read."""
+    """Nothing is charged by ``cards.verify``, so the code may be typed again;
+    Payme's system wording is not for a customer to read."""
     payme = mock_payme({"cards.verify": RpcError(-32400, "System error")})
 
-    outcome = await _provider().confirm(reference=_reference(), otp="666666")
+    with pytest.raises(OtpRejected, match="could not be checked"):
+        await _provider().confirm(reference=_reference(), otp="666666")
 
-    assert outcome.status == "failed"
-    assert outcome.error == "The card was declined"
-    assert outcome.raw["error"]["code"] == -32400
     assert payme.count("receipts.pay") == 0
 
 

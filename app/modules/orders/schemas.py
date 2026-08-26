@@ -546,12 +546,15 @@ class PaymentOut(BaseModel):
     status: PaymentViewStatus = Field(
         description=(
             "`pending` — nothing started; `awaiting_otp` — a code was sent, "
-            "call `payment/confirm/` with it; `processing` — the charge was "
-            "sent and the answer is not back, keep polling; `paid`; `failed` — "
-            "the last attempt was declined or the code was wrong, see `error`, "
-            "start again; `cancelled` — the order was released before any "
-            "money moved; `refunding` / `refunded` / `refund_failed` — a refund "
-            "marked by support. Payment attempts never change `order.status`."
+            "call `payment/confirm/` with it (also where a refused code "
+            "lands: see `error`, then send another code or `payment/resend/` "
+            "— the attempt is still open and nothing was charged); "
+            "`processing` — the charge was sent and the answer is not back, "
+            "keep polling; `paid`; `failed` — the charge was declined, see "
+            "`error`, start again from step 1; `cancelled` — the order was "
+            "released before any money moved; `refunding` / `refunded` / "
+            "`refund_failed` — a refund marked by support. Payment attempts "
+            "never change `order.status`."
         )
     )
     amount: Money | None = Field(description=f"What is charged. {_MONEY_OR_NULL}")
@@ -586,7 +589,9 @@ class PaymentOut(BaseModel):
     error: str | None = Field(
         default=None,
         description=(
-            "The provider's reason when `status` is `failed`, written for a person."
+            "The provider's reason when `status` is `failed`, or why the last "
+            "code was refused while `status` is `awaiting_otp`. Written for a "
+            "person; cleared as soon as another code or a resend is sent."
         ),
     )
 
@@ -837,8 +842,8 @@ class OrderEventOut(BaseModel):
     event: str = Field(
         description=(
             "`<lifecycle>.<new value>` — `order.created`, `payment.started`, "
-            "`payment.confirming`, `payment.paid`, `payment.failed`, "
-            "`payment.refunding`, `ticketing.requested`, "
+            "`payment.confirming`, `payment.otp_rejected`, `payment.paid`, "
+            "`payment.failed`, `payment.refunding`, `ticketing.requested`, "
             "`ticketing.processing`, `ticketing.ticketed`, `ticketing.failed`, "
             "`order.cancelled`…"
         )
@@ -878,7 +883,12 @@ class PaymentAttemptAdminOut(BaseModel):
     amount: Money = Field(description="What this attempt would charge.")
     card_last4: str | None = Field(description="Last four digits of the card.")
     phone_hint: str | None = Field(description="The masked phone the code went to.")
-    error: str | None = Field(description="The provider's reason on `failed`.")
+    error: str | None = Field(
+        description=(
+            "The provider's reason on `failed`, or why the last code was "
+            "refused while the attempt is still open."
+        )
+    )
     paid_at: datetime | None = Field(description="When the charge landed.")
 
 

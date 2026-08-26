@@ -17,7 +17,8 @@ JSON-RPC calls on Payme's (``POST {base}/api``):
 ``confirm``
     ``cards.verify`` with the code, then ``receipts.pay`` with the token — the
     one call that moves money, sent at most once per attempt because the
-    orders module commits ``confirming`` before it calls here.
+    orders module commits ``confirming`` before it calls here. A code
+    ``cards.verify`` will not take never reaches ``receipts.pay``.
 ``status``
     ``receipts.check`` — the receipt's state, for a ``receipts.pay`` whose
     answer was lost.
@@ -40,7 +41,11 @@ of three ways, and each lands differently:
   at ``cards.*`` during ``start`` that is ``PaymentDeclined`` (the customer
   may try another card); at ``receipts.create`` it is ``UpstreamError`` (the
   amount or the cashbox, never the card — the customer must not be told to
-  try another one); at ``confirm`` it is a ``failed`` outcome.
+  try another one); at ``receipts.pay`` it is a ``failed`` outcome.
+* A refusal at ``cards.verify`` — the wrong code, most often — is
+  ``OtpRejected`` whatever its code, business or system: that call is the one
+  Payme runs before ``receipts.pay``, so no money was touched and the attempt
+  is left open for another code.
 * A receipt state: 4 and 5 are paid, 50 is cancelled, anything else is still
   in progress and the sweep asks again.
 
@@ -66,6 +71,7 @@ from app.core.logging import REQUEST_ID_HEADER, get_logger, request_id_var
 from app.core.money import Money
 from app.providers.payments.base import (
     CardDetails,
+    OtpRejected,
     PaymentDeclined,
     PaymentOutcome,
     PaymentStart,
@@ -103,6 +109,8 @@ CANCELLED_STATES: Final[frozenset[int]] = frozenset({50})
 #: A sentence, not a rendered error page — the same bound the GTS client uses.
 _MAX_ERROR_CHARS: Final = 300
 _DECLINED: Final = "The card was declined"
+_WRONG_CODE: Final = "The code is wrong"
+_VERIFY_FAILED: Final = "The code could not be checked — please try again"
 _UNEXPECTED_SHAPE: Final = "Payme answered in an unexpected shape"
 _NOT_OURS: Final = "this payment was not started with Payme"
 _REFERENCE_VERSION: Final = 1
@@ -406,18 +414,17 @@ class PaymeProvider:
                 timeout=PaymeTimeouts.DEFAULT_SECONDS,
             )
         except _Refusal as refusal:
-            # Nothing has been charged yet, whatever the code: the attempt is
-            # over and the customer may start again. A system code gets a
-            # neutral sentence — Payme's own is not written for a customer.
-            text = _DECLINED if refusal.is_system else (refusal.text or _DECLINED)
+            # ``cards.verify`` runs before ``receipts.pay``, so a refusal here
+            # means the money was never touched — whatever Payme's reason, the
+            # attempt stays open and the code may be typed again or resent. A
+            # system code gets a neutral sentence: Payme's own is not written
+            # for a customer, and it is not the code that is at fault.
             if refusal.is_system:
+                text = _VERIFY_FAILED
                 logger.warning("payme_verify_failed", upstream_code=refusal.code)
-            return PaymentOutcome(
-                "failed",
-                reference=reference,
-                error=text,
-                raw={"receipt": receipt, "state": None, "error": refusal.raw},
-            )
+            else:
+                text = refusal.text or _WRONG_CODE
+            raise OtpRejected(text) from refusal
         try:
             result = await self._rpc(
                 "receipts.pay",

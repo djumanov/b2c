@@ -27,7 +27,7 @@ from app.modules.orders.models import Order, OrderEvent, PaymentAttempt
 from app.modules.payments import service as payments_service
 from app.modules.payments.models import CustomerCard
 from app.modules.payments.schemas import CardCreateIn
-from app.providers.payments.base import PaymentOutcome
+from app.providers.payments.base import OtpRejected, PaymentOutcome
 from tests.conftest import (
     PAYME_CREDENTIALS,
     PAYME_RECEIPT,
@@ -570,6 +570,124 @@ async def test_confirm_declined_is_200_with_failed_block_and_retryable(
         "failed",
         "started",
     ]
+
+
+@respx.mock
+async def test_confirm_wrong_code_keeps_the_attempt_open_and_the_next_code_pays(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """A refused code is not a refused payment: every provider checks the code
+    before it moves money, so the attempt goes back to waiting for one."""
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    mock_gts_ticketing()
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    phone_hint = started.json()["data"]["payment"]["phone_hint"]
+    fake_provider.confirm_outcomes = [OtpRejected("The code is wrong")]
+
+    wrong = await _confirm(client, order, customer_headers, payment_id, "111111")
+
+    assert wrong.status_code == 200
+    payment = wrong.json()["data"]["payment"]
+    # Same attempt, same card, same phone — only the reason is new.
+    assert payment["status"] == "awaiting_otp"
+    assert payment["error"] == "The code is wrong"
+    assert payment["payment_id"] == payment_id
+    assert payment["phone_hint"] == phone_hint
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
+    await db_session.refresh(order)
+    assert order.payment_status == "pending"
+
+    # The right code goes to the same attempt and pays it.
+    paid = await _confirm(client, order, customer_headers, payment_id, "123456")
+
+    assert paid.status_code == 200
+    assert paid.json()["data"]["payment"]["status"] == "paid"
+    assert paid.json()["data"]["payment"]["error"] is None
+    await db_session.refresh(attempt)
+    assert attempt.status == "paid"
+    assert [call[0] for call in fake_provider.calls] == ["start", "confirm", "confirm"]
+    assert await _events(db_session, order) == [
+        "payment.started",
+        "payment.confirming",
+        "payment.otp_rejected",
+        "payment.confirming",
+        "payment.paid",
+        "ticketing.processing",
+        "ticketing.requested",
+        "ticketing.ticketed",
+    ]
+
+
+@respx.mock
+async def test_resend_after_a_wrong_code_sends_a_new_one_and_clears_the_reason(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """The other way out of a mistyped code: ask for another one. Same
+    attempt, same card — ``resend/`` is not blocked by the refusal."""
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = started.json()["data"]["payment"]["payment_id"]
+    fake_provider.confirm_outcomes = [OtpRejected("The code is wrong")]
+    await _confirm(client, order, customer_headers, payment_id, "111111")
+
+    resent = await _resend(client, order, customer_headers, payment_id)
+
+    assert resent.status_code == 200
+    payment = resent.json()["data"]["payment"]
+    assert payment["status"] == "awaiting_otp"
+    assert payment["payment_id"] == payment_id
+    assert payment["error"] is None
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "started"
+    assert attempt.error is None
+
+
+@respx.mock
+async def test_a_wrong_code_that_lands_after_the_sweep_gave_up_changes_nothing(
+    client: httpx.AsyncClient,
+    customer: Customer,
+    customer_headers: dict[str, str],
+    db_session: AsyncSession,
+    fake_provider: FakeProvider,
+) -> None:
+    """``_reopen_attempt`` is the mirror of ``settle_attempt``: only an attempt
+    still ``confirming`` is touched, so an answer that outlived the sweep's
+    verdict cannot resurrect the attempt it already closed."""
+    mock_gts_signin()
+    mock_gts_order(gts_order_body())
+    order = await make_order(db_session, customer)
+    started = await _start(client, order, customer_headers)
+    payment_id = uuid.UUID(started.json()["data"]["payment"]["payment_id"])
+    fake_provider.confirm_outcomes = [UpstreamTimeout("lost on the way back")]
+    await _confirm(client, order, customer_headers, str(payment_id))
+    fake_provider.status_outcomes = [PaymentOutcome("failed", error="declined")]
+    await _age_attempt(
+        db_session, order, updated=timedelta(minutes=3), created=timedelta(minutes=3)
+    )
+    assert await service.settle_stale_confirmations(db_session) == 1
+
+    await service._reopen_attempt(  # noqa: SLF001 - the losing side of the race
+        db_session, payment_id, error="The code is wrong"
+    )
+
+    await db_session.refresh(order)
+    (attempt,) = await _attempts(db_session, order)
+    assert attempt.status == "failed"
+    assert attempt.error == "declined"
 
 
 @respx.mock
@@ -1420,9 +1538,8 @@ async def test_sandbox_codes() -> None:
     assert (
         await sandbox.confirm(reference=started.reference, otp="333333")
     ).status == "pending"
-    assert (
+    with pytest.raises(OtpRejected, match="The code is wrong"):
         await sandbox.confirm(reference=started.reference, otp="9")
-    ).error == "wrong code"
     with pytest.raises(UpstreamTimeout):
         await sandbox.confirm(reference=started.reference, otp="222222")
     assert (await sandbox.status(reference=started.reference)).status == "pending"
@@ -1448,16 +1565,16 @@ async def test_demo_adapter_pays_on_the_configured_code_alone() -> None:
     assert (
         await demo.confirm(reference=started.reference, otp="123456")
     ).status == "paid"
-    wrong = await demo.confirm(reference=started.reference, otp="000000")
-    assert wrong.status == "failed"
-    assert wrong.error == "wrong code"
+    with pytest.raises(OtpRejected, match="The code is wrong"):
+        await demo.confirm(reference=started.reference, otp="000000")
     assert (await demo.status(reference=started.reference)).status == "pending"
     assert await demo.probe() is None
 
     # The panel's code wins; whitespace and an empty save fall back to default.
     custom = DemoProvider.from_credentials({"otp": " 777777 "})
     assert (await custom.confirm(reference="r", otp="777777")).status == "paid"
-    assert (await custom.confirm(reference="r", otp="123456")).status == "failed"
+    with pytest.raises(OtpRejected):
+        await custom.confirm(reference="r", otp="123456")
     fallback = DemoProvider.from_credentials({"otp": "  "})
     assert (await fallback.confirm(reference="r", otp="123456")).status == "paid"
 
@@ -1500,27 +1617,20 @@ async def test_demo_method_pays_with_the_panels_static_otp_and_no_debug(
     assert data["payment"]["provider"] == "demo"
     assert data["payment"]["phone_hint"] == "+99890***0000"
 
-    wrong = await _confirm(
-        client, order, customer_headers, data["payment"]["payment_id"], "999999"
-    )
+    payment_id = data["payment"]["payment_id"]
+    wrong = await _confirm(client, order, customer_headers, payment_id, "999999")
     assert wrong.status_code == 200
-    assert wrong.json()["data"]["payment"]["status"] == "failed"
-    assert wrong.json()["data"]["payment"]["error"] == "wrong code"
+    # A mistyped code costs nothing: the same attempt waits for the next one.
+    assert wrong.json()["data"]["payment"]["status"] == "awaiting_otp"
+    assert wrong.json()["data"]["payment"]["error"] == "The code is wrong"
+    assert wrong.json()["data"]["payment"]["payment_id"] == payment_id
 
-    again = await _start(
-        client,
-        order,
-        {**customer_headers, "Idempotency-Key": "demo-2"},
-        method="demo",
-    )
-    assert again.status_code == 200, again.text
-    payment_id = again.json()["data"]["payment"]["payment_id"]
     paid = await _confirm(client, order, customer_headers, payment_id, "123456")
     assert paid.status_code == 200, paid.text
     assert paid.json()["data"]["payment"]["status"] == "paid"
+    assert paid.json()["data"]["payment"]["error"] is None
     assert paid.json()["data"]["order"]["status"] == "ticketed"
-    failed, charged = await _attempts(db_session, order)
-    assert failed.status == "failed"
+    (charged,) = await _attempts(db_session, order)
     assert charged.status == "paid"
     assert charged.provider == "demo"
 
@@ -1700,8 +1810,8 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
         "upstream": {"code": -31001, "message": "Недопустимая сумма"}
     }
 
-    # A wrong code: 200, ``failed``, nothing paid, and the next start opens
-    # a fresh attempt with a fresh SMS.
+    # A wrong code: 200, still ``awaiting_otp`` with Payme's words, nothing
+    # paid — and the same attempt takes another code or another SMS.
     respx.reset()
     mock_gts_signin()
     mock_gts_order(gts_order_body())
@@ -1715,16 +1825,16 @@ async def test_payme_refusals_reach_the_customer_as_the_contract_says(
     payment_id = started.json()["data"]["payment"]["payment_id"]
     wrong = await _confirm(client, order, customer_headers, payment_id, "000000")
     assert wrong.status_code == 200
-    assert wrong.json()["data"]["payment"]["status"] == "failed"
+    assert wrong.json()["data"]["payment"]["status"] == "awaiting_otp"
     assert wrong.json()["data"]["payment"]["error"] == "Неверный код"
+    assert wrong.json()["data"]["payment"]["payment_id"] == payment_id
     assert payme.count("receipts.pay") == 0
-    again = await _start(
-        client,
-        order,
-        {**customer_headers, "Idempotency-Key": "payme-4"},
-        method="payme",
-    )
+    again = await _resend(client, order, customer_headers, payment_id)
     assert again.json()["data"]["payment"]["status"] == "awaiting_otp"
+    assert again.json()["data"]["payment"]["error"] is None
+    # One card, one receipt, two codes: the resend is the same attempt.
+    assert payme.count("cards.create") == 1
+    assert payme.count("receipts.create") == 1
     assert payme.count("cards.get_verify_code") == 2
 
 

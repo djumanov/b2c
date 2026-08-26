@@ -146,7 +146,10 @@ TAGS: Final[list[dict[str, Any]]] = [
             "(`payment.status = awaiting_otp`) — refused until the price is "
             "confirmed; `POST …/payment/resend/` sends the same code again; "
             "`POST …/payment/confirm/` charges with it, and on `paid` the "
-            "ticket is requested from GTS in the same call. "
+            "ticket is requested from GTS in the same call. A code the "
+            "provider will not take charges nothing and ends nothing: the "
+            "answer stays `awaiting_otp` with the reason in `payment.error`, "
+            "and the same `payment_id` takes another code or another SMS. "
             '`GET …/{id}/` is what the "is my ticket ready?" screen polls; '
             "it never writes. `order.status` is one of six words and "
             "`order.message` the sentence to show for it. Once the ticket is "
