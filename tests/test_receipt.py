@@ -95,50 +95,38 @@ async def test_the_receipt_is_the_file_gts_rendered(
     # GTS's own name for the vertical, plural, which is not what its
     # documentation says and is the only value it renders for.
     assert params["product"] == "flights"
+    # The whole order's document: GTS's ``passenger_index`` is never sent.
     assert "passenger_index" not in params
 
 
 @respx.mock
-async def test_one_passenger_is_asked_for_by_index(
+async def test_a_passenger_index_is_not_a_parameter_and_is_never_forwarded(
     client: httpx.AsyncClient,
     customer: Customer,
     customer_headers: dict[str, str],
     db_session: AsyncSession,
 ) -> None:
+    """A query GTS would answer with a debug page cannot be asked for here.
+
+    GTS answers ``passenger_index`` past the last passenger with **HTTP 200
+    and a Django traceback** (live, order 91210, 2026-08-26), which is a
+    document to anything reading the bytes. The route takes no parameters,
+    so the only thing an extra one can do is be ignored.
+    """
     mock_gts_signin()
     receipt = mock_gts_receipt()
     order = await _ticketed(db_session, customer)
 
     response = await _download(
-        client, order, customer_headers, query="?passenger_index=1"
+        client, order, customer_headers, query="?passenger_index=99"
     )
 
     assert response.status_code == 200, response.text
-    # GTS counts from zero; the file is named for the human's second passenger.
-    assert receipt.calls.last.request.url.params["passenger_index"] == "1"
+    assert response.content == RECEIPT_PDF
+    assert "passenger_index" not in receipt.calls.last.request.url.params
     assert response.headers["content-disposition"] == (
-        'attachment; filename="receipt-UBPLKW-2.pdf"'
+        'attachment; filename="receipt-UBPLKW.pdf"'
     )
-
-
-@respx.mock
-async def test_a_passenger_index_below_zero_is_refused_before_gts(
-    client: httpx.AsyncClient,
-    customer: Customer,
-    customer_headers: dict[str, str],
-    db_session: AsyncSession,
-) -> None:
-    mock_gts_signin()
-    receipt = mock_gts_receipt()
-    order = await _ticketed(db_session, customer)
-
-    response = await _download(
-        client, order, customer_headers, query="?passenger_index=-1"
-    )
-
-    assert response.status_code == 422, response.text
-    assert response.json()["errors"][0]["code"] == "validation"
-    assert receipt.call_count == 0
 
 
 @respx.mock

@@ -565,19 +565,13 @@ class FlightAdapter:
             raise UpstreamError("the GTS ticketing answer had an unexpected shape")
         return _snapshot(order_number, order)
 
-    async def receipt(
-        self,
-        client: GtsClient,
-        order_number: int,
-        *,
-        passenger_index: int | None = None,
-    ) -> GtsDocument | None:
+    async def receipt(self, client: GtsClient, order_number: int) -> GtsDocument | None:
         """``GET /v1/receipt/pattern/view/`` — the itinerary receipt, as a file.
 
         The only step whose answer is a file. ``product`` is GTS's own name
-        for the vertical — ``_RECEIPT_PRODUCT``, not our code for it — and
-        ``passenger_index`` is **0-based** (its documentation says so twice);
-        left out, the document covers every passenger on the order.
+        for the vertical — ``_RECEIPT_PRODUCT``, not our code for it — and it
+        is the only parameter besides the order: GTS's ``passenger_index`` is
+        not sent, so the document covers every passenger on the order.
 
         Nothing is read out of the bytes and nothing is added to them: what a
         customer downloads is what GTS rendered, which is the point of asking
@@ -585,15 +579,9 @@ class FlightAdapter:
         GTS saying it has drawn nothing for this order — the body reads
         ``None`` and the caller decides what to tell the customer.
         """
-        params: dict[str, Any] = {
-            "order_number": order_number,
-            "product": _RECEIPT_PRODUCT,
-        }
-        if passenger_index is not None:
-            params["passenger_index"] = passenger_index
         return await client.download(
             _RECEIPT_PATH,
-            params=params,
+            params={"order_number": order_number, "product": _RECEIPT_PRODUCT},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
 

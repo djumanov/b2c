@@ -235,13 +235,7 @@ class ProductAdapter(Protocol):
         """
         ...
 
-    async def receipt(
-        self,
-        client: GtsClient,
-        order_number: int,
-        *,
-        passenger_index: int | None = None,
-    ) -> GtsDocument | None:
+    async def receipt(self, client: GtsClient, order_number: int) -> GtsDocument | None:
         """The travel document of a **ticketed** order, as GTS renders it.
 
         The flight vertical's is the itinerary receipt ("маршрутная
@@ -250,8 +244,10 @@ class ProductAdapter(Protocol):
         because GTS renders them from the order it holds and a copy of ours
         would be the staler of the two the moment anything changed.
 
-        ``passenger_index`` (0-based) narrows it to one traveller; without it
-        the document covers everyone on the order.
+        The document covers **every** traveller on the order. GTS can also
+        draw one passenger's copy, and it is not asked for: an index past the
+        last passenger is answered with a debug page, HTTP 200, which is
+        indistinguishable from a document to anyone reading the bytes.
 
         ``None`` is GTS answering that it has no such document — for an order
         it has not ticketed, and for a ticketed one whose paper it has not

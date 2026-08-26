@@ -184,8 +184,7 @@ class OrderOut(BaseModel):
             "through.\n\n"
             "`null` until `status` is `ticketed` — before the ticket exists "
             "there is nothing to render, so this field is what a download "
-            "button waits for. Add `?passenger_index=0` (counted from zero, "
-            "in `order_data.passengers` order) for one traveller's copy."
+            "button waits for. One document covers everyone on the order."
         ),
     )
     cancelled_at: datetime | None = Field(description="When the order was cancelled.")

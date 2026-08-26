@@ -59,7 +59,6 @@ from app.db.session import SessionDep
 from app.modules.orders import service
 from app.modules.orders.receipt import (
     RECEIPT_RESPONSES,
-    PassengerIndex,
     receipt_response,
 )
 from app.modules.orders.schemas import (
@@ -180,8 +179,8 @@ async def get_order(
         "GTS renders the document but will not serve it to a browser — its "
         "receipt page answers `401` without the agent session — so this API "
         "fetches it with its own and passes the bytes through.\n\n"
-        "Add `?passenger_index=0` for a single traveller's copy; without it "
-        "the document covers everyone on the order.\n\n"
+        "One document covers **everyone** on the order; there is no "
+        "per-passenger copy and the call takes no parameters.\n\n"
         "Nothing is stored on our side: every call renders the receipt at "
         "GTS, so what the customer downloads is always the current one. Safe "
         "to repeat, and it changes nothing."
@@ -196,13 +195,8 @@ async def download_receipt(
     id: uuid.UUID,
     customer: CurrentCustomer,
     session: SessionDep,
-    passenger_index: PassengerIndex = None,
 ) -> Response:
-    return receipt_response(
-        await service.order_receipt(
-            session, customer.id, id, passenger_index=passenger_index
-        )
-    )
+    return receipt_response(await service.order_receipt(session, customer.id, id))
 
 
 @router.post(

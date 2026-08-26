@@ -4,18 +4,24 @@ The customer downloads their own; support downloads anyone's. Everything
 after "which order may be asked for" is identical, and identical is what it
 has to stay: two routes that describe the same file differently in Swagger,
 or send it with different headers, is a bug waiting for the day one of them
-is fixed alone. So the response, the query and the documented answers are
-written once, here, and both routers use them.
+is fixed alone. So the response and the documented answers are written
+once, here, and both routers use them.
+
+The document is always the whole order's. GTS renders one passenger's copy
+too, from a ``passenger_index``, and that is deliberately not offered: asked
+for an index past the last passenger it answers **HTTP 200 with a debug
+page**, and a debug page is bytes like any other — it would reach the
+customer as their receipt.
 
 The document itself is GTS's. It renders the itinerary receipt but will not
 serve it to a customer — its receipt page wants the agent session's cookies
 and answers ``401`` without them — so ``orders.service`` fetches the bytes
-with ours and these three pieces hand them on.
+with ours and these two pieces hand them on.
 """
 
-from typing import Annotated, Any, Final
+from typing import Any, Final
 
-from fastapi import Query, Response
+from fastapi import Response
 
 from app.api.errors import ErrorCode
 from app.api.openapi import error_responses
@@ -55,18 +61,6 @@ RECEIPT_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
     ),
 }
 
-PassengerIndex = Annotated[
-    int | None,
-    Query(
-        ge=0,
-        description=(
-            "One passenger's copy, counted from **zero** in the order's own "
-            "passenger order (`order_data.passengers`). Omit for the whole "
-            "order."
-        ),
-    ),
-]
-
 
 def receipt_response(receipt: ReceiptDocument) -> Response:
     """The file as it leaves us — the same body on either surface."""
@@ -80,4 +74,4 @@ def receipt_response(receipt: ReceiptDocument) -> Response:
     )
 
 
-__all__ = ["RECEIPT_RESPONSES", "PassengerIndex", "receipt_response"]
+__all__ = ["RECEIPT_RESPONSES", "receipt_response"]
