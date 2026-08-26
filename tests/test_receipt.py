@@ -92,7 +92,9 @@ async def test_the_receipt_is_the_file_gts_rendered(
 
     params = receipt.calls.last.request.url.params
     assert params["order_number"] == str(ORDER_NUMBER)
-    assert params["product"] == "flight"
+    # GTS's own name for the vertical, plural, which is not what its
+    # documentation says and is the only value it renders for.
+    assert params["product"] == "flights"
     assert "passenger_index" not in params
 
 
