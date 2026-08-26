@@ -30,7 +30,6 @@ from app.modules.orders.lifecycle import Stage
 from app.modules.orders.models import OrderStatus, PaymentStatus, TicketingStatus
 from app.modules.orders.receipt import (
     RECEIPT_RESPONSES,
-    PassengerIndex,
     receipt_response,
 )
 from app.modules.orders.schemas import (
@@ -208,22 +207,16 @@ async def get_order(id: uuid.UUID, session: SessionDep) -> OrderAdminOut:
         "The answer is the file, not the envelope — fetch it with the staff "
         "token and save what comes back.\n\n"
         "`order.receipt_url` on the admin detail is this path. It is `null`, "
-        "and this route answers `409`, until GTS has issued the ticket. Add "
-        "`?passenger_index=0` for one traveller's copy. Reading only: nothing "
-        "is written and no `order_events` line is added."
+        "and this route answers `409`, until GTS has issued the ticket. One "
+        "document covers everyone on the order. Reading only: nothing is "
+        "written and no `order_events` line is added."
     ),
     response_description="The receipt file, as GTS rendered it.",
     response_class=Response,
     responses=RECEIPT_RESPONSES,
 )
-async def download_receipt(
-    id: uuid.UUID,
-    session: SessionDep,
-    passenger_index: PassengerIndex = None,
-) -> Response:
-    return receipt_response(
-        await service.order_receipt_admin(session, id, passenger_index=passenger_index)
-    )
+async def download_receipt(id: uuid.UUID, session: SessionDep) -> Response:
+    return receipt_response(await service.order_receipt_admin(session, id))
 
 
 @router.post(

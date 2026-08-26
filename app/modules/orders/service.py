@@ -512,9 +512,7 @@ RECEIPT_TYPES: Final[dict[str, str]] = {
 }
 
 
-async def _fetch_receipt(
-    session: AsyncSession, order: Order, passenger_index: int | None
-) -> ReceiptDocument:
+async def _fetch_receipt(session: AsyncSession, order: Order) -> ReceiptDocument:
     """The itinerary receipt of a ticketed order, fetched from GTS per request.
 
     **Nothing is stored**, and that is the search rule applied to a file: GTS
@@ -532,9 +530,7 @@ async def _fetch_receipt(
         raise Conflict("The ticket for this order has not been issued yet")
     adapter = _adapter(order)
     client = await integrations_service.gts_client(session)
-    document = await adapter.receipt(
-        client, order.gts_order_number, passenger_index=passenger_index
-    )
+    document = await adapter.receipt(client, order.gts_order_number)
     if document is None:
         # GTS has the ticket and has drawn no paper for it yet — its own
         # answer, not a failure of ours, and not the customer's fault either.
@@ -543,7 +539,6 @@ async def _fetch_receipt(
             "gts_receipt_absent",
             order_id=str(order.id),
             gts_order_number=order.gts_order_number,
-            passenger_index=passenger_index,
         )
         raise Conflict("GTS has not made the receipt for this order available yet")
     extension = RECEIPT_TYPES.get(document.content_type)
@@ -555,7 +550,6 @@ async def _fetch_receipt(
             order_id=str(order.id),
             content_type=document.content_type,
         )
-    suffix = "" if passenger_index is None else f"-{passenger_index + 1}"
     # The PNR is GTS's text and the filename ends up in a response header, so
     # only the letters and digits of it travel.
     name = "".join(char for char in (order.pnr or "") if char.isalnum()) or str(
@@ -566,40 +560,31 @@ async def _fetch_receipt(
         content_type=(
             document.content_type if extension else "application/octet-stream"
         ),
-        filename=f"receipt-{name}{suffix}.{extension or 'bin'}",
+        filename=f"receipt-{name}.{extension or 'bin'}",
     )
 
 
 async def order_receipt(
-    session: AsyncSession,
-    customer_id: uuid.UUID,
-    order_id: uuid.UUID,
-    *,
-    passenger_index: int | None = None,
+    session: AsyncSession, customer_id: uuid.UUID, order_id: uuid.UUID
 ) -> ReceiptDocument:
     """The customer downloading their own ticket's receipt.
 
-    ``passenger_index`` is GTS's own 0-based index into the order's
-    passengers; without it the document covers all of them.
+    One document for the whole order — every passenger on it, the way GTS
+    draws it when nothing narrows the request.
     """
     order = await _owned(session, customer_id, order_id)
-    return await _fetch_receipt(session, order, passenger_index)
+    return await _fetch_receipt(session, order)
 
 
 async def order_receipt_admin(
-    session: AsyncSession,
-    order_id: uuid.UUID,
-    *,
-    passenger_index: int | None = None,
+    session: AsyncSession, order_id: uuid.UUID
 ) -> ReceiptDocument:
     """The same document for the support desk — any order, no owner to match.
 
     Staff answer a customer who cannot reach their own copy, so the only
     difference from the customer's route is whose order may be asked for.
     """
-    return await _fetch_receipt(
-        session, await _require(session, order_id), passenger_index
-    )
+    return await _fetch_receipt(session, await _require(session, order_id))
 
 
 # --- paying ----------------------------------------------------------------------

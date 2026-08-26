@@ -337,9 +337,9 @@ def test_both_receipt_routes_answer_with_a_file() -> None:
         # No ``application/json`` at all: this is not the envelope.
         assert set(answer["content"]) == {"application/pdf", "text/html"}, path
         assert {"409", "502", "504"} <= set(operation["responses"]), path
-        index = _parameters(path, "get")["passenger_index"]
-        assert index["in"] == "query"
-        assert _resolve(index["schema"])["minimum"] == 0, path
+        # One document for the whole order: no per-passenger query to get
+        # wrong, and nothing GTS can answer with a debug page.
+        assert "passenger_index" not in _parameters(path, "get"), path
 
 
 def test_money_is_a_two_decimal_string() -> None:

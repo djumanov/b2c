@@ -28,7 +28,7 @@ customer sees (PNR, price, route, the payment deadline) lives there.
 
 import datetime as dt
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Final
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,6 +56,17 @@ _IATA_PATTERN = r"^[A-Za-z]{3}$"
 #: **Not a link we hand out**: GTS answers it with a 401 unless the agent
 #: session's cookies come with it, so the document is fetched here, with ours.
 _RECEIPT_PATH = "/v1/receipt/pattern/view/"
+
+#: GTS's own name for this vertical in the receipt view, and **not**
+#: ``ProductCode.FLIGHT``. The v1.4 documentation writes ``product=flight``
+#: (page 14) and GTS answers that with a 200 whose body reads ``None`` — the
+#: same answer it gives for an order it has drawn nothing for, which is what
+#: made this look like a missing document rather than a wrong parameter. Its
+#: own record of the order calls the vertical ``flights``
+#: (``order_data.product_uri``), and only that renders the receipt: live,
+#: order 91210, 2026-08-26 — ``flight`` and ``avia`` both ``None``,
+#: ``flights`` a 248 KB PDF.
+_RECEIPT_PRODUCT: Final = "flights"
 
 
 class _DirectionIn(BaseModel):
@@ -554,19 +565,13 @@ class FlightAdapter:
             raise UpstreamError("the GTS ticketing answer had an unexpected shape")
         return _snapshot(order_number, order)
 
-    async def receipt(
-        self,
-        client: GtsClient,
-        order_number: int,
-        *,
-        passenger_index: int | None = None,
-    ) -> GtsDocument | None:
+    async def receipt(self, client: GtsClient, order_number: int) -> GtsDocument | None:
         """``GET /v1/receipt/pattern/view/`` — the itinerary receipt, as a file.
 
         The only step whose answer is a file. ``product`` is GTS's own name
-        for the vertical and ``passenger_index`` is **0-based** (its
-        documentation says so twice); left out, the document covers every
-        passenger on the order.
+        for the vertical — ``_RECEIPT_PRODUCT``, not our code for it — and it
+        is the only parameter besides the order: GTS's ``passenger_index`` is
+        not sent, so the document covers every passenger on the order.
 
         Nothing is read out of the bytes and nothing is added to them: what a
         customer downloads is what GTS rendered, which is the point of asking
@@ -574,15 +579,9 @@ class FlightAdapter:
         GTS saying it has drawn nothing for this order — the body reads
         ``None`` and the caller decides what to tell the customer.
         """
-        params: dict[str, Any] = {
-            "order_number": order_number,
-            "product": self.code.value,
-        }
-        if passenger_index is not None:
-            params["passenger_index"] = passenger_index
         return await client.download(
             _RECEIPT_PATH,
-            params=params,
+            params={"order_number": order_number, "product": _RECEIPT_PRODUCT},
             timeout=GtsTimeouts.DEFAULT_SECONDS,
         )
 
