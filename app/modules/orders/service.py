@@ -107,6 +107,7 @@ from app.modules.orders.schemas import (
 from app.modules.payments import service as payments_service
 from app.modules.settings import service as settings_service
 from app.providers.payments.base import (
+    OtpRejected,
     PaymentDeclined,
     PaymentOutcome,
     PaymentProvider,
@@ -1170,6 +1171,41 @@ async def _fail_attempt(
     logger.info("payment_start_failed", order_id=str(order.id), attempt=str(attempt.id))
 
 
+async def _reopen_attempt(
+    session: AsyncSession, attempt_id: uuid.UUID, *, error: str
+) -> None:
+    """Hand a ``confirming`` attempt back to the customer — the code was refused.
+
+    The mirror of ``settle_attempt``: same lock, same re-read, and the same
+    single condition — only an attempt still ``confirming`` is touched. So a
+    sweep that settled it first (a slow ``confirm`` outlives the sweep's 120
+    seconds) keeps the last word, and this writes nothing.
+
+    The order's ``payment_status`` is not touched: it never became anything
+    but what it was, because the charge never went out.
+    """
+    probe = await session.get(PaymentAttempt, attempt_id)
+    if probe is None:
+        return
+    order = await _locked(session, probe.order_id)
+    attempt = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
+    if order is None or attempt is None or attempt.status != AttemptStatus.CONFIRMING:
+        await session.rollback()
+        return
+    attempt.status = AttemptStatus.STARTED
+    attempt.error = error[:500]
+    session.add(
+        lifecycle.event(
+            order,
+            event="payment.otp_rejected",
+            actor=lifecycle.CUSTOMER,
+            data={"attempt": str(attempt.id)},
+        )
+    )
+    await session.commit()
+    logger.info("payment_otp_rejected", order_id=str(order.id), attempt=str(attempt.id))
+
+
 async def confirm_payment(
     session: AsyncSession,
     customer_id: uuid.UUID,
@@ -1186,6 +1222,13 @@ async def confirm_payment(
     unknown answer leaves the attempt ``confirming``; the sweep asks the
     provider what became of it. A repeat of this call while the attempt is
     ``confirming`` is a read, not a second charge.
+
+    **A refused code is not a refused payment.** Every provider checks the
+    code before it moves the money, so ``OtpRejected`` means nothing was
+    charged: the attempt is put back to ``started`` with the reason on it
+    (``awaiting_otp`` + ``payment.error``, HTTP 200) and the customer types
+    the code again or asks ``resend/`` for a new one. Only the charge itself
+    can end an attempt — a decline, or the sweep giving up on a lost answer.
 
     The provider is the one that **started** the attempt (its code is on the
     row), resolved from an unlocked read before the lock is taken — resolving
@@ -1253,7 +1296,11 @@ async def confirm_payment(
             await session.commit()
             raise OfferExpired(DEADLINE_PASSED_MESSAGE)
     reference = decrypt(attempt.provider_reference, attempt.key_version or 0)
+    attempt_id = attempt.id
     attempt.status = AttemptStatus.CONFIRMING
+    # The reason a previous code was refused belongs to that code, not to
+    # this one: it is dropped here so ``processing`` never carries it.
+    attempt.error = None
     session.add(
         lifecycle.event(
             order,
@@ -1267,6 +1314,15 @@ async def confirm_payment(
     try:
         outcome = await provider.confirm(
             reference=reference, otp=data.otp.get_secret_value()
+        )
+    except OtpRejected as exc:
+        # The provider would not take the code, which it says before it moves
+        # any money: the attempt goes back to waiting for one, with the same
+        # card and the same ``payment_id``. Another ``confirm/`` or a
+        # ``resend/`` follows — nothing here is over.
+        await _reopen_attempt(session, attempt_id, error=str(exc))
+        return await _present(
+            session, await _owned(session, customer_id, order_id), language=language
         )
     except (UpstreamError, UpstreamTimeout) as exc:
         logger.warning(
@@ -1359,6 +1415,8 @@ async def resend_payment_otp(
     row = await session.get(PaymentAttempt, attempt_id, with_for_update=True)
     if row is not None and row.status == AttemptStatus.STARTED:
         row.phone_hint = started.phone_hint or row.phone_hint
+        # A fresh code answers for itself; the refused one's reason goes.
+        row.error = None
         row.provider_data = {**(row.provider_data or {}), "resend": started.raw}
         session.add(
             lifecycle.event(

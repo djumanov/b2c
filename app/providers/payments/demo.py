@@ -5,8 +5,9 @@ row, and the code typed at ``confirm`` chooses the outcome. This one is for
 showing the product: the panel enables it like any real provider (``DEBUG``
 plays no part), it sits beside Payme in site-config's ``payment_methods``,
 and exactly one code — the ``otp`` the panel stores, ``123456`` unless
-changed — pays. Any other code is a plain ``failed``, the way a wrong SMS
-code is, so the demo walks the same screens a real payment does.
+changed — pays. Any other code is ``OtpRejected``, the way a wrong SMS code
+is, so the demo walks the same screens a real payment does — including the
+one where a mistyped code is simply typed again.
 
 Stateless like the sandbox: ``confirm`` answers locally and never loses an
 answer, so ``status`` — which exists for charges whose answer went missing —
@@ -23,6 +24,7 @@ from typing import Final
 from app.core.money import Money
 from app.providers.payments.base import (
     CardDetails,
+    OtpRejected,
     PaymentOutcome,
     PaymentStart,
     ProviderField,
@@ -66,9 +68,9 @@ class DemoProvider:
         return PaymentStart(reference=reference, phone_hint="+99890***0000")
 
     async def confirm(self, *, reference: str, otp: str) -> PaymentOutcome:
-        if otp == self._otp:
-            return PaymentOutcome("paid", reference=reference, raw={"demo": True})
-        return PaymentOutcome("failed", reference=reference, error="wrong code")
+        if otp != self._otp:
+            raise OtpRejected("The code is wrong")
+        return PaymentOutcome("paid", reference=reference, raw={"demo": True})
 
     async def status(self, *, reference: str) -> PaymentOutcome:
         # Stateless on purpose — see the module docstring.

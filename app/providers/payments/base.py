@@ -7,13 +7,19 @@ calls — ``start``, ``resend``, ``confirm``, ``status`` — and every provider,
 the sandbox included, fits behind them.
 
 **The contract that matters is about failure.** A provider answers a
-definitive "no" (wrong code, card declined, not enough money) as a
+definitive "no" about the *money* (card declined, not enough funds) as a
 ``PaymentOutcome`` — that is a result, the attempt is over, the customer may
 try again. It raises (``UpstreamError``, ``UpstreamTimeout``) only when the
 outcome is **unknown**: the call did not get through or did not come back.
 The order module treats those two very differently — a known "no" is
 recorded, an unknown is left open and settled later by ``status`` — so an
 adapter that raised on a decline would strand the customer in "processing".
+
+A **wrong code is neither**: the charge was never sent, so nothing is over.
+``confirm`` raises ``OtpRejected`` for it, and the attempt stays open — the
+cardholder types the code again or asks ``resend`` for another, on the same
+card and the same reference. Only what happens once the charge is on the
+wire can end an attempt.
 
 Nothing here stores or logs a card number. ``CardDetails`` hides its digits
 from ``repr``, and ``raw`` is whatever the adapter chose to keep of the
@@ -113,6 +119,22 @@ class PaymentDeclined(Exception):
     """
 
 
+class OtpRejected(Exception):
+    """``confirm`` never got as far as the money — the code was refused.
+
+    Raised by ``confirm`` only, and only from the step that checks the code,
+    which every provider runs **before** the one that moves it. So nothing
+    can have been charged: the attempt stays open with its card, its
+    reference and its ``payment_id``, and the customer types the code again
+    or asks for a new one. ``message`` is the reason, written for a person.
+
+    An adapter that answered a wrong code with a ``failed`` outcome instead
+    would end a payment nobody refused; one that raised ``UpstreamError``
+    would leave it "processing" for the sweep to fail. This is the third
+    answer, and it is the common one.
+    """
+
+
 class PaymentProvider(Protocol):
     code: str
 
@@ -142,9 +164,11 @@ class PaymentProvider(Protocol):
     async def confirm(self, *, reference: str, otp: str) -> PaymentOutcome:
         """Charge, with the code the cardholder received.
 
-        A wrong code or a decline is a ``failed`` outcome. Raises only when
-        the outcome is unknown — the caller then keeps the attempt open and
-        asks ``status`` later.
+        A decline of the charge itself is a ``failed`` outcome. A code the
+        provider would not accept raises ``OtpRejected`` — nothing was
+        charged, the attempt lives on, the customer tries the code again.
+        ``UpstreamError``/``UpstreamTimeout`` mean the outcome is unknown:
+        the caller keeps the attempt open and asks ``status`` later.
         """
         ...
 
@@ -185,6 +209,7 @@ class ProviderField:
 
 __all__ = [
     "CardDetails",
+    "OtpRejected",
     "OutcomeStatus",
     "PaymentDeclined",
     "PaymentOutcome",

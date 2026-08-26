@@ -15,7 +15,8 @@ code       what the sandbox does
            attempt stays open; ``status`` then says ``pending`` forever,
            which is how the sweep's give-up path is exercised by hand
 ``333333`` answers ``pending`` — the provider is still deciding
-anything   a wrong code, i.e. ``failed``
+anything   a wrong code: ``OtpRejected``, nothing charged, the attempt
+           stays open and the code can be typed again
 =========  =============================================================
 
 It never reaches production: ``payments.service.payment_provider`` picks it
@@ -30,7 +31,12 @@ from typing import Final
 
 from app.api.errors import UpstreamTimeout
 from app.core.money import Money
-from app.providers.payments.base import CardDetails, PaymentOutcome, PaymentStart
+from app.providers.payments.base import (
+    CardDetails,
+    OtpRejected,
+    PaymentOutcome,
+    PaymentStart,
+)
 
 SANDBOX_CODE: Final = "sandbox"
 
@@ -69,7 +75,7 @@ class SandboxProvider:
             raise UpstreamTimeout("the sandbox provider did not answer in time")
         if otp == OTP_PENDING:
             return PaymentOutcome("pending", reference=reference)
-        return PaymentOutcome("failed", reference=reference, error="wrong code")
+        raise OtpRejected("The code is wrong")
 
     async def status(self, *, reference: str) -> PaymentOutcome:
         # Stateless on purpose — see the module docstring.

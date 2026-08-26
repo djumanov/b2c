@@ -77,6 +77,12 @@ Qoidalar:
   (`awaiting_otp`), provider javobi kutilayotgani (`processing`), karta rad
   etilgani (`failed`, `payment.error`) — hammasi `payment` blokida. Order
   `booked` bo'lib qolaveradi; to'lov ekrani `payment.status` ga qaraydi.
+- **Noto'g'ri kod to'lovni tugatmaydi.** Har bir provider kodni puldan
+  **oldin** tekshiradi, shuning uchun rad etilgan kod — hech narsa
+  yechilmagan urinish: qator `started` bo'lib qoladi, javob yana
+  `awaiting_otp`, sabab `payment.error` da, `payment_id` va karta o'sha-o'sha.
+  Mijoz kodni qayta kiritadi yoki `payment/resend/` bilan yangisini so'raydi;
+  1-qadam takrorlanmaydi. `failed` — faqat charge'ning o'zi rad etilgani.
 - **`refunded` alohida**, chunki `message` status bo'yicha beriladi: pul
   qaytgandan keyin mijoz "supportga murojaat qiling" deb o'qimasligi kerak.
   `refunding` esa hali jarayon — `ticketing_failed` bilan birga, "bog'laning".
@@ -133,8 +139,8 @@ Kim (`order_events.actor`): `customer`, `system` (sweep), `staff:<uuid>`.
 
 ## 4. Tarix — `order_events`
 
-`order_id, created_at, seq, event` (`payment.paid`, `ticketing.failed`,
-`order.created`…)`, from_value, to_value, actor, note, data, request_id`.
+`order_id, created_at, seq, event` (`payment.paid`, `payment.otp_rejected`,
+`ticketing.failed`, `order.created`…)`, from_value, to_value, actor, note, data, request_id`.
 `data` — faqat kod va id'lar (`gts_order_number`, urinish id); xom GTS javobi
 `orders.gts_response` da, karta haqida hech narsa hech qayerda.
 
@@ -280,8 +286,8 @@ Qadamlar (`orders/service.py`):
    `payment_status=failed`, javob 200 (`payment.status=failed`, `error`);
    provider javob bermasa → xuddi shu + 502/504 (hali pul yechilmagan).
 2. **`POST /public/orders/{id}/payment/resend/`** — body `{payment_id}`. Xuddi
-   shu ochiq urinishga (`payment_id` mos kelishi shart) kodni **qayta**
-   yuboradi — yangi karta ro'yxatga olinmaydi, yangi urinish ochilmaydi, pul
+   shu ochiq urinishga (`payment_id` mos kelishi shart — kodi rad etilgan
+   urinish ham ochiq hisoblanadi) kodni **qayta** yuboradi — yangi karta ro'yxatga olinmaydi, yangi urinish ochilmaydi, pul
    yechilmaydi. Provider urinishning o'z `provider` kodi bo'yicha topiladi
    (`provider_for_attempt`), xuddi confirm kabi qulfdan **oldin** — resolve
    commit qiladi. Qulf ostida: urinish ochiq va `payment_id` mos; `confirming`
@@ -316,7 +322,17 @@ Qadamlar (`orders/service.py`):
    `paid`, `payment=paid`, karta `last_used_at`; `failed` → `payment=failed`,
    javob 200; exception (javob noma'lum) → `confirming` qoladi, javob 200
    `payment.status=processing` (order `status` esa `booked` bo'lib
-   qolaveradi — §2).
+   qolaveradi — §2). **`OtpRejected`** (provider kodni qabul qilmadi — u
+   buni pulni qo'zg'atishdan oldin aytadi) → `_reopen_attempt`:
+   `settle_attempt` ning ko'zgusi — o'sha qulf, o'sha qayta o'qish va o'sha
+   yagona shart, faqat `confirming` urinish tegiladi (sweep uni allaqachon
+   yopgan bo'lsa — oxirgi so'z sweep'niki, bu hech narsa yozmaydi). Urinish
+   `started` ga qaytadi, sabab `error` ga yoziladi, `payment.otp_rejected`
+   hodisasi, `payment_status` **umuman tegilmaydi** (charge chiqmagan);
+   javob 200 `payment.status=awaiting_otp` + `payment.error`. Shu
+   `payment_id` bilan `confirm/` ni qayta chaqirsa ham, `resend/` qilsa ham
+   bo'ladi. Eski sabab yangi kod bilan o'chadi: `confirming` ga o'tishda va
+   muvaffaqiyatli `resend` da `error = None`.
 
 Provider tanlovi — **mijozniki**: panel bir nechta providerni birga yoqadi
 (adaptersiz kodni yoqish → 422 "not available in this release"), site-config
@@ -330,7 +346,8 @@ sandbox'ni chiqaradi), aks holda 502. Urinishni yakunlash tomonida
 `provider_for_attempt(code)` — urinish qatoridagi kod bo'yicha; topilmasa
 `None`, chaqiruvchi o'zi hal qiladi. Sandbox kodlari: `000000` paid ·
 `111111` declined · `222222` timeout (noma'lum) · `333333` pending ·
-boshqasi — noto'g'ri kod. Sandbox'da ham `resend` — no-op (kodlar
+boshqasi — noto'g'ri kod (`OtpRejected`: hech narsa yechilmaydi, urinish
+ochiq qoladi). Sandbox'da ham `resend` — no-op (kodlar
 deterministik, qayta yuborishga hojat yo'q).
 
 **Payme** (`providers/payments/payme.py`, Subscribe API, JSON-RPC
@@ -341,7 +358,7 @@ mijoz ilovadan chiqmaydi. Port qadamlari Payme metodlariga shunday tushadi:
 |---|---|---|
 | `start` | `receipts.create` (tiyin, `account: {account_field: order.id}`, ixtiyoriy `detail`) → `cards.create {save: false}` → `cards.get_verify_code` | chek **birinchi**: karta tegilmasdan va SMS ketmasdan `merchant_id:key` tekshiriladi. Token bitta urinish uchun — saqlangan karta bizda PAN (shifrlangan), Payme tokeni emas. `reference` = `{v, token, receipt}` JSON (orders shifrlab saqlaydi); `phone_hint` = Payme'ning masklangan raqami |
 | `resend` | `cards.get_verify_code` (yana, xuddi shu token bilan) | faqat kodni qayta yuboradi — yangi chek yoki karta yo'q; `reference` o'zgarmaydi. Rad javobi (`sent:false` yoki biznes xato) `start`dagidek `PaymentDeclined` |
-| `confirm` | `cards.verify {token, code}` → `receipts.pay {id, token}` | `receipts.pay` urinish boshiga **bir marta** (`confirming` commit'i kafolatlaydi). Chek holati 4/5 → `paid`; 50 → `failed`; boshqasi → `pending` |
+| `confirm` | `cards.verify {token, code}` → `receipts.pay {id, token}` | `receipts.pay` urinish boshiga **bir marta** (`confirming` commit'i kafolatlaydi). `cards.verify` rad etsa `receipts.pay` ga umuman borilmaydi → `OtpRejected`. Chek holati 4/5 → `paid`; 50 → `failed`; boshqasi → `pending` |
 | `status` | `receipts.check {id}` | yo'qolgan `receipts.pay` javobi uchun |
 | `probe` | `receipts.get_all` (oxirgi 24 soat, `count: 1`) | panel "test" tugmasi; pul ko'chirmaydi |
 
@@ -355,7 +372,8 @@ Bitta sozlama (`fields`): `otp` — to'laydigan yagona statik kod, default
 `123456`, panelda ochiq ko'rinadi (sir emas — operator namoyishda o'qiydi).
 `start` har qanday kartani oladi, hech narsa yechmaydi; `resend` — no-op:
 kod statik bo'lgani uchun hech narsa qilinmaydi, xuddi shu `phone_hint`
-qaytariladi; `confirm` da kod mos → `paid`, aks holda `failed` "wrong code";
+qaytariladi; `confirm` da kod mos → `paid`, aks holda `OtpRejected` "The code is wrong"
+(urinish ochiq qoladi — mijoz qayta kiritadi);
 `status` → `pending` (stateless); `probe` doim ok. To'lovdan keyin ticketing
 odatdagidek GTS'ga boradi (demo
 server GTS test bilan). Kod kengaytmasi migratsiya bilan:
@@ -368,10 +386,12 @@ HTTP ≠ 200, JSON emas, kutilmagan shakl, JSON-RPC kod `≤ -32000` (auth,
 tizim) → `UpstreamError`/`UpstreamTimeout`. JSON-RPC `-31xxx` (biznes rad):
 `receipts.create` da → `UpstreamError` (summa yoki kassa — karta emas, mijozga
 "boshqa karta" deyilmaydi); `cards.create`/`get_verify_code` da →
-`PaymentDeclined` (200, `payment.error` = Payme matni); `confirm` da →
-`failed` natija. `cards.verify` dagi tizim xatosi ham `failed` (hali hech
-narsa yechilmagan), `receipts.pay` dagi tizim xatosi — noma'lum → raise,
-sweep chekni o'qiydi. Matn: `message` satr yoki `{uz, ru, en}` → uz, ru, en
+`PaymentDeclined` (200, `payment.error` = Payme matni); `receipts.pay` da →
+`failed` natija. `cards.verify` dagi **har qanday** rad — biznes ham, tizim
+ham — `OtpRejected`: bu chaqiruv `receipts.pay` dan oldin, ya'ni pul
+tegilmagan, urinish ochiq qoladi (tizim kodiga neytral matn: "The code could
+not be checked…" + WARNING, chunki ayb kodda emas). `receipts.pay` dagi
+tizim xatosi — noma'lum → raise, sweep chekni o'qiydi. Matn: `message` satr yoki `{uz, ru, en}` → uz, ru, en
 tartibida; 300 belgi. Log'ga token, karta, kod hech qachon tushmaydi.
 
 Panel sozlamalari (`/admin/integrations/payments/payme/`, `fields` bilan
@@ -585,8 +605,9 @@ Javob shakli hamma joyda bir xil — `BookingResultOut`:
 `order.status` — §2 dagi oltita qiymat; `payment_status`, `ticketing_status`
 va DB `status` ustuni mijoz javobida **yo'q**. To'lov ekrani
 `payment.status` ga qaraydi — bu `payment_status` + urinishdan o'qiladigan
-ikki aniqlik: `awaiting_otp` (kod kiritilmoqda), `processing` (provider
-javobi noma'lum); `failed` bo'lsa sabab `payment.error` da; to'lanmasdan
+ikki aniqlik: `awaiting_otp` (kod kiritilmoqda — rad etilgan kod ham shu
+yerga qaytadi, sababi bilan), `processing` (provider javobi noma'lum);
+`failed` bo'lsa sabab `payment.error` da; to'lanmasdan
 bekor bo'lgan order uchun `cancelled`. Admin javobida `order` bloki
 qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 
@@ -597,7 +618,8 @@ qo'shimcha `booking_status`, `payment_status`, `ticketing_status` olib yuradi.
 | GET | `/public/orders/{id}/` | customer | 1 — **yozmaydi**; "chipta tayyormi?" ekrani shuni poll qiladi; chipta chiqqach `order.receipt_url` — МК yo'li (§4d) |
 | GET | `/public/orders/{id}/receipt/` | customer | 3 — МК fayli (§4d): javob envelope emas, faylning o'zi; `?passenger_index=` (noldan); ticketing tugamagan order → 409 |
 | POST | `/public/orders/{id}/payment/` | customer | 2 — `{method, card_id \| card}`; kodni yuboradi; 200, `payment.status=awaiting_otp`, `payment_id`, `phone_hint`; yoqilmagan `method` → 422 |
-| POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed` |
+| POST | `/public/orders/{id}/payment/confirm/` | customer | 2/3 — `{payment_id, otp}`; 200; `paid` bo'lsa o'sha so'rovda ticketing: `ticketing.status` `ticketed` · `processing` · `failed`; kod rad etilsa `payment.status` yana `awaiting_otp` + `error` — o'sha `payment_id` bilan qayta kiritish yoki `resend/` |
+| POST | `/public/orders/{id}/payment/resend/` | customer | 2 — `{payment_id}`; ochiq urinishga kodni qayta yuboradi (yangi urinish yo'q, pul yechilmaydi); 200, `awaiting_otp` |
 | POST | `/public/orders/{id}/cancel/` | customer | 1 — body yo'q (§4c): avval `POST /v1/content/cancel/`, keyin `cancelled/customer`; allaqachon bekor qilingan order → 200 va GTS'ga borilmaydi; to'langan, ticketing'dagi yoki `confirming` urinishli order → 409 |
 | GET | `/admin/orders/` | staff | qatorlar mijoz `status` + xom `booking_status`, `payment_status`, `ticketing_status`, sabab uchun `cancel_reason`, `ticketing_error`, `updated_at`; filtrlar: `status` (§2 dagi oltita so'z — SQL `stage_of` ning o'zidan hosil qilinadi, `lifecycle.stage_filter`) va uchta xom ustun, birga ishlaydi; **support inbox = `status=ticketing_failed`** — ekrani "supportga murojaat qiling" deydigan har bir order, puli qaytgani emas; `ordering` — `created_at` yoki `updated_at` (`-updated_at` — eng so'nggi o'zgargan birinchi); `search` — PNR yoki GTS raqami |
 | GET | `/admin/orders/{id}/` | staff | mijoz ko'rinishi (`order` da xom uchta ustun ham) + `customer_id`, `ticketing_attempts`, `events[]` (tarix), `payments[]` (urinishlar, reference'siz) |
