@@ -59,7 +59,25 @@ async def login(data: LoginIn, request: Request, session: SessionDep) -> TokenPa
     )
 
 
-@auth_router.post("/refresh/", summary="Rotate the refresh token for a new pair")
+@auth_router.post(
+    "/refresh/",
+    summary="Rotate the refresh token for a new pair",
+    description=(
+        "Exchanges a refresh token for a new access/refresh pair and retires "
+        "the one presented.\n\n"
+        "**Several sessions are normal.** An employee may be signed in on as many "
+        "devices, browsers and tabs as they like, and nothing that happens "
+        "to one session reaches another.\n\n"
+        "**A token just replaced still works for a minute.** Two tabs "
+        "refreshing at once, or a request retried after its response was lost, "
+        "present a token that rotation has already retired; that is a race, "
+        "not a replay, so it is answered with a fresh pair. Store whichever "
+        "pair comes back and drop the rest.\n\n"
+        "`401` means this one session is over — the token was retired more than "
+        "a minute ago, or a logout, a password change or a block ended it. "
+        "Other sessions are unaffected; sign in again for this one."
+    ),
+)
 async def refresh(
     data: RefreshIn, request: Request, session: SessionDep
 ) -> TokenPairOut:

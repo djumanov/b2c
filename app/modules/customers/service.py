@@ -6,10 +6,11 @@ Nothing outside reaches past it to ``models`` or ``repository``
 (ARCHITECTURE.md §4).
 
 The token machinery is the ``staff`` module's, re-aimed at ``Audience.PUBLIC``:
-strict rotation, a replayed refresh token treated as theft, and the
-subject-wide ``revoked_before`` mark so a password change also ends the access
-tokens nobody can name. Two audiences behaving differently under the same threat
-would be two sets of rules to remember.
+rotation on every refresh, a one-minute grace window so a customer with two
+tabs open is not signed out of both, and the subject-wide ``revoked_before``
+mark so a password change also ends the access tokens nobody can name. Two
+audiences behaving differently under the same threat would be two sets of rules
+to remember.
 
 What is specific to this surface:
 
@@ -72,6 +73,8 @@ from app.core.security import (
     denylist_ttl,
     denylist_ttl_for,
     hash_password,
+    is_marked_revoked,
+    is_rotation_race,
     password_needs_rehash,
     revoked_before_key,
     revoked_before_ttl,
@@ -174,7 +177,13 @@ async def _issue_pair(
     *,
     user_agent: str | None,
     ip: str | None,
+    replaces: CustomerRefreshToken | None = None,
 ) -> TokenPairOut:
+    """Mint an access/refresh pair, optionally retiring the one it succeeds.
+
+    ``replaces`` keeps rotation in one place: the new ``jti`` is known here and
+    nowhere else, and it is what the retired row has to record.
+    """
     # No ``role`` on either token: API.md §4 gives that claim to staff only, and
     # a public token that carried one would be a token asking to be trusted with
     # something it is not.
@@ -188,6 +197,11 @@ async def _issue_pair(
         audience=Audience.PUBLIC,
         token_type=TokenType.REFRESH,
     )
+    # A token replaced inside the grace window can be presented more than once.
+    # Only the first replacement is recorded: re-stamping ``revoked_at`` on each
+    # would slide the window forward and keep one token alive indefinitely.
+    if replaces is not None and not replaces.is_revoked:
+        await _revoke(replaces, replaced_by=refresh_claims.jti)
     session.add(
         CustomerRefreshToken(
             customer_id=customer.id,
@@ -204,8 +218,17 @@ async def _issue_pair(
     )
 
 
-async def _revoke(token: CustomerRefreshToken) -> None:
+async def _revoke(
+    token: CustomerRefreshToken, *, replaced_by: str | None = None
+) -> None:
+    """End one session. ``replaced_by`` is set only when rotation ended it.
+
+    That distinction is the whole of the grace window: a token rotation put
+    aside a moment ago may still be in flight from a second tab, while one a
+    logout or a password change ended was ended on purpose.
+    """
     token.revoked_at = utcnow()
+    token.replaced_by_jti = replaced_by
     await get_redis().set(
         denylist_key(token.jti), "1", ex=denylist_ttl_for(token.expires_at)
     )
@@ -227,6 +250,27 @@ async def _revoke_all_sessions(session: AsyncSession, customer_id: uuid.UUID) ->
         revoked_before_value(),
         ex=revoked_before_ttl(Audience.PUBLIC),
     )
+
+
+async def _race_forgiven(token: CustomerRefreshToken) -> bool:
+    """Is this revoked token a second tab arriving late, and is that still safe?
+
+    Two questions, because the grace window forgives a race but not a
+    revocation that overtook one. Rotation must be what retired the token and
+    it must have been recent — *and* nobody must have ended every session this
+    customer holds since. A password change, a block or a deletion writes the
+    subject-wide mark, and a token rotated out a moment before it must not be
+    able to mint a fresh pair inside the window it would otherwise have had.
+    """
+    revoked_at = token.revoked_at
+    if revoked_at is None:
+        return False
+    if not is_rotation_race(
+        revoked_at=revoked_at, replaced_by_jti=token.replaced_by_jti
+    ):
+        return False
+    mark = await get_redis().get(revoked_before_key(token.customer_id))
+    return not is_marked_revoked(revoked_at, mark, tolerate_same_second=False)
 
 
 def _decode_refresh(token: str) -> TokenClaims:
@@ -685,12 +729,14 @@ async def refresh_session(
     claims = _decode_refresh(refresh_token)
     stored = await repository.token_by_jti(session, claims.jti)
 
-    if stored is None or stored.is_revoked:
-        # Presented after revocation: replay or theft. End every session this
-        # customer has rather than only refusing this one.
-        await _revoke_all_sessions(session, claims.subject_id)
-        await session.commit()
-        logger.warning("customer_refresh_reuse", customer_id=str(claims.subject_id))
+    if stored is None:
+        raise Unauthorized("This session is no longer valid")
+
+    forgiven = await _race_forgiven(stored)
+    if stored.is_revoked and not forgiven:
+        # Ended on purpose — a logout, a password change, a block — or replaced
+        # long enough ago that no honest client is still holding it. Refused on
+        # its own: the customer's other sessions are none of this one's business.
         raise Unauthorized("This session has been revoked")
 
     customer = await repository.by_id(session, claims.subject_id)
@@ -701,8 +747,14 @@ async def refresh_session(
     if customer.is_blocked:
         raise Forbidden("This account has been blocked")
 
-    await _revoke(stored)
-    pair = await _issue_pair(session, customer, user_agent=user_agent, ip=ip)
+    if forgiven:
+        # Worth a line: it is how a client that refreshes more often than it
+        # needs to shows up in the log, and it costs a session row each time.
+        logger.info("customer_refresh_race", customer_id=str(customer.id))
+
+    pair = await _issue_pair(
+        session, customer, user_agent=user_agent, ip=ip, replaces=stored
+    )
     await session.commit()
     return pair
 

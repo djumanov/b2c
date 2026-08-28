@@ -319,6 +319,11 @@ class CustomerRefreshToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: The ``jti`` that replaced this one, set only by rotation. It is how a
+    #: race — two tabs refreshing at once, a retried request — is told apart
+    #: from a token a logout or a password change put an end to
+    #: (``core.security.is_rotation_race``).
+    replaced_by_jti: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: Context for a future "your devices" screen. Never used for authorisation.
     user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)

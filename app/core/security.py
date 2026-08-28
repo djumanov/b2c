@@ -17,6 +17,13 @@ Refresh tokens rotate — every refresh revokes the one that was used — and
 revocation is a ``jti`` denylist in Redis that outlives the token's own TTL by
 nothing more than a safety margin.
 
+Rotation is forgiving for one window, though. A subject holds as many sessions
+as they like, and a browser is not a single caller: two tabs, a page that fires
+several requests and refreshes on each 401, or a retry of a request whose
+response was lost all present the token they were handed a moment ago. That is
+a race, not a replay, so ``ROTATION_GRACE`` keeps a just-replaced token
+answering — and one session's trouble never reaches another's.
+
 The denylist alone cannot end a *session*, though. A refresh token is stored,
 so it can be named; an access token is not, so the only thing left of it after
 it is handed out is what it says about itself. Ending every session therefore
@@ -63,6 +70,16 @@ TOKEN_TTL: Final[dict[tuple[Audience, TokenType], timedelta]] = {
     (Audience.ADMIN, TokenType.ACCESS): timedelta(minutes=15),
     (Audience.ADMIN, TokenType.REFRESH): timedelta(hours=12),
 }
+
+
+#: How long a refresh token that rotation has just replaced still answers.
+#:
+#: The alternative — refusing it, or reading it as a stolen copy — signs a
+#: person out of work they are in the middle of, because the commonest way to
+#: present a replaced token is to have two tabs open. Inside this window the
+#: answer is a new pair; outside it, or for a token that a logout, a password
+#: change or a block revoked, the answer is 401 for that token alone.
+ROTATION_GRACE: Final = timedelta(seconds=60)
 
 
 class TokenError(Exception):
@@ -195,6 +212,27 @@ def decode_token(token: str, *, expected_type: TokenType | None = None) -> Token
     return claims
 
 
+def is_rotation_race(
+    *,
+    revoked_at: datetime | None,
+    replaced_by_jti: str | None,
+    now: datetime | None = None,
+) -> bool:
+    """Was this refresh token replaced by rotation inside ``ROTATION_GRACE``?
+
+    Takes the two stored columns rather than the row: the row belongs to a
+    module and this file is ``core`` (ARCHITECTURE.md §4). Both surfaces keep
+    their own table and ask the same question of it.
+
+    ``replaced_by_jti`` is what tells the two ways a token stops working apart.
+    Rotation sets it; a logout, a password change and a block do not, and none
+    of those is a race to be forgiven.
+    """
+    if revoked_at is None or replaced_by_jti is None:
+        return False
+    return (now or datetime.now(UTC)) - revoked_at <= ROTATION_GRACE
+
+
 # --- revocation ---------------------------------------------------------------
 
 _DENYLIST_PREFIX: Final = "auth:revoked-jti"
@@ -247,14 +285,27 @@ def revoked_before_value(now: datetime | None = None) -> str:
     return str(int((now or datetime.now(UTC)).timestamp()))
 
 
-def is_revoked_before(claims: TokenClaims, mark: str | bytes | None) -> bool:
-    """Was this token issued before its subject's sessions were all ended?
+def is_marked_revoked(
+    moment: datetime,
+    mark: str | bytes | None,
+    *,
+    tolerate_same_second: bool = True,
+) -> bool:
+    """Does a ``revoked_before`` mark reach back past ``moment``?
 
-    A token issued in the *same second* as the mark survives, which is
-    deliberate: `iat` is only accurate to the second, and the alternative locks
-    a person out of the login they make immediately after changing their own
-    password. The cost is a window no wider than one second, at an instant an
-    attacker would have to be inside already.
+    The mark is written at whole-second resolution, so *the same second* is
+    genuinely ambiguous — and the two callers want opposite answers to it.
+
+    ``is_revoked_before`` tolerates it. `iat` is truncated to the second too,
+    and refusing the same second would lock a person out of the login they make
+    immediately after changing their own password. The cost is a window no
+    wider than one second, at an instant an attacker would have to be inside
+    already.
+
+    The rotation grace window does not tolerate it. A token retired in the same
+    second as a password change must not go on minting pairs for another
+    minute; refusing it costs one re-login, which is precisely what a password
+    change is asking for.
 
     An unreadable mark counts as revoked. It is written by this process and
     nothing else; if it says something else, something is wrong, and on a
@@ -263,13 +314,22 @@ def is_revoked_before(claims: TokenClaims, mark: str | bytes | None) -> bool:
     if mark is None:
         return False
     try:
-        return int(claims.issued_at.timestamp()) < int(mark)
+        moment_second, boundary = int(moment.timestamp()), int(mark)
     except (TypeError, ValueError):
         return True
+    if tolerate_same_second:
+        return moment_second < boundary
+    return moment_second <= boundary
+
+
+def is_revoked_before(claims: TokenClaims, mark: str | bytes | None) -> bool:
+    """Was this token issued before its subject's sessions were all ended?"""
+    return is_marked_revoked(claims.issued_at, mark)
 
 
 __all__ = [
     "ALGORITHM",
+    "ROTATION_GRACE",
     "TOKEN_TTL",
     "Audience",
     "TokenClaims",
@@ -281,7 +341,9 @@ __all__ = [
     "denylist_ttl",
     "denylist_ttl_for",
     "hash_password",
+    "is_marked_revoked",
     "is_revoked_before",
+    "is_rotation_race",
     "password_needs_rehash",
     "revoked_before_key",
     "revoked_before_ttl",
