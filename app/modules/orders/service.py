@@ -1702,26 +1702,84 @@ async def cancel_order(
 Decision = Literal["ticketed", "failed", "wait", "resend"]
 
 
-async def ticket(session: AsyncSession, order_id: uuid.UUID, *, actor: str) -> None:
-    """Ask GTS to issue the ticket — the only place the ticketing POST is sent.
+async def _claim_send(
+    session: AsyncSession, order_id: uuid.UUID, *, actor: str, resend: bool
+) -> Order | None:
+    """May this caller send the ticketing request — and if so, record that it did.
 
-    The order is marked ``processing`` and **committed before** the POST, so
-    whatever happens next the request is never repeated by accident: a
-    crash or a timeout leaves ``processing``, and the sweep settles it by
-    reading the order back. GTS's own refusal is read back too before it is
-    believed — a request re-sent for an order GTS had already ticketed is
-    refused, and the refusal must not mark a ticketed order failed.
+    The whole decision happens **under the row lock**, in one transaction with
+    the write that records it, so two callers cannot both come away believing
+    they may send. ``None`` means "somebody else is sending, or nobody may".
+
+    The subtlety is that ``processing`` is not by itself a refusal.
+    ``_apply_ticketing`` deliberately leaves an order there when it decides a
+    re-send is due — GTS shows no sign of the first request — and calls back in
+    with ``resend=True``. So the two cases ask different questions:
+
+    * **First send.** ``pending`` (nobody has asked) or ``failed`` (a staff
+      retry, or a re-send the sweep gave up on). Anything else means a request
+      is already out, or the ticket already exists.
+    * **Re-send.** Still ``processing``, still under the send cap, and — this is
+      what closes the race — ``TICKETING_POST_GRACE`` has passed since the last
+      request went out. A request sent moments ago is not a lost one, so a
+      caller holding a decision made before it is holding a stale decision.
+      That clause is exact whatever ``TICKETING_MAX_SENDS`` is, so raising the
+      cap later cannot quietly reopen the hole.
+
+    ``paid`` and ``booked`` are checked here rather than left to
+    ``lifecycle.transition``'s own guard. The sweep picks its rows with an
+    unlocked ``SELECT``, so an order cancelled or refunded in between would
+    make ``transition`` raise ``Conflict`` — out of ``ticket()``, out of the
+    sweep pass, and the passes behind it would not run at all.
     """
-    client = await integrations_service.gts_client(session)
     order = await _locked(session, order_id)
     if order is None:
-        return
-    events = lifecycle.transition(
-        order, actor=actor, ticketing=TicketingStatus.PROCESSING
+        await session.rollback()
+        return None
+
+    allowed = (
+        order.status == OrderStatus.BOOKED
+        and order.payment_status == PaymentStatus.PAID
     )
+    if allowed:
+        if resend:
+            requested = order.ticketing_requested_at
+            allowed = (
+                order.ticketing_status == TicketingStatus.PROCESSING
+                and order.ticketing_attempts < TICKETING_MAX_SENDS
+                and requested is not None
+                and utcnow() - requested >= TICKETING_POST_GRACE
+            )
+        else:
+            allowed = order.ticketing_status in (
+                TicketingStatus.PENDING,
+                TicketingStatus.FAILED,
+            )
+
+    if not allowed:
+        # Logged **before** the rollback: rolling back expires every loaded
+        # attribute, and reading one afterwards would go back to the database
+        # from a context that cannot await.
+        logger.info(
+            "ticketing_send_skipped",
+            order_id=str(order_id),
+            resend=resend,
+            status=order.status,
+            payment_status=order.payment_status,
+            ticketing_status=order.ticketing_status,
+            sends=order.ticketing_attempts,
+        )
+        await session.rollback()
+        return None
+
+    if not resend:
+        session.add_all(
+            lifecycle.transition(
+                order, actor=actor, ticketing=TicketingStatus.PROCESSING
+            )
+        )
     order.ticketing_attempts += 1
     order.ticketing_requested_at = utcnow()
-    session.add_all(events)
     session.add(
         lifecycle.event(
             order,
@@ -1737,6 +1795,42 @@ async def ticket(session: AsyncSession, order_id: uuid.UUID, *, actor: str) -> N
         gts_order_number=order.gts_order_number,
         send=order.ticketing_attempts,
     )
+    return order
+
+
+async def ticket(
+    session: AsyncSession,
+    order_id: uuid.UUID,
+    *,
+    actor: str,
+    resend: bool = False,
+) -> bool:
+    """Ask GTS to issue the ticket — the only place the ticketing POST is sent.
+
+    ``True`` when the request actually went out. ``False`` means another
+    worker was already sending one, or the order stopped being ticketable
+    between the caller's read and this lock: both are ordinary, and neither is
+    the caller's to report as an error.
+
+    The order is marked ``processing`` and **committed before** the POST, so
+    whatever happens next the request is never repeated by accident: a
+    crash or a timeout leaves ``processing``, and the sweep settles it by
+    reading the order back. GTS's own refusal is read back too before it is
+    believed — a request re-sent for an order GTS had already ticketed is
+    refused, and the refusal must not mark a ticketed order failed.
+
+    ``_claim_send`` is what decides, under the lock. Pass ``resend=True`` only
+    when ``_apply_ticketing`` has just answered ``"resend"`` for this order —
+    that is the one case in which a ``processing`` order may be asked again.
+
+    The GTS client is resolved **before** the claim: a credential that cannot
+    be read must not leave an order marked ``processing`` with no request
+    behind it.
+    """
+    client = await integrations_service.gts_client(session)
+    order = await _claim_send(session, order_id, actor=actor, resend=resend)
+    if order is None:
+        return False
 
     adapter = _adapter(order)
     error: str | None = None
@@ -1744,10 +1838,12 @@ async def ticket(session: AsyncSession, order_id: uuid.UUID, *, actor: str) -> N
     try:
         snapshot = await adapter.ticket(client, order.gts_order_number)
     except UpstreamTimeout as exc:
+        # The request may well have reached GTS, so it counts as sent: the
+        # order stays ``processing`` and the sweep reads it back.
         logger.warning(
             "ticketing_answer_unknown", order_id=str(order.id), error=str(exc)
         )
-        return
+        return True
     except UpstreamError as exc:
         error = exc.message
         try:
@@ -1755,6 +1851,7 @@ async def ticket(session: AsyncSession, order_id: uuid.UUID, *, actor: str) -> N
         except (UpstreamError, UpstreamTimeout):
             snapshot = None
     await _apply_ticketing(session, order_id, snapshot, error=error, actor=actor)
+    return True
 
 
 def _decide(
@@ -1888,8 +1985,14 @@ async def recheck_processing(session: AsyncSession) -> int:
             actor=lifecycle.SYSTEM,
             skip_locked=True,
         )
-        if decision == "resend":
-            await ticket(session, probe.id, actor=lifecycle.SYSTEM)
+        # Two overlapping sweeps can both decide to re-send: the lock is
+        # released when ``_apply_ticketing`` commits, and neither has bumped
+        # the counter yet. ``ticket`` re-checks under the lock, and a re-send
+        # it refuses is not a move.
+        if decision == "resend" and not await ticket(
+            session, probe.id, actor=lifecycle.SYSTEM, resend=True
+        ):
+            decision = "wait"
         if decision != "wait":
             moved += 1
     return moved
@@ -1901,6 +2004,12 @@ async def ticket_paid_pending(session: AsyncSession) -> int:
     ``settle_attempt`` commits the payment and then asks for the ticket; a
     worker that dies in between leaves ``paid`` / ``pending``, and this is
     the safety net that notices.
+
+    The rows are picked with an **unlocked** read, so between this ``SELECT``
+    and the send an order can be ticketed by the request that just paid it, or
+    stop being ticketable altogether. ``ticket`` re-reads under the lock and
+    answers ``False`` for both; what comes back here is the number of requests
+    that actually went out, not the number of candidates.
     """
     rows = (
         await session.scalars(
@@ -1914,10 +2023,12 @@ async def ticket_paid_pending(session: AsyncSession) -> int:
             .limit(SWEEP_BATCH)
         )
     ).all()
+    sent = 0
     for probe in rows:
         request_id_var.set(new_request_id())
-        await ticket(session, probe.id, actor=lifecycle.SYSTEM)
-    return len(rows)
+        if await ticket(session, probe.id, actor=lifecycle.SYSTEM):
+            sent += 1
+    return sent
 
 
 # --- the sweep (tasks/orders.py) ---------------------------------------------------
@@ -2273,7 +2384,7 @@ async def sync_order(
             session, order_id, snapshot, error=None, actor=actor
         )
         if decision == "resend":
-            await ticket(session, order_id, actor=actor)
+            await ticket(session, order_id, actor=actor, resend=True)
         order = await _require(session, order_id)
         audit_context.describe(resource_id=order.id)
         return await _admin_view(session, order)
@@ -2335,7 +2446,14 @@ async def retry_ticketing(
     Synced first, so a ticket GTS issued in the meantime is recorded rather
     than requested twice; refused while the order is not paid, not live, or
     GTS shows the hold gone. Staff are not bound by the sweep's send cap —
-    that cap exists to stop a machine, not a person who has looked.
+    that cap exists to stop a machine, not a person who has looked — because
+    a staff retry always takes ``ticket``'s first-send path, which does not
+    consult the cap.
+
+    The checks below are a read, so the sweep can still claim the order in the
+    moment between them and the send. ``ticket`` says so by answering
+    ``False``, and the operator gets the same sentence as if the check itself
+    had caught it.
     """
     await sync_order(session, order_id, staff=staff)
     order = await _require(session, order_id)
@@ -2347,7 +2465,8 @@ async def retry_ticketing(
         raise Conflict("A ticketing request is already in flight — sync again later")
     if gts_order.is_released(order.gts_status):
         raise Conflict(f"GTS has released this order (status {order.gts_status})")
-    await ticket(session, order_id, actor=lifecycle.staff(staff.id))
+    if not await ticket(session, order_id, actor=lifecycle.staff(staff.id)):
+        raise Conflict("A ticketing request is already in flight — sync again later")
     order = await _require(session, order_id)
     audit_context.describe(resource_id=order.id)
     return await _admin_view(session, order)
