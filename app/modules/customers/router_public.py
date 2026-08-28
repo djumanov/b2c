@@ -86,36 +86,6 @@ async def login(data: LoginIn, request: Request, session: SessionDep) -> TokenPa
     )
 
 
-@router.post(
-    "/refresh/",
-    summary="Rotate the refresh token for a new pair",
-    description=(
-        "Exchanges a refresh token for a new access/refresh pair and retires "
-        "the one presented.\n\n"
-        "**Several sessions are normal.** A customer may be signed in on as many "
-        "devices, browsers and tabs as they like, and nothing that happens "
-        "to one session reaches another.\n\n"
-        "**A token just replaced still works for a minute.** Two tabs "
-        "refreshing at once, or a request retried after its response was lost, "
-        "present a token that rotation has already retired; that is a race, "
-        "not a replay, so it is answered with a fresh pair. Store whichever "
-        "pair comes back and drop the rest.\n\n"
-        "`401` means this one session is over — the token was retired more than "
-        "a minute ago, or a logout, a password change or a block ended it. "
-        "Other sessions are unaffected; sign in again for this one."
-    ),
-)
-async def refresh(
-    data: RefreshIn, request: Request, session: SessionDep
-) -> TokenPairOut:
-    return await service.refresh_session(
-        session,
-        data.refresh_token,
-        user_agent=request.headers.get("user-agent"),
-        ip=client_ip(request),
-    )
-
-
 @router.post("/social/{provider}/", summary="Sign in with a social provider")
 async def social_login(
     # A plain string, not the enum: a name this release does not know has to
@@ -182,4 +152,46 @@ async def confirm_password_reset(
     return Response(status_code=204)
 
 
-__all__ = ["router"]
+# --- holding a session, as opposed to proving one -----------------------------
+
+session_router = enveloped_router(
+    prefix="/auth",
+    tags=["public-auth"],
+    # The ``session`` bucket, not ``auth``. Rotating a refresh token guesses at
+    # nothing, and five a minute per IP is a number two tabs — or one household
+    # behind one address — reach without trying.
+    dependencies=[Depends(RateLimit("session"))],
+)
+
+
+@session_router.post(
+    "/refresh/",
+    summary="Rotate the refresh token for a new pair",
+    description=(
+        "Exchanges a refresh token for a new access/refresh pair and retires "
+        "the one presented.\n\n"
+        "**Several sessions are normal.** A customer may be signed in on as many "
+        "devices, browsers and tabs as they like, and nothing that happens "
+        "to one session reaches another.\n\n"
+        "**A token just replaced still works for a minute.** Two tabs "
+        "refreshing at once, or a request retried after its response was lost, "
+        "present a token that rotation has already retired; that is a race, "
+        "not a replay, so it is answered with a fresh pair. Store whichever "
+        "pair comes back and drop the rest.\n\n"
+        "`401` means this one session is over — the token was retired more than "
+        "a minute ago, or a logout, a password change or a block ended it. "
+        "Other sessions are unaffected; sign in again for this one."
+    ),
+)
+async def refresh(
+    data: RefreshIn, request: Request, session: SessionDep
+) -> TokenPairOut:
+    return await service.refresh_session(
+        session,
+        data.refresh_token,
+        user_agent=request.headers.get("user-agent"),
+        ip=client_ip(request),
+    )
+
+
+__all__ = ["router", "session_router"]

@@ -1,7 +1,10 @@
 """``/admin/auth/*`` (API.md §27) and ``/admin/staff/*`` (API.md §38).
 
-Two routers, because the two paths answer to different rules. Auth is mostly
-unauthenticated and carries the tight ``auth`` rate limit; the team resource is
+Three routers, because the paths answer to different rules. ``auth_router`` is
+mostly unauthenticated and carries the tight ``auth`` limit; ``session_router``
+shares its ``/auth`` prefix but holds the two endpoints that guess at nothing —
+rotating a refresh token, asking who is signed in — so the tight limit does not
+fall on a panel that legitimately calls them often; the team resource is
 **entirely** ``owner`` — API.md §5 puts *Jamoa* out of ``admin``'s reach
 altogether, so the guard sits on the router and no handler can forget it.
 
@@ -60,36 +63,6 @@ async def login(data: LoginIn, request: Request, session: SessionDep) -> TokenPa
 
 
 @auth_router.post(
-    "/refresh/",
-    summary="Rotate the refresh token for a new pair",
-    description=(
-        "Exchanges a refresh token for a new access/refresh pair and retires "
-        "the one presented.\n\n"
-        "**Several sessions are normal.** An employee may be signed in on as many "
-        "devices, browsers and tabs as they like, and nothing that happens "
-        "to one session reaches another.\n\n"
-        "**A token just replaced still works for a minute.** Two tabs "
-        "refreshing at once, or a request retried after its response was lost, "
-        "present a token that rotation has already retired; that is a race, "
-        "not a replay, so it is answered with a fresh pair. Store whichever "
-        "pair comes back and drop the rest.\n\n"
-        "`401` means this one session is over — the token was retired more than "
-        "a minute ago, or a logout, a password change or a block ended it. "
-        "Other sessions are unaffected; sign in again for this one."
-    ),
-)
-async def refresh(
-    data: RefreshIn, request: Request, session: SessionDep
-) -> TokenPairOut:
-    return await service.refresh_session(
-        session,
-        data.refresh_token,
-        user_agent=request.headers.get("user-agent"),
-        ip=client_ip(request),
-    )
-
-
-@auth_router.post(
     "/logout/",
     status_code=204,
     dependencies=[Depends(current_staff)],
@@ -98,11 +71,6 @@ async def refresh(
 async def logout(data: RefreshIn, session: SessionDep) -> Response:
     await service.logout(session, data.refresh_token)
     return Response(status_code=204)
-
-
-@auth_router.get("/me/", summary="The signed-in employee and their role")
-async def me(staff: CurrentStaff, session: SessionDep) -> StaffMeOut:
-    return service.to_me(await service.get_active(session, staff.id))
 
 
 @auth_router.post("/password/change/", status_code=204, summary="Change own password")
@@ -136,6 +104,53 @@ async def confirm_password_reset(
 ) -> Response:
     await service.confirm_password_reset(session, data.token, data.new_password)
     return Response(status_code=204)
+
+
+# --- holding a session, as opposed to proving one -----------------------------
+
+session_router = enveloped_router(
+    prefix="/auth",
+    tags=["admin-auth"],
+    # The ``session`` bucket, not ``auth``. Neither endpoint below guesses at
+    # anything, and five a minute is a number a panel with two tabs open reaches
+    # on its own — which read to the client as being signed out at random.
+    dependencies=[Depends(RateLimit("session"))],
+)
+
+
+@session_router.post(
+    "/refresh/",
+    summary="Rotate the refresh token for a new pair",
+    description=(
+        "Exchanges a refresh token for a new access/refresh pair and retires "
+        "the one presented.\n\n"
+        "**Several sessions are normal.** An employee may be signed in on as many "
+        "devices, browsers and tabs as they like, and nothing that happens "
+        "to one session reaches another.\n\n"
+        "**A token just replaced still works for a minute.** Two tabs "
+        "refreshing at once, or a request retried after its response was lost, "
+        "present a token that rotation has already retired; that is a race, "
+        "not a replay, so it is answered with a fresh pair. Store whichever "
+        "pair comes back and drop the rest.\n\n"
+        "`401` means this one session is over — the token was retired more than "
+        "a minute ago, or a logout, a password change or a block ended it. "
+        "Other sessions are unaffected; sign in again for this one."
+    ),
+)
+async def refresh(
+    data: RefreshIn, request: Request, session: SessionDep
+) -> TokenPairOut:
+    return await service.refresh_session(
+        session,
+        data.refresh_token,
+        user_agent=request.headers.get("user-agent"),
+        ip=client_ip(request),
+    )
+
+
+@session_router.get("/me/", summary="The signed-in employee and their role")
+async def me(staff: CurrentStaff, session: SessionDep) -> StaffMeOut:
+    return service.to_me(await service.get_active(session, staff.id))
 
 
 # --- the team (API.md §38) ----------------------------------------------------------
@@ -198,4 +213,4 @@ async def reset_staff_password(id: uuid.UUID, session: SessionDep) -> Response:
     return Response(status_code=204)
 
 
-__all__ = ["auth_router", "router"]
+__all__ = ["auth_router", "router", "session_router"]

@@ -89,9 +89,18 @@ never refused.
 
 ### Rate limits
 
-Per caller, per minute: sign-in 5, search 30, **payment 10**, other public
-routes 120, admin routes 300. A refused request is a `429` with
-`Retry-After`.
+Per caller, per minute: sign-in 5, keeping a session 30, search 30,
+**payment 10**, other public routes 120, admin routes 300. A refused request
+is a `429` with `Retry-After`.
+
+*Sign-in* is the tight one, and it covers only what can be guessed at: a
+password, an emailed code, a reset token. Rotating a refresh token and reading
+`auth/me/` guess at nothing and sit in the roomier *session* limit, so several
+tabs are not mistaken for an attack.
+
+The caller is the signed-in subject where there is one, and the address the
+reverse proxy reports where there is not — `X-Forwarded-For` as sent by a
+client does not choose the bucket.
 """
 
 #: Tag groups, in the order they appear. Every tag a router uses is listed
