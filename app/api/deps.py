@@ -26,9 +26,11 @@ from dataclasses import dataclass
 from typing import Annotated, Final
 
 from fastapi import Depends, Header, Query, Request
+from redis.exceptions import RedisError
 
 from app.api.errors import Forbidden, NotFound, RateLimited, Unauthorized
 from app.core import i18n
+from app.core.logging import get_logger
 from app.core.roles import Role, satisfies
 from app.core.security import (
     Audience,
@@ -47,6 +49,8 @@ from app.db.session import SessionDep
 # so no cycle. Reading a flag's *value* needs the service, and that import is
 # deferred inside ``RequireFeature.__call__``.
 from app.modules.settings.defaults import FEATURE_DEFAULTS
+
+logger = get_logger(__name__)
 
 MAX_PAGE_SIZE: Final = 100
 DEFAULT_PAGE_SIZE: Final = 20
@@ -278,7 +282,14 @@ LanguageDep = Annotated[LanguageContext, Depends(language)]
 #: others fall back to the IP when the caller is anonymous.
 RATE_LIMITS: Final[dict[str, tuple[int, int]]] = {
     # kind: (max requests, window seconds)
+    # Guessing a credential: a password, a four-digit code, a reset token.
+    # Five a minute, and by IP, because nobody is signed in yet.
     "auth": (5, 60),
+    # Holding a session already proved — rotating a refresh token, reading
+    # ``auth/me/``. Nothing here is guessable, so the ``auth`` bucket only ever
+    # blocked honest clients: several tabs, a page that refreshes on each 401,
+    # a panel that asks who it is on every screen. Separate, and roomy.
+    "session": (30, 60),
     "search": (30, 60),
     # Tighter than the rest of the public surface: what sits behind it writes
     # card data, and a bucket that lets a script hammer it is a bucket that
@@ -290,11 +301,33 @@ RATE_LIMITS: Final[dict[str, tuple[int, int]]] = {
 
 
 def client_ip(request: Request) -> str:
-    # X-Forwarded-For is set by the client's reverse proxy; the first entry is
-    # the original caller.
+    """The caller's address, as far as it can be *trusted* to be one.
+
+    Not the first ``X-Forwarded-For`` entry, which is what this used to read.
+    That entry is whatever the caller typed: nginx builds the header with
+    ``$proxy_add_x_forwarded_for``, which **appends** the peer it saw to what
+    arrived, so a request carrying ``X-Forwarded-For: 9.9.9.9`` reaches us as
+    ``9.9.9.9, <real ip>``. Reading the front of that made every rate-limit
+    bucket the caller's to choose — and a login limit that a header defeats is
+    not a login limit.
+
+    So: ``X-Real-IP``, which the proxy *overwrites* rather than extends
+    (``docker/nginx.conf``), then the **last** hop of ``X-Forwarded-For``,
+    which is the same address by construction, then the socket.
+
+    One consequence worth knowing. Put a CDN in front of nginx and this becomes
+    the CDN edge, so visitors behind one edge share a bucket. That errs towards
+    limiting too much, which is the safe direction; the fix is a trusted-proxy
+    depth, and it needs to be configured rather than guessed.
+    """
+    real = request.headers.get("x-real-ip")
+    if real and real.strip():
+        return real.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        if hops:
+            return hops[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -328,20 +361,35 @@ def RateLimit(  # noqa: N802 - reads as a marker at the use site
     """
     limit, window = RATE_LIMITS[kind]
 
-    async def dependency(request: Request) -> None:
+    async def count_hit(key: str) -> tuple[int, int]:
         redis = get_redis()
-        key = f"ratelimit:{kind}:{request_subject(request)}"
         async with redis.pipeline(transaction=True) as pipe:
             pipe.incr(key)
             pipe.ttl(key)
             count, ttl = await pipe.execute()
         if count == 1 or ttl < 0:
+            # Not in the pipeline above, so a process that dies between the two
+            # leaves a counter with no expiry. ``ttl < 0`` is that case, and
+            # re-arming here means it costs one window rather than forever.
             await redis.expire(key, window)
             ttl = window
+        return int(count), int(ttl)
+
+    async def dependency(request: Request) -> None:
+        try:
+            count, ttl = await count_hit(f"ratelimit:{kind}:{request_subject(request)}")
+        except RedisError:
+            # Fail **open**. This limiter hangs off ``/public`` and ``/admin``
+            # wholesale, so raising here would turn a Redis blip into a 500 on
+            # every endpoint in the API — including the reads that only ever
+            # needed PostgreSQL. Blunting abuse is worth less than staying up,
+            # and the log line is what says the guard was down.
+            logger.warning("rate_limit_unavailable", kind=kind, exc_info=True)
+            return
         if count > limit:
             raise RateLimited(
                 "Too many requests, please try again shortly",
-                retry_after=max(1, int(ttl)),
+                retry_after=max(1, ttl),
             )
 
     return dependency

@@ -9,7 +9,9 @@ their response shape is the provider's protocol (API.md §40).
 
 Rate limits are attached per surface here rather than per endpoint, so a new
 router cannot forget them (API.md §14). Search raises its own tighter limit
-where it is mounted.
+where it is mounted, and each auth module mounts a second router at the same
+prefix for the endpoints that hold a session rather than prove one — refresh
+and ``auth/me/`` — so the sign-in limit does not fall on them.
 
 Note that ``route_class`` does **not** propagate to included routers — each
 module router declares its own via ``enveloped_router``. See that function.
@@ -61,6 +63,7 @@ webhooks_router = APIRouter(prefix="/webhooks")
 
 public_router.include_router(settings_public.router)
 public_router.include_router(customers_public.router)
+public_router.include_router(customers_public.session_router)
 public_router.include_router(customers_profile.router)
 public_router.include_router(customers_profile.passengers_router)
 # A profile path served by ``payments`` — the row is an encrypted autofill
@@ -78,6 +81,7 @@ public_router.include_router(orders_public.router)
 public_router.include_router(products_public.router)
 
 admin_router.include_router(staff_admin.auth_router)
+admin_router.include_router(staff_admin.session_router)
 admin_router.include_router(settings_admin.router)
 admin_router.include_router(integrations_admin.router)
 admin_router.include_router(integrations_admin.payments_router)
