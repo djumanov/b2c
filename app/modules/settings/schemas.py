@@ -20,7 +20,6 @@ from app.core.i18n import SUPPORTED_LANGUAGES, Translated
 from app.modules.settings.defaults import COLOR_KEYS, FONT_CHOICES, LOCKED_FEATURES
 
 _HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-_CURRENCY = re.compile(r"^[A-Z]{3}$")
 
 
 def _check_languages(codes: list[str]) -> list[str]:
@@ -137,36 +136,17 @@ class LanguagesIn(BaseModel):
 
 
 class CurrenciesOut(BaseModel):
+    """What ``site-config`` reports about money — one currency, always.
+
+    There is no ``CurrenciesIn`` and no ``/admin/settings/currencies/`` beside
+    it: the currency is ``core.money.CURRENCY``, a constant rather than a row
+    (see that module for why). The block stays in the document because it is
+    what every client already reads, and "the only currency here is UZS" is
+    something a site still needs to be told.
+    """
+
     default: str
     available: list[str]
-
-
-class CurrenciesIn(BaseModel):
-    default: str | None = None
-    available: list[str] | None = None
-
-    @field_validator("default")
-    @classmethod
-    def _iso_code(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        code = value.strip().upper()
-        if not _CURRENCY.match(code):
-            raise ValueError("a currency is a three-letter ISO 4217 code")
-        return code
-
-    @field_validator("available")
-    @classmethod
-    def _iso_codes(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        codes = [code.strip().upper() for code in value]
-        for code in codes:
-            if not _CURRENCY.match(code):
-                raise ValueError(f"{code!r} is not a three-letter ISO 4217 code")
-        if not codes:
-            raise ValueError("at least one currency must be available")
-        return list(dict.fromkeys(codes))
 
 
 # --- features and products ---------------------------------------------------------
@@ -221,7 +201,6 @@ class SiteConfigOut(BaseModel):
 __all__ = [
     "BrandingIn",
     "BrandingOut",
-    "CurrenciesIn",
     "CurrenciesOut",
     "FeaturesIn",
     "FeaturesOut",

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.errors import ValidationFailed
 from app.core import i18n
 from app.core.logging import get_logger
+from app.core.money import CURRENCY
 from app.db.session import get_sessionmaker
 from app.modules.audit import context as audit_context
 from app.modules.integrations import service as integrations_service
@@ -27,7 +28,6 @@ from app.modules.settings.models import Branding, Site
 from app.modules.settings.schemas import (
     BrandingIn,
     BrandingOut,
-    CurrenciesIn,
     CurrenciesOut,
     FeaturesIn,
     FeaturesOut,
@@ -169,7 +169,7 @@ async def update_site(session: AsyncSession, data: SiteIn) -> SiteOut:
     return _site_out(row)
 
 
-# --- languages and currencies -------------------------------------------------------
+# --- languages ------------------------------------------------------------------------
 
 
 async def get_languages(session: AsyncSession) -> LanguagesOut:
@@ -199,29 +199,13 @@ async def update_languages(session: AsyncSession, data: LanguagesIn) -> Language
     return after
 
 
-async def get_currencies(session: AsyncSession) -> CurrenciesOut:
-    row = await repository.currencies(session)
-    return CurrenciesOut(default=row.default, available=row.available)
+# --- the currency ---------------------------------------------------------------------
 
-
-async def update_currencies(session: AsyncSession, data: CurrenciesIn) -> CurrenciesOut:
-    row = await repository.currencies(session)
-    before = CurrenciesOut(default=row.default, available=row.available).model_dump()
-
-    available = data.available if data.available is not None else row.available
-    default = data.default if data.default is not None else row.default
-    if default not in available:
-        raise ValidationFailed(
-            f"The default currency {default!r} must be one of the available "
-            f"currencies ({', '.join(available)})",
-            field="default",
-        )
-    row.available, row.default = available, default
-
-    await _save(session)
-    after = CurrenciesOut(default=row.default, available=row.available)
-    audit_context.describe(changes=audit_context.diff(before, after.model_dump()))
-    return after
+#: The money block of ``site-config``. A constant, not a query, and the only
+#: thing left of what used to be a settings table: the currency is
+#: ``core.money.CURRENCY``, so there is no row to read and nothing to write.
+#: There is no getter and no updater beside it for the same reason.
+CURRENCIES = CurrenciesOut(default=CURRENCY, available=[CURRENCY])
 
 
 # --- features and products -----------------------------------------------------------
@@ -271,7 +255,6 @@ async def _assemble(session: AsyncSession) -> dict[str, Any]:
     branding = await repository.branding(session)
     site = await repository.site(session)
     languages = await repository.languages(session)
-    currencies = await repository.currencies(session)
     features = await repository.features(session)
     products = await repository.products(session)
     # First read of a fresh installation creates the rows above.
@@ -294,10 +277,11 @@ async def _assemble(session: AsyncSession) -> dict[str, Any]:
             "app_name": branding.app_name,
         },
         "languages": {"default": languages.default, "available": languages.available},
-        "currencies": {
-            "default": currencies.default,
-            "available": currencies.available,
-        },
+        # A constant, unlike everything around it — the currency is code, not
+        # a row (``core.money.CURRENCY``). Cached with the rest of the
+        # document rather than special-cased on the way out, so the shape a
+        # client reads does not depend on where the value came from.
+        "currencies": CURRENCIES.model_dump(),
         "products": [{"code": row.code, "enabled": row.enabled} for row in products],
         # Asked of the module that owns the answer (API.md §29). Only the
         # enabled ones and no ``enabled`` field, unlike ``products`` above:
@@ -474,11 +458,11 @@ async def purge_cache() -> None:
 
 
 __all__ = [
+    "CURRENCIES",
     "cors_origins",
     "etag_for",
     "feature_enabled",
     "get_branding",
-    "get_currencies",
     "get_features",
     "get_languages",
     "get_products",
@@ -488,7 +472,6 @@ __all__ = [
     "purge_cache",
     "site_config",
     "update_branding",
-    "update_currencies",
     "update_features",
     "update_languages",
     "update_site",

@@ -485,8 +485,8 @@ class RepriceOut(BaseModel):
             "commission fields removed — the breakdown, not the verdict. "
             "Empty `{}` when GTS quoted nothing, and with `changed: false` "
             "it may be the provider's own fare in another currency (294 EUR "
-            "for an order priced at 343.04 USD) — read `new_price` and "
-            "`changed`, which are always there."
+            "beside an order priced in UZS) — read `new_price` and `changed`, "
+            "which are always there and always in `UZS`."
         ),
     )
     price_details: list[Any] = Field(

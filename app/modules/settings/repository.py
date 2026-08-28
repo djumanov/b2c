@@ -21,7 +21,6 @@ from app.db.base import Base
 from app.modules.settings import defaults
 from app.modules.settings.models import (
     Branding,
-    Currencies,
     Features,
     Languages,
     ProductSetting,
@@ -71,17 +70,6 @@ async def languages(session: AsyncSession) -> Languages:
     )
 
 
-async def currencies(session: AsyncSession) -> Currencies:
-    return await _singleton(
-        session,
-        Currencies,
-        {
-            "default": defaults.DEFAULT_CURRENCY,
-            "available": list(defaults.DEFAULT_CURRENCIES),
-        },
-    )
-
-
 async def features(session: AsyncSession) -> Features:
     return await _singleton(
         session, Features, {"flags": dict(defaults.FEATURE_DEFAULTS)}
@@ -114,7 +102,6 @@ async def products(session: AsyncSession) -> list[ProductSetting]:
 
 __all__ = [
     "branding",
-    "currencies",
     "features",
     "languages",
     "products",

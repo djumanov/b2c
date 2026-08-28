@@ -8,6 +8,19 @@ keeping ``Decimal`` inside and text on the wire.
 
 Stored as ``NUMERIC(18,2)`` with the currency in a separate ``CHAR(3)`` column
 (ARCHITECTURE.md §10) — see ``money_column`` / ``currency_column``.
+
+**One currency, and it is code rather than a setting.** ``CURRENCY`` below is
+the deliberate exception to "anything a client could want different lives in
+the database": an installation sells against one GTS agreement, that agreement
+is denominated in one currency, and a second one is not a value somebody types
+into a panel. It is an exchange-rate source, a rate history, a rounding policy
+and an audit trail that says which rate a given charge was taken at — none of
+which exist here. So the choice is not offered, and every figure that reaches
+a card, the deposit or a stored order is checked against this constant instead.
+
+The shape on the wire keeps its ``currency`` field. It costs nothing, it is
+what every client already reads, and a payload that names its own currency is
+still the honest one to send.
 """
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -23,6 +36,12 @@ EXPONENT: Final = Decimal("0.01")
 AMOUNT_PRECISION: Final = 18
 AMOUNT_SCALE: Final = 2
 CURRENCY_LENGTH: Final = 3
+
+#: The one currency this installation prices, charges and books in. See the
+#: module docstring for why it is a constant and not a row in ``settings``.
+#: A ``CHECK`` constraint on ``orders`` and ``payment_attempts`` says the same
+#: thing at the level that still holds when two workers write at once.
+CURRENCY: Final = "UZS"
 
 
 def quantize(amount: Decimal) -> Decimal:
@@ -49,6 +68,7 @@ class Money(BaseModel):
     """An amount in one currency, e.g. `{"amount": "287500.00", "currency": "UZS"}`.
 
     `amount` is always a **string with two decimals**, never a JSON number.
+    `currency` is always `UZS` — this installation prices in one currency.
     Immutable; arithmetic returns new values.
     """
 
@@ -64,9 +84,14 @@ class Money(BaseModel):
         )
     )
     currency: str = Field(
-        description="Upper-case ISO 4217 code (`UZS`, `USD`).",
+        default=CURRENCY,
+        description=(
+            f"Always `{CURRENCY}`. This installation prices, charges and books "
+            "in one currency; the field is kept because a payload that names "
+            "its own currency is the honest one to send."
+        ),
         pattern=r"^[A-Z]{3}$",
-        json_schema_extra={"example": "UZS"},
+        json_schema_extra={"example": CURRENCY},
     )
 
     @field_validator("amount", mode="before")
@@ -77,9 +102,21 @@ class Money(BaseModel):
     @field_validator("currency")
     @classmethod
     def _parse_currency(cls, value: str) -> str:
+        """The one currency, or a refusal.
+
+        ``Money`` is a **response** type everywhere — no request body carries
+        one — so this never turns a client's mistake into a 500. What it does
+        catch is a figure arriving from GTS in a currency this installation
+        cannot charge, at the moment somebody tries to build a price out of
+        it. The callers that read GTS refuse such a figure earlier and with a
+        better sentence (``orders.service._require_our_currency``); this is
+        the floor under them.
+        """
         code = value.strip().upper()
         if len(code) != CURRENCY_LENGTH or not code.isalpha():
             raise ValueError("currency must be a 3-letter ISO 4217 code")
+        if code != CURRENCY:
+            raise ValueError(f"this installation prices in {CURRENCY} only, got {code}")
         return code
 
     @field_serializer("amount")
@@ -87,10 +124,16 @@ class Money(BaseModel):
         return f"{amount:.{AMOUNT_SCALE}f}"
 
     def _same_currency(self, other: "Money") -> None:
+        """Kept, though the validator above already makes it unreachable.
+
+        Two ``Money`` values cannot differ in currency while there is only one
+        currency — but the day a second one arrives, arithmetic is exactly
+        where a missing conversion would otherwise pass silently.
+        """
         if self.currency != other.currency:
             raise ValueError(
-                f"cannot combine {self.currency} and {other.currency}; convert "
-                "first — conversion is GTS's job (PROJECT.md A3)"
+                f"cannot combine {self.currency} and {other.currency}; there is "
+                "no conversion here, and none is configured"
             )
 
     def __add__(self, other: "Money") -> "Money":
@@ -108,7 +151,7 @@ class Money(BaseModel):
         return f"{self.amount:.{AMOUNT_SCALE}f} {self.currency}"
 
     @classmethod
-    def zero(cls, currency: str) -> "Money":
+    def zero(cls, currency: str = CURRENCY) -> "Money":
         return cls(amount=Decimal("0"), currency=currency)
 
 
@@ -131,6 +174,7 @@ def currency_column(**kwargs: Any) -> Mapped[str]:
 __all__ = [
     "AMOUNT_PRECISION",
     "AMOUNT_SCALE",
+    "CURRENCY",
     "CURRENCY_LENGTH",
     "EXPONENT",
     "AmountColumn",

@@ -36,8 +36,11 @@ FONT_CHOICES: Final[tuple[str, ...]] = (
 DEFAULT_FONT: Final = "Inter"
 
 DEFAULT_LANGUAGES: Final[list[str]] = list(SUPPORTED_LANGUAGES)
-DEFAULT_CURRENCY: Final = "UZS"
-DEFAULT_CURRENCIES: Final[list[str]] = [DEFAULT_CURRENCY]
+
+#: **Not here on purpose:** the currency. This file holds what the panel may
+#: change and what it starts at; the currency is neither — it is
+#: ``core.money.CURRENCY``, a constant, because a second one needs an exchange
+#: rate rather than a form field.
 
 #: The sections a client may switch off, and how they start. Every key the
 #: contract's ``features`` object may contain is here — an unknown one is a
@@ -82,8 +85,6 @@ LOCKED_FEATURES: Final[frozenset[str]] = frozenset({"loyalty"})
 __all__ = [
     "COLOR_KEYS",
     "DEFAULT_COLORS",
-    "DEFAULT_CURRENCIES",
-    "DEFAULT_CURRENCY",
     "DEFAULT_FONT",
     "DEFAULT_LANGUAGE",
     "DEFAULT_LANGUAGES",

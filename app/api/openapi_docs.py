@@ -57,8 +57,9 @@ exception and answer in the provider's own shape.
 * **Every path ends with `/`.** There are no redirects: `/public/orders`
   without the slash is a 404.
 * **Money is a string**: `{"amount": "287500.00", "currency": "UZS"}` —
-  always two decimals, never a JSON number; `currency` is an upper-case
-  ISO 4217 code.
+  always two decimals, never a JSON number. `currency` is always `UZS`: this
+  installation prices, charges and books in one currency, and a figure in any
+  other is refused rather than converted.
 * **Timestamps** are ISO 8601 in UTC (`2026-08-21T10:15:00Z`). Dates sent
   without an offset are read as UTC.
 * **Ids** are UUIDs. Every response carries an `X-Request-Id` header.
@@ -162,7 +163,7 @@ TAGS: Final[list[dict[str, Any]]] = [
     },
     {
         "name": "site-config",
-        "description": "Public branding, languages, currencies and enabled payment methods.",
+        "description": "Public branding, languages, currency and enabled payment methods.",
     },
     {
         "name": "content",
@@ -207,7 +208,7 @@ TAGS: Final[list[dict[str, Any]]] = [
     },
     {
         "name": "settings",
-        "description": "Branding, languages, currencies, timezone and the other site-wide settings.",
+        "description": "Branding, languages, timezone and the other site-wide settings.",
     },
     {"name": "cms", "description": "Pages, FAQ and fun facts — the editing side."},
     {"name": "customers", "description": "Customer accounts as the panel sees them."},

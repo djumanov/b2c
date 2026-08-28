@@ -61,7 +61,6 @@ celery_app.conf.update(
 #   * sweep expired idempotency keys       -> api/idempotency   (Redis TTL does
 #                                             most of this already)
 #   * refresh the static catalogues        -> modules/catalog
-#   * refresh currency rates               -> modules/catalog
 celery_app.conf.beat_schedule = {
     "heartbeat-every-five-minutes": {
         "task": "app.tasks.heartbeat.heartbeat",

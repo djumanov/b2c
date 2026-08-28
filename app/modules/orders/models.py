@@ -52,7 +52,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.money import currency_column, money_column
+from app.core.money import CURRENCY, currency_column, money_column
 from app.db.base import Base, Entity
 from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -128,6 +128,14 @@ class Order(Entity):
         CheckConstraint(
             "(status = 'cancelled') = (cancelled_at IS NOT NULL)",
             name="cancelled_consistent",
+        ),
+        # One currency, said at the level that still holds when two workers
+        # write at once (``core.money.CURRENCY``). NULL is allowed because a
+        # booking whose price GTS did not report is still recorded — and a
+        # price read in another currency is discarded rather than stored, so
+        # it arrives here as NULL too.
+        CheckConstraint(
+            f"currency IS NULL OR currency = '{CURRENCY}'", name="currency"
         ),
         # "My orders", newest first — string names because ``created_at``
         # comes from the timestamp mixin, not this class body.
@@ -311,6 +319,10 @@ class PaymentAttempt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "payment_attempts"
     __table_args__ = (
         _values_check("status", AttemptStatus, "attempt_status"),
+        # Never NULL here, unlike the order's: an attempt is only ever opened
+        # for an order that holds a price, and that price is in the one
+        # currency this installation charges.
+        CheckConstraint(f"currency = '{CURRENCY}'", name="currency"),
         Index(
             "uq_payment_attempts_open",
             "order_id",

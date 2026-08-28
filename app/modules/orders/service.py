@@ -64,7 +64,7 @@ from app.api.listing import (
 )
 from app.core.crypto import decrypt, encrypt
 from app.core.logging import get_logger, new_request_id, request_id_var
-from app.core.money import Money
+from app.core.money import CURRENCY, Money
 from app.db.mixins import utcnow
 from app.db.repository import live
 from app.modules.audit import context as audit_context
@@ -383,6 +383,13 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
     disagrees is logged, not believed — ``gts_response`` is still replaced
     whole (it is the record, verbatim), and ``order_data`` shows the
     confirmed figures over it.
+
+    A price in **another currency is not copied either**, and this is the one
+    place that discards rather than raises: the same function runs inside the
+    sweep, the cancellation and the ticketing steps, where an exception over a
+    figure nobody was about to charge would break work that has nothing to do
+    with the price. The order keeps whatever it held, the record still
+    updates, and the ERROR line is what a person acts on.
     """
     if snapshot.gts_status:
         order.gts_status = snapshot.gts_status
@@ -390,7 +397,15 @@ def apply_snapshot(order: Order, snapshot: OrderSnapshot) -> None:
         order.gts_order_uid = snapshot.gts_order_uid
     if snapshot.pnr:
         order.pnr = snapshot.pnr
-    if snapshot.amount is not None and snapshot.currency:
+    if snapshot.currency and snapshot.currency != CURRENCY:
+        logger.error(
+            "gts_price_foreign_currency",
+            order_id=str(order.id),
+            gts_order_number=order.gts_order_number,
+            step="retrieve",
+            answered=f"{snapshot.amount} {snapshot.currency}",
+        )
+    elif snapshot.amount is not None and snapshot.currency:
         if order.price_confirmed_at is None:
             order.amount = snapshot.amount
             order.currency = snapshot.currency
@@ -421,7 +436,29 @@ async def create_order(
     booked: BookedOrder,
     language: str | None = None,
 ) -> BookingResultOut:
-    """Record one confirmed GTS booking — and the first line of its history."""
+    """Record one confirmed GTS booking — and the first line of its history.
+
+    A price GTS quoted in another currency is **not recorded** — the order is,
+    with no price. GTS is holding the seat by the time this runs, so refusing
+    the whole booking would lose the record of a hold that exists; and the
+    module already records a booking whose price could not be read at all.
+    ``payment/`` then stops with "GTS did not report a price for this order",
+    the ERROR line below is the alarm, and support sees the order in
+    ``/admin/orders/``.
+    """
+    amount, currency = booked.amount, booked.currency
+    if currency and currency != CURRENCY:
+        # No ``order_id`` yet — the row is minted below. GTS's own number is
+        # what identifies this booking until then, and it is what support
+        # quotes to GTS anyway.
+        logger.error(
+            "gts_price_foreign_currency",
+            gts_order_number=booked.gts_order_number,
+            step="booking",
+            answered=f"{amount} {currency}",
+        )
+        amount, currency = None, None
+
     # The id is minted here, not at flush: the first history line below needs
     # it before anything has been written.
     order = Order(
@@ -437,8 +474,8 @@ async def create_order(
         gts_order_uid=booked.gts_order_uid,
         gts_status=booked.gts_status,
         pnr=booked.pnr,
-        amount=booked.amount,
-        currency=booked.currency,
+        amount=amount,
+        currency=currency,
         trip_type=booked.trip_type,
         route_summary=booked.route_summary,
         passenger_count=booked.passenger_count,
@@ -617,27 +654,38 @@ def _require_price_confirmed(order: Order) -> None:
         )
 
 
-def _require_same_currency(order: Order, price: OrderPrice, *, step: str) -> None:
-    """A confirmation answers in the order's currency, or it is not believed.
+def _require_our_currency(order: Order, price: OrderPrice, *, step: str) -> None:
+    """A price we are about to believe is in **our** currency, or it is refused.
 
-    GTS's documentation draws ``reprice_check`` in UZS and
-    ``reprice_confirm`` in USD for the same order. Misprint or not, a figure
-    in another currency is not a new price — it is a number that must never
-    reach a card or the deposit. Refused before anything is written, at
-    ERROR: this is GTS or the integration misbehaving, and a person looks.
+    Compared against ``core.money.CURRENCY`` rather than against
+    ``order.currency``: an order whose price GTS never reported holds ``NULL``,
+    and comparing against that skipped the check exactly where there was
+    nothing else to catch a foreign figure.
+
+    GTS's documentation draws ``reprice_check`` in UZS and ``reprice_confirm``
+    in USD for the same order, and its live server quotes the *provider's*
+    fare in the provider's currency. Misprint or not, a figure in another
+    currency is not a price for this order — it is a number that must never
+    reach a card or the deposit, and there is no conversion here to make one
+    out of it. Refused before anything is written, at ERROR: this is GTS or
+    the integration misbehaving, and a person looks.
+
+    **Only for a figure that is about to become the order's price.** A quote
+    GTS itself calls unchanged is never read for its currency — see
+    ``_price_moved`` — because that is the ordinary live answer and refusing
+    it would stop every payment.
     """
-    if order.currency is not None and price.currency != order.currency:
+    if price.currency != CURRENCY:
         logger.error(
-            "gts_reprice_currency_mismatch",
+            "gts_price_foreign_currency",
             order_id=str(order.id),
             gts_order_number=order.gts_order_number,
             step=step,
-            order_currency=order.currency,
             answered=f"{price.amount} {price.currency}",
         )
         raise UpstreamError(
-            f"GTS {step} answered in {price.currency}; this order is priced in "
-            f"{order.currency} — the price was not changed"
+            f"GTS {step} answered in {price.currency}; this installation prices "
+            f"in {CURRENCY} — the price was not changed"
         )
 
 
@@ -709,10 +757,16 @@ def _price_moved(old: Money | None, price: OrderPrice | None) -> bool:
     change ``reprice/confirm/`` then refuses to make. GTS's ``price_changed``
     is believed over any comparison of our own: it quotes the provider's fare
     in the provider's currency beside ``price_changed: false`` (294 EUR for
-    an order booked at 343.04 USD, live 2026-08-25), and comparing those two
-    figures would call that a change. No quote at all is no change either —
-    GTS quotes a figure only when it has a new one. The comparison is left
-    for an installation whose GTS sends no verdict.
+    an order booked at 343.04 USD, live 2026-08-25 — that order's own currency
+    is no longer possible here, the foreign quote beside it still is), and
+    comparing those two figures would call that a change. No quote at all is
+    no change either — GTS quotes a figure only when it has a new one. The
+    comparison is left for an installation whose GTS sends no verdict.
+
+    **The currency is deliberately not checked here.** A quote GTS itself
+    calls unchanged is never charged and never shown as a price, so refusing
+    it would stop every ordinary payment; ``_require_our_currency`` is what
+    runs on the figures that do become a price.
     """
     if price is None:
         return False
@@ -841,6 +895,10 @@ async def reprice_order(
     price = await _adapter(order).reprice(client, order.gts_order_number)
     old = _order_money(order)
     if price is not None and _price_moved(old, price):
+        # Checked here and not only at ``reprice/confirm/``: this is the call
+        # that shows the customer a new price, and a figure in a currency we
+        # cannot charge must not reach that screen either.
+        _require_our_currency(order, price, step="reprice_check")
         logger.info(
             "order_repriced",
             order_id=str(order.id),
@@ -928,7 +986,7 @@ async def confirm_price(
 
     order, open_attempt = await _guard_price_step(session, customer_id, order_id)
     if price is not None:
-        _require_same_currency(order, price, step="reprice_confirm")
+        _require_our_currency(order, price, step="reprice_confirm")
     if snapshot is not None and gts_order.is_released(snapshot.gts_status):
         apply_snapshot(order, snapshot)
         session.add_all(_released(order, snapshot))

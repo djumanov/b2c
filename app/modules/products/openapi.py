@@ -261,9 +261,10 @@ FLIGHT_OFFERS: Final[dict[str, Any]] = _operation(
         "additionalProperties": True,
         "required": ["request_id"],
         "description": (
-            "Paging is GTS's. `sort_type`, `limit`, `next_token` and `currency` "
-            "are forwarded verbatim, so **only what GTS supports works** — "
-            "there is no sorting or filtering of ours on top."
+            "Paging is GTS's. `sort_type`, `limit` and `next_token` are "
+            "forwarded verbatim, so **only what GTS supports works** — there "
+            "is no sorting or filtering of ours on top. `currency` is the "
+            "exception: the server sets it, and anything sent is ignored."
         ),
         "properties": {
             "request_id": {
@@ -282,7 +283,12 @@ FLIGHT_OFFERS: Final[dict[str, Any]] = _operation(
             "limit": {"type": "integer", "description": "Offers per page."},
             "currency": {
                 "type": "string",
-                "description": "Currency to price in, e.g. `UZS`. GTS converts.",
+                "readOnly": True,
+                "description": (
+                    "**Set by the server**, always `UZS` — this installation "
+                    "prices in one currency. Sending another is ignored, not "
+                    "refused. GTS does the conversion."
+                ),
             },
         },
     },
@@ -387,7 +393,7 @@ FLIGHT_UPSELL: Final[dict[str, Any]] = _operation(
         "status": "success",
         "code": "100",
         "trip_type": "OW",
-        "currency": "USD",
+        "currency": "UZS",
         "offers": [
             {"offer_id": "u-1", "price_info": {"price": 108.67}},
             {"offer_id": "u-2", "price_info": {"price": 158.67}},

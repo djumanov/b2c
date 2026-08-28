@@ -6,6 +6,10 @@ changing a colour is day-to-day work, not administration of the installation.
 ``settings/menu/`` is absent, not stubbed. It is out of the first release
 (API.md §41) because the menu model is still an open question (PROJECT.md §16),
 and a route that does not exist answers `404` on its own.
+
+``settings/currencies/`` is absent for a different reason: the installation
+prices in one currency and that currency is a constant in ``core.money``, so
+there is nothing here to read or write. ``site-config`` still reports it.
 """
 
 from fastapi import Depends, Response
@@ -18,8 +22,6 @@ from app.modules.settings import service
 from app.modules.settings.schemas import (
     BrandingIn,
     BrandingOut,
-    CurrenciesIn,
-    CurrenciesOut,
     FeaturesIn,
     FeaturesOut,
     LanguagesIn,
@@ -64,16 +66,6 @@ async def get_languages(session: SessionDep) -> LanguagesOut:
 @router.patch("/languages/", summary="Change which languages the site serves")
 async def update_languages(data: LanguagesIn, session: SessionDep) -> LanguagesOut:
     return await service.update_languages(session, data)
-
-
-@router.get("/currencies/", summary="Base and displayed currencies")
-async def get_currencies(session: SessionDep) -> CurrenciesOut:
-    return await service.get_currencies(session)
-
-
-@router.patch("/currencies/", summary="Change the currencies on offer")
-async def update_currencies(data: CurrenciesIn, session: SessionDep) -> CurrenciesOut:
-    return await service.update_currencies(session, data)
 
 
 @router.get("/features/", summary="Which sections are switched on")

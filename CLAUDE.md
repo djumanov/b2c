@@ -62,6 +62,15 @@ providers, notifications and storage each sit behind a port.
   lives in the database behind the panel. `.env` holds infrastructure only:
   database, Redis, JWT secret, encryption key, log level. Adding a setting?
   First question: "could two clients want different values?" (PROJECT.md §7)
+- **One currency, and it is the exception to the rule above.** The installation
+  prices, charges and books in `core.money.CURRENCY` — a constant, with no
+  panel row and no `.env` variable. A second currency is not a form field: it
+  is an exchange-rate source, a rate history, a rounding policy and an audit
+  trail saying which rate a charge was taken at, and none of those exist here.
+  The GTS account is configured for the same currency, `flight.offers()` asks
+  GTS to price in it, and a figure that arrives in any other is refused rather
+  than converted. Do not reintroduce a currencies setting without building the
+  four things above first.
 - **Handlers never build the envelope.** They return a plain model or a
   `Page`; `api/envelope.py`'s route class wraps it into
   `{status, data, errors, meta}`. The one exception is `/api/v1/webhooks/*`,
