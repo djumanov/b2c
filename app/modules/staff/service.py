@@ -7,11 +7,14 @@ Nothing outside reaches past it to ``models`` or ``repository``
 
 Three behaviours that are decisions rather than plumbing:
 
-**Rotation is strict.** Every ``refresh/`` revokes the token it was handed and
-issues a new pair (API.md §4). If a *revoked* refresh token is presented, that
-is either a replay or a stolen copy — so every session that employee has is
-killed, not just the one. The cost of being wrong is one extra login; the cost
-of the other choice is an attacker keeping a foothold.
+**Rotation is per session, and forgiving for a minute.** Every ``refresh/``
+revokes the token it was handed and issues a new pair (API.md §4). An employee
+may hold as many sessions as they like — two browsers, a laptop and a phone —
+and what happens to one never reaches another. A token that rotation replaced
+within ``ROTATION_GRACE`` is still served rather than refused, because the
+commonest way to present one is to have two tabs open, or to retry a request
+whose response was lost. Outside that window, or once a logout, a password
+change or a block has ended it, the token is refused — and only that token.
 
 **Blocked is reported after the password checks out.** Answering "this account
 is blocked" to any caller would turn the login form into a directory of the
@@ -64,6 +67,8 @@ from app.core.security import (
     denylist_ttl,
     denylist_ttl_for,
     hash_password,
+    is_marked_revoked,
+    is_rotation_race,
     password_needs_rehash,
     revoked_before_key,
     revoked_before_ttl,
@@ -128,7 +133,13 @@ async def _issue_pair(
     *,
     user_agent: str | None,
     ip: str | None,
+    replaces: StaffRefreshToken | None = None,
 ) -> TokenPairOut:
+    """Mint an access/refresh pair, optionally retiring the one it succeeds.
+
+    ``replaces`` keeps rotation in one place: the new ``jti`` is known here and
+    nowhere else, and it is what the retired row has to record.
+    """
     access, _ = create_token(
         subject_id=staff.id,
         audience=Audience.ADMIN,
@@ -143,6 +154,11 @@ async def _issue_pair(
         audience=Audience.ADMIN,
         token_type=TokenType.REFRESH,
     )
+    # A token replaced inside the grace window can be presented more than once.
+    # Only the first replacement is recorded: re-stamping ``revoked_at`` on each
+    # would slide the window forward and keep one token alive indefinitely.
+    if replaces is not None and not replaces.is_revoked:
+        await _revoke(replaces, replaced_by=refresh_claims.jti)
     session.add(
         StaffRefreshToken(
             staff_id=staff.id,
@@ -159,8 +175,15 @@ async def _issue_pair(
     )
 
 
-async def _revoke(token: StaffRefreshToken) -> None:
+async def _revoke(token: StaffRefreshToken, *, replaced_by: str | None = None) -> None:
+    """End one session. ``replaced_by`` is set only when rotation ended it.
+
+    That distinction is the whole of the grace window: a token rotation put
+    aside a moment ago may still be in flight from a second tab, while one a
+    logout or a password change ended was ended on purpose.
+    """
     token.revoked_at = utcnow()
+    token.replaced_by_jti = replaced_by
     await get_redis().set(
         denylist_key(token.jti), "1", ex=denylist_ttl_for(token.expires_at)
     )
@@ -183,6 +206,27 @@ async def _revoke_all_sessions(session: AsyncSession, staff_id: uuid.UUID) -> No
         revoked_before_value(),
         ex=revoked_before_ttl(Audience.ADMIN),
     )
+
+
+async def _race_forgiven(token: StaffRefreshToken) -> bool:
+    """Is this revoked token a second tab arriving late, and is that still safe?
+
+    Two questions, because the grace window forgives a race but not a
+    revocation that overtook one. Rotation must be what retired the token and
+    it must have been recent — *and* nobody must have ended every session this
+    employee holds since. A password change, a block or a deletion writes the
+    subject-wide mark, and a token rotated out a moment before it must not be
+    able to mint a fresh pair inside the window it would otherwise have had.
+    """
+    revoked_at = token.revoked_at
+    if revoked_at is None:
+        return False
+    if not is_rotation_race(
+        revoked_at=revoked_at, replaced_by_jti=token.replaced_by_jti
+    ):
+        return False
+    mark = await get_redis().get(revoked_before_key(token.staff_id))
+    return not is_marked_revoked(revoked_at, mark, tolerate_same_second=False)
 
 
 def _decode_refresh(token: str) -> TokenClaims:
@@ -279,12 +323,14 @@ async def refresh_session(
     claims = _decode_refresh(refresh_token)
     stored = await repository.token_by_jti(session, claims.jti)
 
-    if stored is None or stored.is_revoked:
-        # Presented after revocation: replay or theft. End every session this
-        # employee has rather than only refusing this one.
-        await _revoke_all_sessions(session, claims.subject_id)
-        await session.commit()
-        logger.warning("staff_refresh_reuse", staff_id=str(claims.subject_id))
+    if stored is None:
+        raise Unauthorized("This session is no longer valid")
+
+    forgiven = await _race_forgiven(stored)
+    if stored.is_revoked and not forgiven:
+        # Ended on purpose — a logout, a password change, a block — or replaced
+        # long enough ago that no honest client is still holding it. Refused on
+        # its own: the employee's other sessions are none of this one's business.
         raise Unauthorized("This session has been revoked")
 
     staff = await repository.by_id(session, claims.subject_id)
@@ -293,8 +339,14 @@ async def refresh_session(
     if staff.is_blocked:
         raise Forbidden("This account has been blocked")
 
-    await _revoke(stored)
-    pair = await _issue_pair(session, staff, user_agent=user_agent, ip=ip)
+    if forgiven:
+        # Worth a line: it is how a client that refreshes more often than it
+        # needs to shows up in the log, and it costs a session row each time.
+        logger.info("staff_refresh_race", staff_id=str(staff.id))
+
+    pair = await _issue_pair(
+        session, staff, user_agent=user_agent, ip=ip, replaces=stored
+    )
     await session.commit()
     return pair
 
