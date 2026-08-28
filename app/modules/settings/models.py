@@ -1,9 +1,15 @@
 """What the client can change without a deploy — ARCHITECTURE.md §5, §10.
 
-Five singleton tables and one list. Each singleton describes *the*
+Four singleton tables and one list. Each singleton describes *the*
 installation, so a second row would be a question with no right answer;
 ``SingletonMixin`` plus ``singleton_check`` makes one impossible in the
 database rather than in a convention.
+
+There is no ``currencies`` table. The installation prices in one currency and
+that currency is ``core.money.CURRENCY`` — a constant, because the alternative
+is an exchange-rate source and a rate history that do not exist here. See that
+module for the reasoning; it is the one deliberate exception to "everything the
+client can change lives in these tables".
 
 Translatable text is ``JSONB {language: value}`` (API.md §7): that is the shape
 the admin API returns, so no read has to join, and the public surface collapses
@@ -90,20 +96,6 @@ class Languages(Entity, SingletonMixin):
     )
 
 
-class Currencies(Entity, SingletonMixin):
-    """Base currency and what else may be displayed (PROJECT.md §12)."""
-
-    __tablename__ = "currencies"
-    __table_args__ = (singleton_check(),)
-
-    default: Mapped[str] = mapped_column(
-        String(3), nullable=False, server_default=text("'UZS'")
-    )
-    available: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, server_default=text("'[]'::jsonb")
-    )
-
-
 class Features(Entity, SingletonMixin):
     """Sections the client can switch off — blog, reviews and the like."""
 
@@ -141,13 +133,12 @@ class ProductSetting(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 #: Every settings table, for the code that has to touch all of them — the
 #: cache purge does not care which one changed.
-SINGLETONS: tuple[type[Any], ...] = (Branding, Site, Languages, Currencies, Features)
+SINGLETONS: tuple[type[Any], ...] = (Branding, Site, Languages, Features)
 
 
 __all__ = [
     "SINGLETONS",
     "Branding",
-    "Currencies",
     "Features",
     "Languages",
     "ProductSetting",

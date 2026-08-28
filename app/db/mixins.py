@@ -76,8 +76,8 @@ class BaseMixin(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
 class SingletonMixin:
     """A table that may hold exactly one row (ARCHITECTURE.md §10).
 
-    The settings tables — branding, site, languages, currencies, features —
-    each describe *the* installation, so "which row is the real one" must never
+    The settings tables — branding, site, languages, features — each
+    describe *the* installation, so "which row is the real one" must never
     be a question anybody can ask. A column that is always ``TRUE`` and
     ``UNIQUE`` makes a second row impossible at the database level, which is
     the only level that still holds when two workers insert at once.

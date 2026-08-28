@@ -14,12 +14,16 @@ environment stops being consulted, so the client still owns the value and a
 changed ``.env`` cannot silently overwrite what they chose. Without it a fresh
 database has no way to send the code that its own first sign-in needs.
 
-Everything a client could want different — branding, languages, currencies,
-timezone, allowed CORS origins, GTS and payment credentials, SMTP — is stored
-in the database and edited from the panel, with no redeploy. That is the
-project's headline promise (PROJECT.md §7, ARCHITECTURE.md §1); a value that
-leaks into this file quietly breaks it, because changing it then needs a
-deploy the client cannot perform.
+Everything a client could want different — branding, languages, timezone,
+allowed CORS origins, GTS and payment credentials, SMTP — is stored in the
+database and edited from the panel, with no redeploy. That is the project's
+headline promise (PROJECT.md §7, ARCHITECTURE.md §1); a value that leaks into
+this file quietly breaks it, because changing it then needs a deploy the
+client cannot perform.
+
+The currency is the one deliberate exception, and it is not here either: it
+is a constant in ``core.money``, because a second one needs an exchange rate
+rather than a setting. See that module, and CLAUDE.md.
 """
 
 import base64

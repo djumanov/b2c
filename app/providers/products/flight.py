@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.errors import AppError, UpstreamError, UpstreamTimeout, ValidationFailed
 from app.core.logging import get_logger
-from app.core.money import quantize
+from app.core.money import CURRENCY, quantize
 from app.providers.gts.base import GtsClient, GtsDocument, GtsTimeouts
 from app.providers.products import gts_order
 from app.providers.products.base import (
@@ -399,8 +399,18 @@ class FlightAdapter:
         would lose the offers it skipped. Our own ``422`` is untouched — the
         shape check runs before the ``try``, and ``ValidationFailed`` is not
         an upstream failure.
+
+        **``currency`` is the one field this passthrough overrides.** GTS
+        prices in whatever the request names and converts itself, so leaving
+        it to the caller would let a client ask for offers in a currency this
+        installation cannot charge — and the mismatch would only surface at
+        ``payment/``, after a seat was held. Setting it here means the figures
+        that reach a booking are already the ones ``core.money.CURRENCY``
+        names, whatever the caller sent and whatever the GTS account defaults
+        to. Everything else in the body still rides through untouched.
         """
         _validated(_FlightOffersIn, params)
+        params = {**params, "currency": CURRENCY}
         try:
             payload = await client.post_envelope(
                 "/v1/content/offers/", json=params, timeout=GtsTimeouts.SEARCH_SECONDS
